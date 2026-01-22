@@ -1172,10 +1172,21 @@ async function parsePoYWithClaude(fileBase64, mimeType) {
     // Parse the JSON from Claude's response
     // Clean up any markdown code blocks if present
     let jsonStr = textContent.trim();
+
+    // Remove markdown code blocks
     if (jsonStr.startsWith('```')) {
       jsonStr = jsonStr.replace(/^```json?\n?/, '').replace(/\n?```$/, '');
     }
-    
+
+    // Try to extract just the JSON object if there's extra text
+    const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      jsonStr = jsonMatch[0];
+    }
+
+    // Fix common JSON issues: trailing commas before ] or }
+    jsonStr = jsonStr.replace(/,(\s*[}\]])/g, '$1');
+
     const parsed = JSON.parse(jsonStr);
     return { success: true, data: parsed };
     
