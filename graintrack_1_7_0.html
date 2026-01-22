@@ -1,0 +1,4416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GrainTrack Suite v1.7.0</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; }
+    .modified-row { background-color: #fef9c3 !important; }
+  </style>
+</head>
+<body class="bg-gray-50">
+  <div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback } = React;
+
+// ============================================================================
+// SUPABASE CLIENT
+// ============================================================================
+const SUPABASE_URL = 'https://xehapaasizntuzqzvwej.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhlaGFwYWFzaXpudHV6cXp2d2VqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjgzMTkwOTksImV4cCI6MjA4Mzg5NTA5OX0.JTtRaVRfZ4DNddTdT2BsKgCNabErgsCB0rBCHlK0mbA';
+const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+async function testConnection() {
+  try {
+    const { error } = await supabase.from('commodities').select('id').limit(1);
+    return !error;
+  } catch {
+    return false;
+  }
+}
+
+// ============================================================================
+// BARCHART INTEGRATION
+// ============================================================================
+
+// Map commodity names to Barchart symbol prefixes
+// Barchart uses symbols like ZCZ25 (Corn Dec 2025), ZSX26 (Soybeans Nov 2026)
+const BARCHART_COMMODITY_MAP = {
+  'Corn': 'ZC',
+  'Soybeans': 'ZS', 
+  'Wheat': 'ZW',
+  'KC Wheat': 'KE',
+  'Milo': null,  // No milo futures
+  'Grain Sorghum': null
+};
+
+// ============================================================================
+// ICONS (using Lucide) with text fallback
+// ============================================================================
+const ICON_FALLBACKS = {
+  'pencil': '✏️', 'trash-2': '🗑️', 'eye': '👁️', 'eye-off': '⊘', 'plus': '+', 'check': '✔', 'x': '✕',
+  'refresh-cw': '↻', 'download': '⬇️', 'file-text': '📄', 'home': '🏠', 'settings': '⚙️',
+  'layout-dashboard': '📊', 'plus-circle': '⊕', 'wheat': '🌾', 'shield': '🛡️', 'building-2': '🏢',
+  'warehouse': '🏭', 'package': '📦', 'menu': '☰', 'chevron-down': '▼', 'chevron-up': '▲',
+  'alert-circle': '⚠️', 'info': 'ℹ️', 'search': '🔍', 'trending-up': '📈', 'dollar-sign': '$',
+  'save': '💾', 'edit': '✏️', 'star': '⭐', 'upload': '⬆️', 'file-up': '📤', 'arrow-right-left': '⇄',
+  'scale': '⚖️', 'history': '🕐', 'chevron-right': '▶', 'map-pin': '📍', 'users': '👥',
+  'clipboard-check': '📋', 'alert-triangle': '⚠️', 'check-circle': '✅', 'x-circle': '❌',
+  'loader': '⟳', 'minus': '-', 'arrow-down': '↓', 'arrow-up': '↑'
+};
+
+function Icon({ name, size = 20, className = '' }) {
+  const ref = React.useRef(null);
+  
+  useEffect(() => {
+    if (ref.current) {
+      try {
+        if (window.lucide?.icons?.[name]) {
+          const svg = lucide.icons[name].toSvg({ width: size, height: size });
+          ref.current.innerHTML = svg;
+        } else {
+          // Fallback to emoji/text
+          ref.current.innerHTML = ICON_FALLBACKS[name] || 'â€¢';
+        }
+      } catch (e) {
+        ref.current.innerHTML = ICON_FALLBACKS[name] || 'â€¢';
+      }
+    }
+  }, [name, size]);
+  
+  return <span ref={ref} className={`inline-flex items-center justify-center ${className}`} style={{ minWidth: size, minHeight: size }} />;
+}
+
+// ============================================================================
+// SERVICES
+// ============================================================================
+
+// Commodities
+async function getCommodities() {
+  const { data, error } = await supabase
+    .from('commodities')
+    .select('*')
+    .eq('active', true)
+    .order('sort_order');
+  if (error) { console.error('Error fetching commodities:', error); return []; }
+  return data || [];
+}
+
+// Buyers
+async function getBuyers(includeInactive = false) {
+  let query = supabase.from('buyers').select('*').order('name');
+  if (!includeInactive) query = query.eq('active', true);
+  const { data, error } = await query;
+  if (error) { console.error('Error fetching buyers:', error); return []; }
+  return data || [];
+}
+
+async function createBuyer(name) {
+  const { data, error } = await supabase
+    .from('buyers')
+    .insert([{ name, active: true }])
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+async function updateBuyer(id, updates) {
+  const { data, error } = await supabase
+    .from('buyers')
+    .update(updates)
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+async function deleteBuyer(id) {
+  const { error } = await supabase.from('buyers').delete().eq('id', id);
+  if (error) throw error;
+  return true;
+}
+
+// Production / Fields
+async function getFieldsForGrain() {
+  const { data: grainSettings } = await supabase
+    .from('grain_field_settings')
+    .select('field_id, is_active_for_grain');
+
+  const activeFieldIds = new Set(
+    (grainSettings || []).filter(s => s.is_active_for_grain).map(s => s.field_id)
+  );
+
+  const { data: farms, error: farmsError } = await supabase
+    .from('farms')
+    .select('id, name, adams_grain_share, active')
+    .gt('adams_grain_share', 0)
+    .eq('active', true);
+
+  if (farmsError || !farms) return [];
+
+  const farmMap = new Map(farms.map(f => [f.id, f]));
+
+  const { data: fields, error: fieldsError } = await supabase
+    .from('fields')
+    .select('id, farm_id, name, acres, tenant_share, active')
+    .in('farm_id', farms.map(f => f.id))
+    .eq('active', true)
+    .order('name');
+
+  if (fieldsError || !fields) return [];
+
+  const hasGrainSettings = grainSettings && grainSettings.length > 0;
+
+  return fields
+    .filter(f => !hasGrainSettings || activeFieldIds.has(f.id))
+    .map(f => {
+      const farm = farmMap.get(f.farm_id);
+      return {
+        ...f,
+        farm_name: farm?.name || 'Unknown',
+        effective_share: (f.tenant_share || 1) * (farm?.adams_grain_share || 1)
+      };
+    });
+}
+
+async function getProductionByCropYear(cropYear, commodityId) {
+  const fields = await getFieldsForGrain();
+  if (!fields.length) return [];
+
+  const fieldIds = fields.map(f => f.id);
+
+  let query = supabase
+    .from('field_crop_years')
+    .select(`*, commodities:commodity_id (id, name)`)
+    .eq('crop_year', cropYear)
+    .in('field_id', fieldIds);
+
+  if (commodityId) query = query.eq('commodity_id', commodityId);
+
+  const { data, error } = await query;
+  if (error) { console.error('Error fetching production:', error); return []; }
+
+  const fieldMap = new Map(fields.map(f => [f.id, f]));
+
+  return (data || []).map(row => {
+    const field = fieldMap.get(row.field_id);
+    const effectiveShare = row.share_override ?? field?.effective_share ?? 1;
+    const expectedMarketable = (row.planted_acres || 0) * (row.estimated_yield || 0) * effectiveShare;
+    const actualMarketable = row.actual_production ? row.actual_production * effectiveShare : null;
+
+    // Build display name
+    const commodityName = row.commodities?.name || 'Unknown';
+    let displayName = commodityName;
+    if (row.is_irrigated) displayName += ' IR';
+    if (row.is_double_crop) displayName += ' (DC)';
+
+    return {
+      ...row,
+      field_name: field?.name || 'Unknown',
+      farm_name: field?.farm_name || 'Unknown',
+      field_acres: field?.acres || 0,
+      tenant_share: field?.tenant_share || 1,
+      adams_grain_share: field?.effective_share ? field.effective_share / (field.tenant_share || 1) : 1,
+      effective_share: effectiveShare,
+      commodity_name: commodityName,
+      display_name: displayName,
+      expected_marketable: expectedMarketable,
+      actual_marketable: actualMarketable
+    };
+  });
+}
+
+async function getProductionSummary(cropYear, byPractice = false) {
+  const production = await getProductionByCropYear(cropYear);
+  const summary = new Map();
+
+  for (const row of production) {
+    let key = row.commodity_id;
+    if (byPractice) {
+      // Create a compound key based on practice
+      const practiceKey = row.is_double_crop ? 'DC' : (row.is_irrigated ? 'IR' : 'DL');
+      key = `${row.commodity_id}|${practiceKey}`;
+    }
+
+    const existing = summary.get(key);
+    if (existing) {
+      existing.expected += row.expected_marketable;
+      if (row.actual_marketable !== null) {
+        existing.actual = (existing.actual || 0) + row.actual_marketable;
+      }
+    } else {
+      summary.set(key, {
+        commodity_id: row.commodity_id,
+        commodity_name: row.commodity_name,
+        is_irrigated: byPractice ? row.is_irrigated : null,
+        is_double_crop: byPractice ? row.is_double_crop : null,
+        expected: row.expected_marketable,
+        actual: row.actual_marketable
+      });
+    }
+  }
+
+  return Array.from(summary.values()).map(s => ({
+    commodity_id: s.commodity_id,
+    commodity_name: s.commodity_name,
+    is_irrigated: s.is_irrigated,
+    is_double_crop: s.is_double_crop,
+    expected_production: s.expected,
+    actual_production: s.actual
+  }));
+}
+
+async function createCropEntry(crop) {
+  const { data, error } = await supabase
+    .from('field_crop_years')
+    .insert([{
+      field_id: crop.field_id,
+      crop_year: crop.crop_year,
+      commodity_id: crop.commodity_id,
+      subcategory_id: null,
+      planted_acres: crop.planted_acres,
+      estimated_yield: crop.estimated_yield,
+      actual_production: null,
+      share_override: crop.share_override || null,
+      is_irrigated: crop.is_irrigated || false,
+      is_double_crop: crop.is_double_crop || false,
+      status: 'planned',
+      notes: null
+    }])
+    .select()
+    .single();
+
+  if (error) { console.error('Error creating crop entry:', error); return null; }
+  return data;
+}
+
+async function updateProduction(id, updates) {
+  const { data, error } = await supabase
+    .from('field_crop_years')
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (error) { console.error('Error updating production:', error); return null; }
+  return data;
+}
+
+async function deleteProduction(id) {
+  const { error } = await supabase.from('field_crop_years').delete().eq('id', id);
+  if (error) { console.error('Error deleting production:', error); return false; }
+  return true;
+}
+
+// Grain Field Settings
+async function getGrainFieldSettings() {
+  const { data, error } = await supabase.from('grain_field_settings').select('*');
+  if (error) { console.error('Error fetching grain field settings:', error); return []; }
+  return data || [];
+}
+
+async function updateGrainFieldSetting(fieldId, isActive) {
+  const { data: existing } = await supabase
+    .from('grain_field_settings')
+    .select('id')
+    .eq('field_id', fieldId)
+    .maybeSingle();
+
+  if (existing) {
+    const { error } = await supabase
+      .from('grain_field_settings')
+      .update({ is_active_for_grain: isActive })
+      .eq('field_id', fieldId);
+    if (error) { console.error('Error updating grain field setting:', error); return false; }
+  } else {
+    const { error } = await supabase
+      .from('grain_field_settings')
+      .insert([{ field_id: fieldId, is_active_for_grain: isActive }]);
+    if (error) { console.error('Error creating grain field setting:', error); return false; }
+  }
+  return true;
+}
+
+// Contracts
+async function getContracts(cropYear, commodityId) {
+  let query = supabase
+    .from('contracts')
+    .select(`*, commodities:commodity_id (id, name), buyers:buyer_id (id, name)`)
+    .neq('status', 'CANCELLED')
+    .order('contract_date', { ascending: false });
+
+  if (cropYear) query = query.eq('crop_year', cropYear);
+  if (commodityId) query = query.eq('commodity_id', commodityId);
+
+  const { data, error } = await query;
+  if (error) { console.error('Error fetching contracts:', error); return []; }
+
+  return (data || []).map(contract => {
+    let effectivePrice = 0;
+    if (contract.contract_type === 'CASH') effectivePrice = contract.cash_price || 0;
+    else if (contract.contract_type === 'FUTURES' || contract.contract_type === 'HTA') 
+      effectivePrice = (contract.futures_price || 0) + (contract.expected_basis || 0);
+    else if (contract.contract_type === 'BASIS') effectivePrice = contract.basis || 0;
+    else if (contract.contract_type === 'OPTIONS') effectivePrice = contract.strike_price || 0;
+
+    return {
+      ...contract,
+      commodity_name: contract.commodities?.name || 'Unknown',
+      buyer_name: contract.buyers?.name || null,
+      effective_price: effectivePrice
+    };
+  });
+}
+
+async function getContractsSummary(cropYear, byPractice = false) {
+  const contracts = await getContracts(cropYear);
+  const summary = new Map();
+
+  for (const contract of contracts) {
+    // For now, contracts don't track practice, so we just group by commodity
+    const key = contract.commodity_id;
+
+    const existing = summary.get(key) || {
+      commodity_id: contract.commodity_id,
+      total_bushels: 0,
+      price_sum: 0,
+      by_type: {
+        CASH: { count: 0, bushels: 0 },
+        FUTURES: { count: 0, bushels: 0 },
+        OPTIONS: { count: 0, bushels: 0 },
+        HTA: { count: 0, bushels: 0 },
+        BASIS: { count: 0, bushels: 0 }
+      }
+    };
+
+    existing.total_bushels += contract.bushels;
+    if (contract.contract_type !== 'OPTIONS' && contract.effective_price > 0) {
+      existing.price_sum += contract.bushels * contract.effective_price;
+    }
+    existing.by_type[contract.contract_type].count += 1;
+    existing.by_type[contract.contract_type].bushels += contract.bushels;
+    summary.set(key, existing);
+  }
+
+  return Array.from(summary.values()).map(s => ({
+    commodity_id: s.commodity_id,
+    bushels_contracted: s.total_bushels,
+    weighted_avg_price: s.total_bushels > 0 ? s.price_sum / s.total_bushels : null,
+    contracts_by_type: s.by_type
+  }));
+}
+
+async function createContract(contract) {
+  const { data, error } = await supabase
+    .from('contracts')
+    .insert([{
+      contract_type: contract.contract_type,
+      crop_year: contract.crop_year,
+      commodity_id: contract.commodity_id,
+      subcategory_id: null,
+      buyer_id: contract.buyer_id,
+      bushels: contract.bushels,
+      bushels_filled: 0,
+      cash_price: contract.cash_price,
+      futures_price: contract.futures_price,
+      basis: contract.basis,
+      expected_basis: contract.expected_basis,
+      option_type: contract.option_type,
+      strike_price: contract.strike_price,
+      premium: contract.premium,
+      futures_month: contract.futures_month,
+      delivery_start: contract.delivery_start,
+      delivery_end: contract.delivery_end,
+      contract_date: contract.contract_date || new Date().toISOString().split('T')[0],
+      contract_number: contract.contract_number,
+      status: 'OPEN',
+      notes: contract.notes
+    }])
+    .select()
+    .single();
+
+  if (error) { console.error('Error creating contract:', error); return null; }
+  return data;
+}
+
+async function updateContract(id, updates) {
+  const { data, error } = await supabase
+    .from('contracts')
+    .update(updates)
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (error) { console.error('Error updating contract:', error); return null; }
+  return data;
+}
+
+async function deleteContract(id) {
+  const { error } = await supabase
+    .from('contracts')
+    .update({ status: 'CANCELLED' })
+    .eq('id', id);
+
+  if (error) { console.error('Error cancelling contract:', error); return false; }
+  return true;
+}
+
+// Insurance
+async function getInsuranceSettings(cropYear) {
+  let query = supabase.from('insurance_settings').select('*').order('crop_year', { ascending: false });
+  if (cropYear) query = query.eq('crop_year', cropYear);
+  const { data, error } = await query;
+  if (error) { console.error('Error fetching insurance settings:', error); return []; }
+  return data || [];
+}
+
+async function upsertInsuranceSetting(setting) {
+  let existingQuery = supabase
+    .from('insurance_settings')
+    .select('id')
+    .eq('crop_year', setting.crop_year)
+    .eq('commodity_id', setting.commodity_id);
+
+  if (setting.practice_type) {
+    existingQuery = existingQuery.eq('practice_type', setting.practice_type);
+  } else {
+    existingQuery = existingQuery.is('practice_type', null);
+  }
+
+  const { data: existing } = await existingQuery.maybeSingle();
+
+  if (existing) {
+    const { data, error } = await supabase
+      .from('insurance_settings')
+      .update({
+        coverage_level: setting.coverage_level,
+        price_election: setting.price_election,
+        policy_type: setting.policy_type,
+        notes: setting.notes
+      })
+      .eq('id', existing.id)
+      .select()
+      .single();
+    if (error) { console.error('Error updating insurance setting:', error); return null; }
+    return data;
+  } else {
+    const { data, error } = await supabase
+      .from('insurance_settings')
+      .insert([{
+        crop_year: setting.crop_year,
+        commodity_id: setting.commodity_id,
+        subcategory_id: null,
+        practice_type: setting.practice_type || null,
+        coverage_level: setting.coverage_level || 0.75,
+        price_election: setting.price_election || 0,
+        policy_type: setting.policy_type || 'RP',
+        notes: setting.notes
+      }])
+      .select()
+      .single();
+    if (error) { console.error('Error creating insurance setting:', error); return null; }
+    return data;
+  }
+}
+
+// Market Prices - Enhanced with Barchart integration
+async function getLatestMarketPrices() {
+  // First, get all commodities to build the mapping
+  const { data: commodities } = await supabase
+    .from('commodities')
+    .select('id, name')
+    .eq('active', true);
+  
+  if (!commodities) return {};
+  
+  const prices = {};
+  
+  // Try to get Barchart technicals (auto-updated from emails)
+  const { data: barchartData, error: barchartError } = await supabase
+    .from('barchart_technicals')
+    .select('symbol, name, latest_price, rsi_14d, stoch_14d_pct_d, stoch_9d_pct_k, trend_signal, data_timestamp');
+  
+  // Process Barchart data - find the front month contract for each commodity
+  if (barchartData && !barchartError) {
+    // Group by commodity prefix to find contracts
+    const byPrefix = {};
+    for (const row of barchartData) {
+      const prefix = row.symbol.substring(0, 2);
+      if (!byPrefix[prefix]) byPrefix[prefix] = [];
+      byPrefix[prefix].push(row);
+    }
+    
+    // For each commodity, find matching Barchart data
+    for (const commodity of commodities) {
+      const prefix = BARCHART_COMMODITY_MAP[commodity.name];
+      if (!prefix || !byPrefix[prefix]) continue;
+      
+      // Use the first contract (front month)
+      const contracts = byPrefix[prefix];
+      if (contracts.length > 0) {
+        const front = contracts[0];
+        // Barchart grain prices are in CENTS - divide by 100 for dollars
+        // e.g., 449.75 cents = $4.4975
+        const priceInDollars = front.latest_price / 100;
+        prices[commodity.id] = {
+          price: priceInDollars,
+          source: 'barchart',
+          symbol: front.symbol,
+          timestamp: front.data_timestamp,
+          rsi: front.rsi_14d,
+          stoch_d: front.stoch_14d_pct_d,
+          stoch_k: front.stoch_9d_pct_k,
+          trend: front.trend_signal
+        };
+      }
+    }
+  }
+  
+  // Fall back to manual market_prices for anything not found
+  const { data: manualPrices, error: manualError } = await supabase
+    .from('market_prices')
+    .select('commodity_id, futures_price, updated_at')
+    .order('price_date', { ascending: false });
+  
+  if (manualPrices && !manualError) {
+    for (const row of manualPrices) {
+      if (!prices[row.commodity_id] && row.futures_price) {
+        prices[row.commodity_id] = {
+          price: row.futures_price,
+          source: 'manual',
+          symbol: null,
+          timestamp: row.updated_at,
+          rsi: null,
+          stoch_d: null,
+          stoch_k: null,
+          trend: null
+        };
+      }
+    }
+  }
+  
+  return prices;
+}
+
+async function upsertMarketPrice(commodityId, price) {
+  const today = new Date().toISOString().split('T')[0];
+  
+  const { data: existing } = await supabase
+    .from('market_prices')
+    .select('id')
+    .eq('commodity_id', commodityId)
+    .eq('price_date', today)
+    .maybeSingle();
+
+  if (existing) {
+    await supabase.from('market_prices').update({ futures_price: price }).eq('id', existing.id);
+  } else {
+    await supabase.from('market_prices').insert([{
+      commodity_id: commodityId,
+      futures_price: price,
+      price_date: today
+    }]);
+  }
+  return true;
+}
+
+// ============================================================================
+// BASIS MANAGEMENT
+// ============================================================================
+
+async function getLocationBasis(cropYear = null) {
+  let query = supabase
+    .from('location_basis')
+    .select(`
+      id, location_id, commodity_id, crop_year, basis, futures_month, notes, updated_at,
+      grain_locations:location_id (id, name, is_basis_reference, basis_reference_location_id, basis_offset),
+      commodities:commodity_id (id, name)
+    `);
+  
+  if (cropYear) {
+    query = query.eq('crop_year', cropYear);
+  }
+  
+  const { data, error } = await query;
+  if (error) { console.error('Error fetching location basis:', error); return []; }
+  return data || [];
+}
+
+async function upsertLocationBasis(locationId, commodityId, cropYear, basis, futuresMonth = null) {
+  const { data: existing } = await supabase
+    .from('location_basis')
+    .select('id')
+    .eq('location_id', locationId)
+    .eq('commodity_id', commodityId)
+    .eq('crop_year', cropYear)
+    .maybeSingle();
+
+  if (existing) {
+    const { error } = await supabase
+      .from('location_basis')
+      .update({ basis, futures_month: futuresMonth, updated_at: new Date().toISOString() })
+      .eq('id', existing.id);
+    if (error) throw error;
+  } else {
+    const { error } = await supabase
+      .from('location_basis')
+      .insert([{ location_id: locationId, commodity_id: commodityId, crop_year: cropYear, basis, futures_month: futuresMonth }]);
+    if (error) throw error;
+  }
+  return true;
+}
+
+async function deleteLocationBasis(id) {
+  const { error } = await supabase.from('location_basis').delete().eq('id', id);
+  if (error) throw error;
+  return true;
+}
+
+async function setReferenceLocation(locationId) {
+  // Clear any existing reference
+  await supabase.from('grain_locations').update({ is_basis_reference: false }).eq('is_basis_reference', true);
+  // Set new reference
+  const { error } = await supabase.from('grain_locations').update({ is_basis_reference: true }).eq('id', locationId);
+  if (error) throw error;
+  return true;
+}
+
+async function setLocationOffset(locationId, referenceLocationId, offset) {
+  const { error } = await supabase
+    .from('grain_locations')
+    .update({ 
+      basis_reference_location_id: referenceLocationId, 
+      basis_offset: offset 
+    })
+    .eq('id', locationId);
+  if (error) throw error;
+  return true;
+}
+
+async function clearLocationOffset(locationId) {
+  const { error } = await supabase
+    .from('grain_locations')
+    .update({ basis_reference_location_id: null, basis_offset: 0 })
+    .eq('id', locationId);
+  if (error) throw error;
+  return true;
+}
+
+// Storage / Locations
+async function getGrainLocations(includeInactive = false) {
+  let query = supabase.from('grain_locations').select('*').order('sort_order');
+  if (!includeInactive) query = query.eq('active', true);
+  const { data: locations, error } = await query;
+  if (error) { console.error('Error fetching grain locations:', error); return []; }
+  if (!locations?.length) return [];
+
+  const { data: links } = await supabase.from('grain_location_buyers').select('location_id, buyer_id');
+  const { data: buyers } = await supabase.from('buyers').select('id, name').eq('active', true);
+  const buyerMap = new Map((buyers || []).map(b => [b.id, b.name]));
+
+  return locations.map(loc => ({
+    ...loc,
+    buyers: (links || [])
+      .filter(l => l.location_id === loc.id)
+      .map(l => ({ buyer_id: l.buyer_id, buyer_name: buyerMap.get(l.buyer_id) || 'Unknown' }))
+  }));
+}
+
+async function createGrainLocation(location) {
+  const { data: maxData } = await supabase
+    .from('grain_locations')
+    .select('sort_order')
+    .order('sort_order', { ascending: false })
+    .limit(1)
+    .single();
+
+  const { data, error } = await supabase
+    .from('grain_locations')
+    .insert([{
+      name: location.name,
+      location_type: location.location_type,
+      is_storage: location.is_storage,
+      is_delivery: location.is_delivery,
+      notes: location.notes || null,
+      active: true,
+      sort_order: (maxData?.sort_order || 0) + 1
+    }])
+    .select()
+    .single();
+
+  if (error) { console.error('Error creating grain location:', error); return null; }
+  return data;
+}
+
+async function updateGrainLocation(id, updates) {
+  const { data, error } = await supabase
+    .from('grain_locations')
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) { console.error('Error updating grain location:', error); return null; }
+  return data;
+}
+
+async function deleteGrainLocation(id) {
+  await supabase.from('grain_location_buyers').delete().eq('location_id', id);
+  const { error } = await supabase.from('grain_locations').delete().eq('id', id);
+  if (error) { console.error('Error deleting grain location:', error); return false; }
+  return true;
+}
+
+async function toggleGrainLocationActive(id, active) {
+  const { error } = await supabase
+    .from('grain_locations')
+    .update({ active, updated_at: new Date().toISOString() })
+    .eq('id', id);
+  if (error) { console.error('Error toggling grain location active:', error); return false; }
+  return true;
+}
+
+async function setLocationBuyers(locationId, buyerIds) {
+  await supabase.from('grain_location_buyers').delete().eq('location_id', locationId);
+  if (buyerIds.length === 0) return true;
+  const { error } = await supabase
+    .from('grain_location_buyers')
+    .insert(buyerIds.map(buyerId => ({ location_id: locationId, buyer_id: buyerId })));
+  if (error) { console.error('Error setting location buyers:', error); return false; }
+  return true;
+}
+
+async function getStorageLocations() {
+  const { data, error } = await supabase
+    .from('grain_locations')
+    .select('*')
+    .eq('active', true)
+    .eq('is_storage', true)
+    .order('sort_order');
+  if (error) return [];
+  return data || [];
+}
+
+async function getDeliveryLocations() {
+  const { data, error } = await supabase
+    .from('grain_locations')
+    .select('*')
+    .eq('active', true)
+    .eq('is_delivery', true)
+    .order('sort_order');
+  if (error) return [];
+  return data || [];
+}
+
+// Inventory
+async function getInventory(cropYear) {
+  let query = supabase
+    .from('grain_inventory')
+    .select(`
+      id, location_id, commodity_id, crop_year, bushels,
+      grain_locations:location_id (name, location_type),
+      commodities:commodity_id (name)
+    `);
+  
+  if (cropYear) query = query.eq('crop_year', cropYear);
+  const { data, error } = await query;
+  if (error) { console.error('Error fetching inventory:', error); return []; }
+
+  return (data || []).map(row => ({
+    id: row.id,
+    location_id: row.location_id,
+    location_name: row.grain_locations?.name || 'Unknown',
+    location_type: row.grain_locations?.location_type || 'COMMERCIAL',
+    commodity_id: row.commodity_id,
+    commodity_name: row.commodities?.name || 'Unknown',
+    crop_year: row.crop_year,
+    bushels: row.bushels
+  }));
+}
+
+async function addToInventory(locationId, commodityId, cropYear, bushels) {
+  const { data: existing } = await supabase
+    .from('grain_inventory')
+    .select('id, bushels')
+    .eq('location_id', locationId)
+    .eq('commodity_id', commodityId)
+    .eq('crop_year', cropYear)
+    .maybeSingle();
+
+  if (existing) {
+    const { error } = await supabase
+      .from('grain_inventory')
+      .update({ bushels: existing.bushels + bushels })
+      .eq('id', existing.id);
+    if (error) return false;
+  } else {
+    const { error } = await supabase
+      .from('grain_inventory')
+      .insert([{ location_id: locationId, commodity_id: commodityId, crop_year: cropYear, bushels }]);
+    if (error) return false;
+  }
+  return true;
+}
+
+async function removeFromInventory(locationId, commodityId, cropYear, bushels) {
+  const { data: existing } = await supabase
+    .from('grain_inventory')
+    .select('id, bushels')
+    .eq('location_id', locationId)
+    .eq('commodity_id', commodityId)
+    .eq('crop_year', cropYear)
+    .maybeSingle();
+
+  if (!existing || existing.bushels < bushels) return false;
+
+  const newBushels = existing.bushels - bushels;
+  if (newBushels <= 0) {
+    await supabase.from('grain_inventory').delete().eq('id', existing.id);
+  } else {
+    await supabase.from('grain_inventory').update({ bushels: newBushels }).eq('id', existing.id);
+  }
+  return true;
+}
+
+// ============================================================================
+// INVENTORY TRANSACTIONS (v1.7.0)
+// Full audit trail for all inventory movements
+// ============================================================================
+
+async function getInventoryTransactions(locationId, commodityId, cropYear) {
+  let query = supabase
+    .from('inventory_transactions')
+    .select(`
+      *,
+      grain_locations:location_id (name),
+      commodities:commodity_id (name)
+    `)
+    .order('transaction_date', { ascending: false })
+    .order('created_at', { ascending: false });
+  
+  if (locationId) query = query.eq('location_id', locationId);
+  if (commodityId) query = query.eq('commodity_id', commodityId);
+  if (cropYear) query = query.eq('crop_year', cropYear);
+  
+  const { data, error } = await query;
+  if (error) { console.error('Error fetching inventory transactions:', error); return []; }
+  
+  return (data || []).map(row => ({
+    ...row,
+    location_name: row.grain_locations?.name || 'Unknown',
+    commodity_name: row.commodities?.name || 'Unknown'
+  }));
+}
+
+async function createInventoryTransaction(transaction) {
+  const { data, error } = await supabase
+    .from('inventory_transactions')
+    .insert([{
+      location_id: transaction.location_id,
+      commodity_id: transaction.commodity_id,
+      crop_year: transaction.crop_year,
+      transaction_type: transaction.transaction_type,
+      bushels: transaction.bushels,
+      transaction_date: transaction.transaction_date || new Date().toISOString().split('T')[0],
+      counterparty: transaction.counterparty || null,
+      reason: transaction.reason || null,
+      ticket_numbers: transaction.ticket_numbers || null,
+      linked_contract_id: transaction.linked_contract_id || null,
+      linked_transaction_id: transaction.linked_transaction_id || null,
+      import_id: transaction.import_id || null,
+      notes: transaction.notes || null
+    }])
+    .select()
+    .single();
+  
+  if (error) { console.error('Error creating inventory transaction:', error); return null; }
+  return data;
+}
+
+// Combined function: update inventory balance AND create transaction record
+async function recordInventoryChange(locationId, commodityId, cropYear, bushels, transactionType, options = {}) {
+  // 1. Update the balance in grain_inventory
+  if (bushels > 0) {
+    await addToInventory(locationId, commodityId, cropYear, bushels);
+  } else if (bushels < 0) {
+    const success = await removeFromInventory(locationId, commodityId, cropYear, Math.abs(bushels));
+    if (!success) {
+      console.error('Failed to remove from inventory - insufficient balance');
+      return null;
+    }
+  }
+  
+  // 2. Create the audit trail transaction
+  const transaction = await createInventoryTransaction({
+    location_id: locationId,
+    commodity_id: commodityId,
+    crop_year: cropYear,
+    transaction_type: transactionType,
+    bushels: bushels,
+    transaction_date: options.transaction_date,
+    counterparty: options.counterparty,
+    reason: options.reason,
+    ticket_numbers: options.ticket_numbers,
+    linked_contract_id: options.linked_contract_id,
+    linked_transaction_id: options.linked_transaction_id,
+    import_id: options.import_id,
+    notes: options.notes
+  });
+  
+  return transaction;
+}
+
+// ============================================================================
+// ELEVATOR LOCATION MAPPINGS (v1.7.0)
+// Map elevator names from POY reports to GrainTrack locations
+// ============================================================================
+
+async function getElevatorMappings() {
+  const { data, error } = await supabase
+    .from('elevator_location_mappings')
+    .select(`
+      *,
+      grain_locations:location_id (id, name)
+    `)
+    .order('elevator_name');
+  
+  if (error) { console.error('Error fetching elevator mappings:', error); return []; }
+  return data || [];
+}
+
+async function createElevatorMapping(elevatorName, locationId) {
+  const { data, error } = await supabase
+    .from('elevator_location_mappings')
+    .insert([{ elevator_name: elevatorName, location_id: locationId }])
+    .select()
+    .single();
+  
+  if (error) { console.error('Error creating elevator mapping:', error); return null; }
+  return data;
+}
+
+async function updateElevatorMapping(id, locationId) {
+  const { data, error } = await supabase
+    .from('elevator_location_mappings')
+    .update({ location_id: locationId })
+    .eq('id', id)
+    .select()
+    .single();
+  
+  if (error) { console.error('Error updating elevator mapping:', error); return null; }
+  return data;
+}
+
+// ============================================================================
+// POY IMPORTS (v1.7.0)
+// Track import batches and prevent duplicate tickets
+// ============================================================================
+
+async function createPoyImport(importData) {
+  const { data, error } = await supabase
+    .from('poy_imports')
+    .insert([{
+      file_name: importData.file_name,
+      crop_year: importData.crop_year,
+      producer_name: importData.producer_name,
+      total_bushels_imported: importData.total_bushels_imported,
+      total_tickets_imported: importData.total_tickets_imported,
+      tickets_skipped: importData.tickets_skipped || 0,
+      commodities_imported: importData.commodities_imported,
+      locations_imported: importData.locations_imported,
+      raw_response: importData.raw_response
+    }])
+    .select()
+    .single();
+  
+  if (error) { console.error('Error creating POY import:', error); return null; }
+  return data;
+}
+
+async function getPoyImports() {
+  const { data, error } = await supabase
+    .from('poy_imports')
+    .select('*')
+    .order('import_date', { ascending: false });
+  
+  if (error) { console.error('Error fetching POY imports:', error); return []; }
+  return data || [];
+}
+
+async function recordImportedTicket(ticket) {
+  const { data, error } = await supabase
+    .from('imported_tickets')
+    .insert([{
+      ticket_number: ticket.ticket_number,
+      import_id: ticket.import_id,
+      delivery_date: ticket.delivery_date,
+      commodity_id: ticket.commodity_id,
+      location_id: ticket.location_id,
+      bushels: ticket.bushels,
+      elevator_name: ticket.elevator_name
+    }])
+    .select()
+    .single();
+  
+  if (error) { 
+    // Likely duplicate - ignore
+    if (error.code === '23505') return null; // unique violation
+    console.error('Error recording imported ticket:', error); 
+    return null; 
+  }
+  return data;
+}
+
+async function checkExistingTickets(ticketNumbers) {
+  if (!ticketNumbers || ticketNumbers.length === 0) return [];
+  
+  const { data, error } = await supabase
+    .from('imported_tickets')
+    .select('ticket_number')
+    .in('ticket_number', ticketNumbers);
+  
+  if (error) { console.error('Error checking existing tickets:', error); return []; }
+  return (data || []).map(t => t.ticket_number);
+}
+
+// ============================================================================
+// CLAUDE API FOR POY PARSING (v1.7.0)
+// ============================================================================
+
+const POY_EXTRACTION_PROMPT = `Extract grain delivery data from this Proof of Yield document.
+
+Return ONLY valid JSON (no markdown, no explanation, no code blocks) in this exact format:
+{
+  "crop_year": 2025,
+  "producer_name": "NAME FROM DOCUMENT",
+  "deliveries": [
+    {
+      "ticket_number": "BI 110366",
+      "date": "2025-10-01",
+      "commodity": "Corn",
+      "location": "Groveland",
+      "your_bushels": 510.89
+    }
+  ],
+  "summary_by_location": [
+    {
+      "commodity": "Corn",
+      "location": "Groveland",
+      "total_your_bushels": 39452.75,
+      "ticket_count": 77
+    }
+  ],
+  "totals_by_commodity": {
+    "Corn": 57357.30,
+    "Soybeans": 20590.25,
+    "Milo": 10985.97
+  }
+}
+
+Important rules:
+1. Extract EVERY ticket number for duplicate detection
+2. Use "Customer Portion" bushels (producer's share after landlord splits)
+3. Location is from section headers like "CORN @ GROVELAND" → "Groveland"
+4. Dates in ISO format (YYYY-MM-DD)
+5. Normalize commodity names: "Corn", "Soybeans", "Milo", "Wheat"
+6. Return ONLY the JSON, nothing else`;
+
+async function parsePoYWithClaude(fileBase64, mimeType) {
+  try {
+    const response = await fetch('/portal/grain/api/claude-proxy.php', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 8192,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              source: {
+                type: 'base64',
+                media_type: mimeType,
+                data: fileBase64
+              }
+            },
+            {
+              type: 'text',
+              text: POY_EXTRACTION_PROMPT
+            }
+          ]
+        }]
+      })
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`API request failed: ${response.status} - ${errorText}`);
+    }
+    
+    const data = await response.json();
+    
+    if (data.error) {
+      throw new Error(data.error.message || 'API error');
+    }
+    
+    // Extract the text content from Claude's response
+    const textContent = data.content?.find(c => c.type === 'text')?.text;
+    if (!textContent) {
+      throw new Error('No text content in response');
+    }
+    
+    // Parse the JSON from Claude's response
+    // Clean up any markdown code blocks if present
+    let jsonStr = textContent.trim();
+    if (jsonStr.startsWith('```')) {
+      jsonStr = jsonStr.replace(/^```json?\n?/, '').replace(/\n?```$/, '');
+    }
+    
+    const parsed = JSON.parse(jsonStr);
+    return { success: true, data: parsed };
+    
+  } catch (error) {
+    console.error('Error parsing POY with Claude:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = reader.result.split(',')[1];
+      resolve(base64);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+// Dashboard data
+async function getDashboardData(cropYear, detailMode = 'combined') {
+  const byPractice = detailMode === 'detailed';
+  
+  const [commodities, productionSummary, contractsSummary, insuranceSettings, marketPrices] = 
+    await Promise.all([
+      getCommodities(),
+      getProductionSummary(cropYear, byPractice),
+      getContractsSummary(cropYear),
+      getInsuranceSettings(cropYear),
+      getLatestMarketPrices()
+    ]);
+
+  const commodityProgress = [];
+
+  for (const commodity of commodities) {
+    // Find matching production entries
+    const productions = productionSummary.filter(p => p.commodity_id === commodity.id);
+    const contracts = contractsSummary.find(c => c.commodity_id === commodity.id);
+    const insurance = insuranceSettings.find(i => i.commodity_id === commodity.id && !i.practice_type);
+    const marketData = marketPrices[commodity.id] || null;
+    const currentMarket = marketData?.price || null;
+
+    // If byPractice is true and there are multiple production entries, show them separately
+    if (byPractice && productions.length > 0) {
+      for (const prod of productions) {
+        let displayName = commodity.name;
+        if (prod.is_irrigated) displayName += ' IR';
+        if (prod.is_double_crop) displayName += ' (DC)';
+        
+        // Try to find practice-specific insurance
+        let practiceInsurance = insurance;
+        if (prod.is_double_crop) {
+          practiceInsurance = insuranceSettings.find(i => 
+            i.commodity_id === commodity.id && i.practice_type === 'DC'
+          ) || insuranceSettings.find(i => 
+            i.commodity_id === commodity.id && i.practice_type === 'FS'
+          ) || insurance;
+        } else if (prod.is_irrigated) {
+          practiceInsurance = insuranceSettings.find(i => 
+            i.commodity_id === commodity.id && i.practice_type === 'IR'
+          ) || insuranceSettings.find(i => 
+            i.commodity_id === commodity.id && i.practice_type === 'DL'
+          ) || insurance;
+        }
+
+        const expectedProduction = prod.expected_production || 0;
+        const actualProduction = prod.actual_production || null;
+        
+        // Contracts are still at commodity level
+        const totalProductions = productions.reduce((sum, p) => sum + (p.expected_production || 0), 0);
+        const bushelsSold = totalProductions > 0 
+          ? Math.round((expectedProduction / totalProductions) * (contracts?.bushels_contracted || 0))
+          : 0;
+        
+        const coverageLevel = practiceInsurance?.coverage_level || 0.75;
+        const insuranceProduction = expectedProduction * coverageLevel;
+
+        const percentExpected = expectedProduction > 0 ? Math.min((bushelsSold / expectedProduction) * 100, 100) : 0;
+        const percentActual = actualProduction !== null && actualProduction > 0 
+          ? Math.min((bushelsSold / actualProduction) * 100, 100) : null;
+        const percentInsurance = insuranceProduction > 0 
+          ? Math.min((bushelsSold / insuranceProduction) * 100, 100) : 0;
+
+        const weightedAvg = contracts?.weighted_avg_price || null;
+        let blendedAvg = null;
+        if (expectedProduction > 0 && (weightedAvg || currentMarket)) {
+          const unsoldBu = Math.max(0, expectedProduction - bushelsSold);
+          blendedAvg = ((bushelsSold * (weightedAvg || 0)) + (unsoldBu * (currentMarket || 0))) / expectedProduction;
+        }
+
+        commodityProgress.push({
+          commodity_id: commodity.id,
+          commodity_name: commodity.name,
+          is_irrigated: prod.is_irrigated,
+          is_double_crop: prod.is_double_crop,
+          display_name: displayName,
+          crop_year: cropYear,
+          expected_production: expectedProduction,
+          actual_production: actualProduction,
+          insurance_production: insuranceProduction,
+          bushels_contracted: bushelsSold,
+          percent_expected: percentExpected,
+          percent_actual: percentActual,
+          percent_insurance: percentInsurance,
+          weighted_avg_price: weightedAvg,
+          blended_avg_price: blendedAvg,
+          current_market_price: currentMarket,
+          market_source: marketData?.source || null,
+          market_symbol: marketData?.symbol || null,
+          market_timestamp: marketData?.timestamp || null,
+          market_rsi: marketData?.rsi || null,
+          market_stoch_d: marketData?.stoch_d || null,
+          market_stoch_k: marketData?.stoch_k || null,
+          market_trend: marketData?.trend || null,
+          contracts_by_type: contracts?.contracts_by_type || {
+            CASH: { count: 0, bushels: 0 },
+            FUTURES: { count: 0, bushels: 0 },
+            OPTIONS: { count: 0, bushels: 0 },
+            HTA: { count: 0, bushels: 0 },
+            BASIS: { count: 0, bushels: 0 }
+          }
+        });
+      }
+    } else {
+      // Combined view - one row per commodity
+      const production = productions.reduce((sum, p) => ({
+        expected: (sum.expected || 0) + (p.expected_production || 0),
+        actual: p.actual_production !== null ? (sum.actual || 0) + p.actual_production : sum.actual
+      }), { expected: 0, actual: null });
+
+      const expectedProduction = production.expected || 0;
+      const actualProduction = production.actual;
+      const bushelsSold = contracts?.bushels_contracted || 0;
+      
+      const coverageLevel = insurance?.coverage_level || 0.75;
+      const insuranceProduction = expectedProduction * coverageLevel;
+
+      const percentExpected = expectedProduction > 0 ? Math.min((bushelsSold / expectedProduction) * 100, 100) : 0;
+      const percentActual = actualProduction !== null && actualProduction > 0 
+        ? Math.min((bushelsSold / actualProduction) * 100, 100) : null;
+      const percentInsurance = insuranceProduction > 0 
+        ? Math.min((bushelsSold / insuranceProduction) * 100, 100) : 0;
+
+      const weightedAvg = contracts?.weighted_avg_price || null;
+      let blendedAvg = null;
+      if (expectedProduction > 0 && (weightedAvg || currentMarket)) {
+        const unsoldBu = Math.max(0, expectedProduction - bushelsSold);
+        blendedAvg = ((bushelsSold * (weightedAvg || 0)) + (unsoldBu * (currentMarket || 0))) / expectedProduction;
+      }
+
+      if (expectedProduction > 0 || bushelsSold > 0) {
+        commodityProgress.push({
+          commodity_id: commodity.id,
+          commodity_name: commodity.name,
+          is_irrigated: null,
+          is_double_crop: null,
+          display_name: commodity.name,
+          crop_year: cropYear,
+          expected_production: expectedProduction,
+          actual_production: actualProduction,
+          insurance_production: insuranceProduction,
+          bushels_contracted: bushelsSold,
+          percent_expected: percentExpected,
+          percent_actual: percentActual,
+          percent_insurance: percentInsurance,
+          weighted_avg_price: weightedAvg,
+          blended_avg_price: blendedAvg,
+          current_market_price: currentMarket,
+          market_source: marketData?.source || null,
+          market_symbol: marketData?.symbol || null,
+          market_timestamp: marketData?.timestamp || null,
+          market_rsi: marketData?.rsi || null,
+          market_stoch_d: marketData?.stoch_d || null,
+          market_stoch_k: marketData?.stoch_k || null,
+          market_trend: marketData?.trend || null,
+          contracts_by_type: contracts?.contracts_by_type || {
+            CASH: { count: 0, bushels: 0 },
+            FUTURES: { count: 0, bushels: 0 },
+            OPTIONS: { count: 0, bushels: 0 },
+            HTA: { count: 0, bushels: 0 },
+            BASIS: { count: 0, bushels: 0 }
+          }
+        });
+      }
+    }
+  }
+
+  const totalExpected = commodityProgress.reduce((sum, c) => sum + c.expected_production, 0);
+  const totalContracted = commodityProgress.reduce((sum, c) => sum + c.bushels_contracted, 0);
+  const totalPercent = totalExpected > 0 ? (totalContracted / totalExpected) * 100 : 0;
+
+  return {
+    crop_year: cropYear,
+    commodities: commodityProgress,
+    total_expected: totalExpected,
+    total_contracted: totalContracted,
+    total_percent: totalPercent,
+    market_prices: marketPrices
+  };
+}
+
+// ============================================================================
+// PAGES
+// ============================================================================
+
+// Navigation items
+const navItems = [
+  { id: 'dashboard', label: 'Dashboard', icon: 'layout-dashboard' },
+  { id: 'add-sale', label: 'Add Sale', icon: 'plus-circle' },
+  { id: 'contracts', label: 'Contracts', icon: 'file-text' },
+  { id: 'production', label: 'Production', icon: 'wheat' },
+  { id: 'inventory', label: 'Inventory', icon: 'package' },
+  { id: 'insurance', label: 'Insurance', icon: 'shield' },
+  { id: 'buyers', label: 'Buyers', icon: 'building-2' },
+  { id: 'storage', label: 'Storage', icon: 'warehouse' },
+  { id: 'basis', label: 'Basis', icon: 'trending-up' },
+  { id: 'settings', label: 'Settings', icon: 'settings' }
+];
+
+// Dashboard Page
+function DashboardPage({ cropYear, onYearChange }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [viewMode, setViewMode] = useState(() => localStorage.getItem('graintrack_viewmode') || 'expected');
+  const [detailMode, setDetailMode] = useState(() => localStorage.getItem('graintrack_detailmode') || 'combined');
+  const [editingPrice, setEditingPrice] = useState(null);
+  const [tempPrice, setTempPrice] = useState('');
+
+  const currentYear = new Date().getFullYear();
+  const cropYears = [currentYear - 1, currentYear, currentYear + 1, currentYear + 2];
+
+  const commodityColors = {
+    'Corn': { bg: 'bg-amber-100', fill: 'bg-amber-500', text: 'text-amber-700' },
+    'Soybeans': { bg: 'bg-emerald-100', fill: 'bg-emerald-500', text: 'text-emerald-700' },
+    'Wheat': { bg: 'bg-violet-100', fill: 'bg-violet-500', text: 'text-violet-700' },
+    'Milo': { bg: 'bg-red-100', fill: 'bg-red-500', text: 'text-red-700' }
+  };
+  const defaultColors = { bg: 'bg-gray-100', fill: 'bg-gray-500', text: 'text-gray-700' };
+
+  const loadData = async () => {
+    setLoading(true);
+    const dashboardData = await getDashboardData(cropYear, detailMode);
+    setData(dashboardData);
+    setLoading(false);
+  };
+
+  useEffect(() => { loadData(); }, [cropYear, detailMode]);
+  useEffect(() => { localStorage.setItem('graintrack_viewmode', viewMode); }, [viewMode]);
+  useEffect(() => { localStorage.setItem('graintrack_detailmode', detailMode); }, [detailMode]);
+
+  const handleSavePrice = async (commodityId) => {
+    const price = parseFloat(tempPrice);
+    if (!isNaN(price) && price >= 0) {
+      await upsertMarketPrice(commodityId, price);
+      await loadData();
+    }
+    setEditingPrice(null);
+    setTempPrice('');
+  };
+
+  const getProgressPercent = (c) => {
+    switch (viewMode) {
+      case 'actual': return c.percent_actual ?? c.percent_expected;
+      case 'insurance': return c.percent_insurance;
+      default: return c.percent_expected;
+    }
+  };
+
+  const formatNumber = (n) => n == null ? '-' : n.toLocaleString('en-US', { maximumFractionDigits: 0 });
+  const formatPrice = (n) => n == null || n === 0 ? '-' : '$' + n.toFixed(2);
+  const formatPercent = (n) => n == null ? '-' : n.toFixed(1) + '%';
+
+  if (loading) {
+    return <div className="flex items-center justify-center h-64"><Icon name="refresh-cw" className="animate-spin text-amber-600" size={32} /></div>;
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
+          <p className="text-sm text-gray-500 mt-1">Marketing progress overview</p>
+        </div>
+        <div className="flex items-center gap-3 flex-wrap">
+          <select value={cropYear} onChange={(e) => onYearChange(parseInt(e.target.value))}
+            className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium focus:ring-2 focus:ring-amber-500">
+            {cropYears.map(year => <option key={year} value={year}>{year} Crop Year</option>)}
+          </select>
+          <div className="flex rounded-lg border border-gray-200 overflow-hidden">
+            {['expected', 'actual', 'insurance'].map(mode => (
+              <button key={mode} onClick={() => setViewMode(mode)}
+                className={`px-3 py-1.5 text-sm font-medium transition-colors ${
+                  viewMode === mode ? 'bg-amber-500 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
+                } ${mode !== 'expected' ? 'border-l border-gray-200' : ''}`}>
+                {mode === 'expected' ? 'Expected' : mode === 'actual' ? 'Actual' : 'Insurance'}
+              </button>
+            ))}
+          </div>
+          <div className="flex rounded-lg border border-gray-200 overflow-hidden">
+            <button onClick={() => setDetailMode('combined')}
+              className={`px-3 py-1.5 text-sm font-medium transition-colors ${
+                detailMode === 'combined' ? 'bg-blue-500 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
+              Combined
+            </button>
+            <button onClick={() => setDetailMode('detailed')}
+              className={`px-3 py-1.5 text-sm font-medium transition-colors border-l border-gray-200 ${
+                detailMode === 'detailed' ? 'bg-blue-500 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
+              By Practice
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Summary */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-amber-100 rounded-lg"><Icon name="trending-up" size={20} className="text-amber-600" /></div>
+            <div>
+              <p className="text-sm text-gray-500">Total Expected</p>
+              <p className="text-xl font-bold text-gray-900">{formatNumber(data?.total_expected)} bu</p>
+            </div>
+          </div>
+        </div>
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-green-100 rounded-lg"><Icon name="check-circle" size={20} className="text-green-600" /></div>
+            <div>
+              <p className="text-sm text-gray-500">Total Contracted</p>
+              <p className="text-xl font-bold text-gray-900">{formatNumber(data?.total_contracted)} bu</p>
+            </div>
+          </div>
+        </div>
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-blue-100 rounded-lg"><Icon name="bar-chart-3" size={20} className="text-blue-600" /></div>
+            <div>
+              <p className="text-sm text-gray-500">Overall Sold</p>
+              <p className="text-xl font-bold text-gray-900">{formatPercent(data?.total_percent)}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Commodity Cards */}
+      <div className="space-y-4">
+        {(data?.commodities || []).map(c => {
+          const colors = commodityColors[c.commodity_name] || defaultColors;
+          const percent = getProgressPercent(c);
+          
+          return (
+            <div key={`${c.commodity_id}-${c.is_irrigated}-${c.is_double_crop}`} className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-3">
+                  <span className={`text-lg font-bold ${colors.text}`}>{c.display_name}</span>
+                  <span className="text-sm text-gray-500">{formatNumber(c.bushels_contracted)} / {formatNumber(c.expected_production)} bu</span>
+                </div>
+                <div className="flex items-center gap-4 text-sm">
+                  <div className="text-right">
+                    <p className="text-gray-500">Weighted Avg</p>
+                    <p className="font-semibold">{formatPrice(c.weighted_avg_price)}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-gray-500">Blended</p>
+                    <p className="font-semibold">{formatPrice(c.blended_avg_price)}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-gray-500 flex items-center justify-end gap-1">
+                      Market
+                      {c.market_source === 'barchart' && (
+                        <span className="text-green-500 text-xs" title={`From Barchart: ${c.market_symbol}`}>â—</span>
+                      )}
+                    </p>
+                    {editingPrice === c.commodity_id ? (
+                      <div className="flex items-center gap-1">
+                        <input type="number" step="0.01" value={tempPrice} onChange={(e) => setTempPrice(e.target.value)}
+                          className="w-16 px-1 py-0.5 text-right border rounded text-sm" autoFocus />
+                        <button onClick={() => handleSavePrice(c.commodity_id)} className="text-green-600"><Icon name="check" size={14} /></button>
+                        <button onClick={() => { setEditingPrice(null); setTempPrice(''); }} className="text-gray-400"><Icon name="x" size={14} /></button>
+                      </div>
+                    ) : (
+                      <div>
+                        <p className="font-semibold cursor-pointer hover:text-amber-600" 
+                          onClick={() => { setEditingPrice(c.commodity_id); setTempPrice(c.current_market_price?.toString() || ''); }}>
+                          {formatPrice(c.current_market_price)}
+                        </p>
+                        {c.market_source === 'barchart' && c.market_timestamp && (
+                          <p className="text-xs text-gray-400">
+                            {new Date(c.market_timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  {/* Technicals from Barchart */}
+                  {c.market_source === 'barchart' && (
+                    <div className="text-right border-l pl-4 ml-2">
+                      <p className="text-gray-500 text-xs">RSI / Stoch</p>
+                      <div className="flex items-center justify-end gap-1">
+                        <span className={`font-medium ${c.market_rsi > 70 ? 'text-red-600' : c.market_rsi < 30 ? 'text-green-600' : 'text-gray-700'}`}>
+                          {c.market_rsi?.toFixed(0) || '-'}
+                        </span>
+                        <span className="text-gray-300">/</span>
+                        <span className={`font-medium ${c.market_stoch_d > 80 ? 'text-red-600' : c.market_stoch_d < 20 ? 'text-green-600' : 'text-gray-700'}`}>
+                          {c.market_stoch_d?.toFixed(0) || '-'}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+              
+              {/* Progress bar */}
+              <div className="relative">
+                <div className={`h-6 rounded-full ${colors.bg} overflow-hidden`}>
+                  <div className={`h-full ${colors.fill} rounded-full transition-all duration-300`} style={{ width: `${Math.min(percent, 100)}%` }} />
+                </div>
+                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-sm font-bold text-gray-700">{formatPercent(percent)}</span>
+              </div>
+
+              {/* Contract summary */}
+              <div className="mt-3 flex gap-4 text-xs text-gray-500">
+                {Object.entries(c.contracts_by_type).map(([type, data]) => (
+                  data.count > 0 && <span key={type}>{type}: {data.count} ({formatNumber(data.bushels)} bu)</span>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+
+        {(!data?.commodities || data.commodities.length === 0) && (
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center text-gray-500">
+            No production data for {cropYear}. Add crops in the Production page.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Add Sale Page
+function AddSalePage({ cropYear, onSuccess }) {
+  const [commodities, setCommodities] = useState([]);
+  const [buyers, setBuyers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState(null);
+
+  const [contractType, setContractType] = useState('CASH');
+  const [commodityId, setCommodityId] = useState('');
+  const [bushels, setBushels] = useState('');
+  const [buyerId, setBuyerId] = useState('');
+  const [cashPrice, setCashPrice] = useState('');
+  const [futuresPrice, setFuturesPrice] = useState('');
+  const [expectedBasis, setExpectedBasis] = useState('');
+  const [basis, setBasis] = useState('');
+  const [optionType, setOptionType] = useState('PUT');
+  const [strikePrice, setStrikePrice] = useState('');
+  const [premium, setPremium] = useState('');
+  const [futuresMonth, setFuturesMonth] = useState('');
+  const [deliveryStart, setDeliveryStart] = useState('');
+  const [deliveryEnd, setDeliveryEnd] = useState('');
+  const [contractNumber, setContractNumber] = useState('');
+  const [notes, setNotes] = useState('');
+
+  useEffect(() => {
+    async function load() {
+      const [comms, buys] = await Promise.all([getCommodities(), getBuyers()]);
+      setCommodities(comms);
+      setBuyers(buys);
+      if (comms.length > 0) setCommodityId(comms[0].id);
+      setLoading(false);
+    }
+    load();
+  }, []);
+
+  const resetForm = () => {
+    setContractType('CASH');
+    if (commodities.length > 0) setCommodityId(commodities[0].id);
+    setBushels('');
+    setBuyerId('');
+    setCashPrice('');
+    setFuturesPrice('');
+    setExpectedBasis('');
+    setBasis('');
+    setOptionType('PUT');
+    setStrikePrice('');
+    setPremium('');
+    setFuturesMonth('');
+    setDeliveryStart('');
+    setDeliveryEnd('');
+    setContractNumber('');
+    setNotes('');
+  };
+
+  const getFuturesMonthOptions = () => {
+    const months = [];
+    const now = new Date();
+    for (let i = 0; i < 24; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+      months.push(d.toLocaleDateString('en-US', { year: 'numeric', month: 'short' }));
+    }
+    return months;
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!commodityId || !bushels) {
+      setMessage({ type: 'error', text: 'Commodity and bushels are required' });
+      return;
+    }
+
+    setSaving(true);
+    const contract = {
+      contract_type: contractType,
+      crop_year: cropYear,
+      commodity_id: commodityId,
+      bushels: parseInt(bushels),
+      buyer_id: buyerId || null,
+      cash_price: cashPrice ? parseFloat(cashPrice) : null,
+      futures_price: futuresPrice ? parseFloat(futuresPrice) : null,
+      expected_basis: expectedBasis ? parseFloat(expectedBasis) : null,
+      basis: basis ? parseFloat(basis) : null,
+      option_type: contractType === 'OPTIONS' ? optionType : null,
+      strike_price: strikePrice ? parseFloat(strikePrice) : null,
+      premium: premium ? parseFloat(premium) : null,
+      futures_month: futuresMonth || null,
+      delivery_start: deliveryStart || null,
+      delivery_end: deliveryEnd || null,
+      contract_number: contractNumber || null,
+      notes: notes || null
+    };
+
+    const result = await createContract(contract);
+    if (result) {
+      setMessage({ type: 'success', text: 'Contract created successfully!' });
+      resetForm();
+      setTimeout(() => onSuccess?.(), 1500);
+    } else {
+      setMessage({ type: 'error', text: 'Failed to create contract' });
+    }
+    setSaving(false);
+    setTimeout(() => setMessage(null), 3000);
+  };
+
+  if (loading) return <div className="flex items-center justify-center h-64"><Icon name="refresh-cw" className="animate-spin text-amber-600" size={32} /></div>;
+
+  return (
+    <div className="max-w-2xl mx-auto">
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold text-gray-900">Add New Sale</h1>
+        <p className="text-sm text-gray-500 mt-1">Create a new contract for {cropYear} crop year</p>
+      </div>
+
+      {message && (
+        <div className={`mb-4 px-4 py-3 rounded-lg flex items-center gap-2 text-sm ${
+          message.type === 'success' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+          <Icon name={message.type === 'success' ? 'check' : 'x'} size={16} />
+          {message.text}
+        </div>
+      )}
+
+      <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 space-y-4">
+        {/* Contract Type */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">Contract Type</label>
+          <div className="grid grid-cols-5 gap-2">
+            {['CASH', 'FUTURES', 'OPTIONS', 'HTA', 'BASIS'].map(type => (
+              <button key={type} type="button" onClick={() => setContractType(type)}
+                className={`py-2 px-3 rounded-lg text-sm font-medium border ${
+                  contractType === type ? 'bg-amber-500 text-white border-amber-500' : 'bg-white text-gray-700 border-gray-300'}`}>
+                {type}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Commodity */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Commodity *</label>
+          <select value={commodityId} onChange={(e) => setCommodityId(e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500">
+            {commodities.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
+
+        {/* Bushels */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Bushels *</label>
+          <input type="number" value={bushels} onChange={(e) => setBushels(e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" required />
+        </div>
+
+        {/* Buyer */}
+        {['CASH', 'HTA', 'BASIS'].includes(contractType) && (
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Buyer</label>
+            <select value={buyerId} onChange={(e) => setBuyerId(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500">
+              <option value="">Select buyer...</option>
+              {buyers.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+          </div>
+        )}
+
+        {/* Cash Price */}
+        {contractType === 'CASH' && (
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Cash Price ($/bu)</label>
+            <input type="number" step="0.01" value={cashPrice} onChange={(e) => setCashPrice(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" />
+          </div>
+        )}
+
+        {/* Futures/HTA */}
+        {['FUTURES', 'HTA'].includes(contractType) && (
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Futures Price ($/bu)</label>
+              <input type="number" step="0.01" value={futuresPrice} onChange={(e) => setFuturesPrice(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Expected Basis</label>
+              <input type="number" step="0.01" value={expectedBasis} onChange={(e) => setExpectedBasis(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" />
+            </div>
+          </div>
+        )}
+
+        {/* Basis Contract */}
+        {contractType === 'BASIS' && (
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Basis ($/bu)</label>
+            <input type="number" step="0.01" value={basis} onChange={(e) => setBasis(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" />
+          </div>
+        )}
+
+        {/* Options */}
+        {contractType === 'OPTIONS' && (
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Option Type</label>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setOptionType('PUT')}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium border ${
+                    optionType === 'PUT' ? 'bg-amber-500 text-white border-amber-500' : 'bg-white text-gray-700 border-gray-300'}`}>
+                  PUT
+                </button>
+                <button type="button" onClick={() => setOptionType('CALL')}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium border ${
+                    optionType === 'CALL' ? 'bg-amber-500 text-white border-amber-500' : 'bg-white text-gray-700 border-gray-300'}`}>
+                  CALL
+                </button>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Strike Price</label>
+                <input type="number" step="0.01" value={strikePrice} onChange={(e) => setStrikePrice(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Premium Paid</label>
+                <input type="number" step="0.01" value={premium} onChange={(e) => setPremium(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Futures Month */}
+        {['FUTURES', 'OPTIONS', 'HTA', 'BASIS'].includes(contractType) && (
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Futures Month</label>
+            <select value={futuresMonth} onChange={(e) => setFuturesMonth(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500">
+              <option value="">Select month...</option>
+              {getFuturesMonthOptions().map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </div>
+        )}
+
+        {/* Delivery Window */}
+        {['CASH', 'HTA', 'BASIS'].includes(contractType) && (
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Delivery Start</label>
+              <input type="date" value={deliveryStart} onChange={(e) => setDeliveryStart(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Delivery End</label>
+              <input type="date" value={deliveryEnd} onChange={(e) => setDeliveryEnd(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" />
+            </div>
+          </div>
+        )}
+
+        {/* Contract Number */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Contract Number</label>
+          <input type="text" value={contractNumber} onChange={(e) => setContractNumber(e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" />
+        </div>
+
+        {/* Notes */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
+          <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" />
+        </div>
+
+        {/* Submit */}
+        <div className="flex justify-end gap-3 pt-4 border-t border-gray-200">
+          <button type="button" onClick={resetForm} className="px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg">Clear</button>
+          <button type="submit" disabled={saving}
+            className="flex items-center gap-2 px-6 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 disabled:opacity-50">
+            {saving ? <Icon name="refresh-cw" className="animate-spin" size={16} /> : <Icon name="save" size={16} />}
+            Create Contract
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+// Contracts Page
+function ContractsPage({ cropYear, onYearChange }) {
+  const [contracts, setContracts] = useState([]);
+  const [commodities, setCommodities] = useState([]);
+  const [buyers, setBuyers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filterCommodity, setFilterCommodity] = useState('');
+  const [filterType, setFilterType] = useState('');
+
+  const currentYear = new Date().getFullYear();
+  const cropYears = [currentYear - 1, currentYear, currentYear + 1, currentYear + 2];
+
+  const loadData = async () => {
+    setLoading(true);
+    const [cons, comms, buys] = await Promise.all([
+      getContracts(cropYear),
+      getCommodities(),
+      getBuyers()
+    ]);
+    setContracts(cons);
+    setCommodities(comms);
+    setBuyers(buys);
+    setLoading(false);
+  };
+
+  useEffect(() => { loadData(); }, [cropYear]);
+
+  const handleDelete = async (id) => {
+    if (!confirm('Cancel this contract?')) return;
+    await deleteContract(id);
+    loadData();
+  };
+
+  const filteredContracts = contracts.filter(c => {
+    if (filterCommodity && c.commodity_id !== filterCommodity) return false;
+    if (filterType && c.contract_type !== filterType) return false;
+    return true;
+  });
+
+  const formatNumber = (n) => n?.toLocaleString() || '-';
+  const formatPrice = (n) => n ? '$' + n.toFixed(2) : '-';
+  const formatDelivery = (c) => {
+    if (c.delivery_start && c.delivery_end) return `${c.delivery_start} - ${c.delivery_end}`;
+    if (c.delivery_start) return c.delivery_start;
+    if (c.futures_month) return c.futures_month;
+    return '-';
+  };
+
+  if (loading) return <div className="flex items-center justify-center h-64"><Icon name="refresh-cw" className="animate-spin text-amber-600" size={32} /></div>;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Contracts</h1>
+          <p className="text-sm text-gray-500 mt-1">View and manage grain contracts</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <select value={filterCommodity} onChange={(e) => setFilterCommodity(e.target.value)}
+            className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-500">
+            <option value="">All Commodities</option>
+            {commodities.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          <select value={filterType} onChange={(e) => setFilterType(e.target.value)}
+            className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-500">
+            <option value="">All Types</option>
+            {['CASH', 'FUTURES', 'OPTIONS', 'HTA', 'BASIS'].map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+          <select value={cropYear} onChange={(e) => onYearChange(parseInt(e.target.value))}
+            className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium focus:ring-2 focus:ring-amber-500">
+            {cropYears.map(year => <option key={year} value={year}>{year}</option>)}
+          </select>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th className="text-left px-4 py-3 font-semibold text-gray-700">Date</th>
+                <th className="text-left px-4 py-3 font-semibold text-gray-700">Type</th>
+                <th className="text-left px-4 py-3 font-semibold text-gray-700">Commodity</th>
+                <th className="text-right px-4 py-3 font-semibold text-gray-700">Bushels</th>
+                <th className="text-right px-4 py-3 font-semibold text-gray-700">Price</th>
+                <th className="text-left px-4 py-3 font-semibold text-gray-700">Buyer</th>
+                <th className="text-left px-4 py-3 font-semibold text-gray-700">Delivery</th>
+                <th className="text-center px-4 py-3 font-semibold text-gray-700">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {filteredContracts.map(c => (
+                <tr key={c.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3 text-gray-600">{c.contract_date}</td>
+                  <td className="px-4 py-3">
+                    <span className={`px-2 py-1 rounded text-xs font-medium ${
+                      c.contract_type === 'CASH' ? 'bg-green-100 text-green-700' :
+                      c.contract_type === 'FUTURES' ? 'bg-blue-100 text-blue-700' :
+                      c.contract_type === 'OPTIONS' ? 'bg-purple-100 text-purple-700' :
+                      c.contract_type === 'HTA' ? 'bg-amber-100 text-amber-700' :
+                      'bg-gray-100 text-gray-700'
+                    }`}>{c.contract_type}</span>
+                  </td>
+                  <td className="px-4 py-3 font-medium text-gray-900">{c.commodity_name}</td>
+                  <td className="px-4 py-3 text-right text-gray-900">{formatNumber(c.bushels)}</td>
+                  <td className="px-4 py-3 text-right font-medium text-gray-900">{formatPrice(c.effective_price)}</td>
+                  <td className="px-4 py-3 text-gray-600">{c.buyer_name || '-'}</td>
+                  <td className="px-4 py-3 text-gray-600">{formatDelivery(c)}</td>
+                  <td className="px-4 py-3 text-center">
+                    <button onClick={() => handleDelete(c.id)} className="p-1.5 text-red-500 hover:bg-red-50 rounded" title="Cancel">
+                      <Icon name="trash-2" size={16} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {filteredContracts.length === 0 && (
+          <div className="p-8 text-center text-gray-500">
+            <Icon name="file-text" size={48} className="mx-auto mb-4 text-gray-300" />
+            <p>No contracts found for {cropYear}</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Production Page
+function ProductionPage({ cropYear, onYearChange }) {
+  const [commodities, setCommodities] = useState([]);
+  const [fields, setFields] = useState([]);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState(null);
+  const [addingToField, setAddingToField] = useState(null);
+  const [newCrop, setNewCrop] = useState({ commodity_id: '', planted_acres: '', estimated_yield: '', share_override: '', is_irrigated: false, is_double_crop: false });
+  const [collapsedFarms, setCollapsedFarms] = useState(new Set());
+
+  const currentYear = new Date().getFullYear();
+  const cropYears = [currentYear - 1, currentYear, currentYear + 1, currentYear + 2];
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    const [comms, flds] = await Promise.all([getCommodities(), getFieldsForGrain()]);
+    setCommodities(comms);
+    setFields(flds);
+    setLoading(false);
+  }, []);
+
+  const loadProduction = useCallback(async () => {
+    const production = await getProductionByCropYear(cropYear);
+    setRows(production.map(r => ({ ...r, isModified: false })));
+  }, [cropYear]);
+
+  useEffect(() => { loadData(); }, []);
+  useEffect(() => { loadProduction(); }, [cropYear, fields.length]);
+
+  const handleStartAddCrop = (fieldId) => {
+    const field = fields.find(f => f.id === fieldId);
+    setAddingToField(fieldId);
+    setNewCrop({
+      commodity_id: commodities[0]?.id || '',
+      planted_acres: field?.acres?.toString() || '',
+      estimated_yield: '',
+      share_override: '',
+      is_irrigated: false,
+      is_double_crop: false
+    });
+  };
+
+  const handleCancelAddCrop = () => {
+    setAddingToField(null);
+    setNewCrop({ commodity_id: '', planted_acres: '', estimated_yield: '', share_override: '', is_irrigated: false, is_double_crop: false });
+  };
+
+  const handleAddCrop = async (fieldId) => {
+    if (!newCrop.commodity_id || !newCrop.planted_acres || !newCrop.estimated_yield) {
+      setMessage({ type: 'error', text: 'Please fill in Crop, Acres, and Yield' });
+      setTimeout(() => setMessage(null), 3000);
+      return;
+    }
+
+    setSaving(true);
+    const result = await createCropEntry({
+      field_id: fieldId,
+      crop_year: cropYear,
+      commodity_id: newCrop.commodity_id,
+      planted_acres: parseFloat(newCrop.planted_acres),
+      estimated_yield: parseFloat(newCrop.estimated_yield),
+      share_override: newCrop.share_override ? parseFloat(newCrop.share_override) : null,
+      is_irrigated: newCrop.is_irrigated,
+      is_double_crop: newCrop.is_double_crop
+    });
+
+    if (result) {
+      setMessage({ type: 'success', text: 'Crop added successfully' });
+      handleCancelAddCrop();
+      await loadProduction();
+    } else {
+      setMessage({ type: 'error', text: 'Failed to add crop' });
+    }
+    setSaving(false);
+    setTimeout(() => setMessage(null), 3000);
+  };
+
+  const handleCellChange = (rowId, field, value) => {
+    setRows(prev => prev.map(row => {
+      if (row.id !== rowId) return row;
+      const updated = { ...row, [field]: value, isModified: true };
+      const effectiveShare = updated.share_override ?? updated.effective_share;
+      updated.expected_marketable = (updated.planted_acres || 0) * (updated.estimated_yield || 0) * effectiveShare;
+      updated.actual_marketable = updated.actual_production !== null ? updated.actual_production * effectiveShare : null;
+      
+      // Update display name
+      let displayName = updated.commodity_name;
+      if (updated.is_irrigated) displayName += ' IR';
+      if (updated.is_double_crop) displayName += ' (DC)';
+      updated.display_name = displayName;
+      
+      return updated;
+    }));
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setMessage(null);
+
+    const modifiedRows = rows.filter(r => r.isModified);
+    let successCount = 0;
+    let errorCount = 0;
+
+    for (const row of modifiedRows) {
+      const result = await updateProduction(row.id, {
+        planted_acres: row.planted_acres,
+        estimated_yield: row.estimated_yield,
+        actual_production: row.actual_production,
+        share_override: row.share_override,
+        is_irrigated: row.is_irrigated,
+        is_double_crop: row.is_double_crop,
+        status: row.status,
+        notes: row.notes
+      });
+      if (result) successCount++; else errorCount++;
+    }
+
+    if (errorCount > 0) setMessage({ type: 'error', text: `Saved ${successCount} rows, ${errorCount} failed` });
+    else if (successCount > 0) setMessage({ type: 'success', text: `Saved ${successCount} rows successfully` });
+
+    await loadProduction();
+    setSaving(false);
+    setTimeout(() => setMessage(null), 3000);
+  };
+
+  const handleDelete = async (row) => {
+    if (!confirm(`Delete ${row.display_name} on ${row.field_name}?`)) return;
+    const success = await deleteProduction(row.id);
+    if (success) {
+      setMessage({ type: 'success', text: 'Crop deleted' });
+      await loadProduction();
+    } else {
+      setMessage({ type: 'error', text: 'Failed to delete' });
+    }
+    setTimeout(() => setMessage(null), 3000);
+  };
+
+  const toggleFarm = (farmName) => {
+    setCollapsedFarms(prev => {
+      const next = new Set(prev);
+      if (next.has(farmName)) next.delete(farmName); else next.add(farmName);
+      return next;
+    });
+  };
+
+  const hasModifiedRows = rows.some(r => r.isModified);
+  const fieldsByFarm = fields.reduce((acc, field) => {
+    if (!acc[field.farm_name]) acc[field.farm_name] = [];
+    acc[field.farm_name].push(field);
+    return acc;
+  }, {});
+  const getCropsForField = (fieldId) => rows.filter(r => r.field_id === fieldId);
+
+  // Check if selected commodity is Corn (hide double crop checkbox)
+  const selectedCommodity = commodities.find(c => c.id === newCrop.commodity_id);
+  const isCorn = selectedCommodity?.name === 'Corn';
+
+  if (loading && fields.length === 0) {
+    return <div className="flex items-center justify-center h-64"><Icon name="refresh-cw" className="animate-spin text-amber-600" size={32} /></div>;
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Production Planning</h1>
+          <p className="text-sm text-gray-500 mt-1">Enter crop plans and harvest results by field</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <select value={cropYear} onChange={(e) => onYearChange(parseInt(e.target.value))}
+            className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium focus:ring-2 focus:ring-amber-500">
+            {cropYears.map(year => <option key={year} value={year}>{year} Crop Year</option>)}
+          </select>
+          <button onClick={handleSave} disabled={!hasModifiedRows || saving}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium ${
+              hasModifiedRows ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}>
+            {saving ? <Icon name="refresh-cw" className="animate-spin" size={16} /> : <Icon name="save" size={16} />}
+            Save Changes
+          </button>
+        </div>
+      </div>
+
+      {message && (
+        <div className={`px-4 py-3 rounded-lg flex items-center gap-2 text-sm ${
+          message.type === 'success' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+          <Icon name={message.type === 'success' ? 'check' : 'x'} size={16} />
+          {message.text}
+        </div>
+      )}
+
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-blue-800">
+        <p><strong>Instructions:</strong> All grain-active fields are shown below. Click "Add Crop" on any field to add a crop. You can add multiple crops per field.</p>
+        <p className="mt-1">Check <strong>Irrigated</strong> for irrigated crops. Check <strong>Double Crop</strong> for double-cropped fields (not available for Corn).</p>
+        <p className="mt-1">Yellow rows have unsaved changes. Click "Save Changes" when done editing.</p>
+      </div>
+
+      {Object.entries(fieldsByFarm).length === 0 ? (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
+          <p className="text-gray-500">No grain-active fields found. Check field settings in the Settings page.</p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {Object.entries(fieldsByFarm).map(([farmName, farmFields]) => (
+            <div key={farmName} className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+              <div className="bg-gray-50 px-4 py-3 border-b border-gray-200 cursor-pointer hover:bg-gray-100 flex items-center justify-between"
+                onClick={() => toggleFarm(farmName)}>
+                <div className="flex items-center gap-2 font-semibold text-gray-800">
+                  <Icon name={collapsedFarms.has(farmName) ? 'chevron-right' : 'chevron-down'} size={18} />
+                  {farmName}
+                  <span className="text-gray-500 font-normal text-sm">({farmFields.length} field{farmFields.length !== 1 ? 's' : ''})</span>
+                </div>
+              </div>
+
+              {!collapsedFarms.has(farmName) && (
+                <div className="divide-y divide-gray-100">
+                  {farmFields.map(field => {
+                    const fieldCrops = getCropsForField(field.id);
+                    const isAdding = addingToField === field.id;
+
+                    return (
+                      <div key={field.id} className="p-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-3">
+                            <span className="font-medium text-gray-900">{field.name}</span>
+                            <span className="text-sm text-gray-500">{field.acres} total acres</span>
+                            <span className="text-xs text-gray-400">({(field.effective_share * 100).toFixed(1)}% share)</span>
+                          </div>
+                          {!isAdding && (
+                            <button onClick={() => handleStartAddCrop(field.id)}
+                              className="flex items-center gap-1 px-2 py-1 text-xs bg-green-100 text-green-700 rounded hover:bg-green-200 font-medium">
+                              <Icon name="plus" size={14} /> Add Crop
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Add Crop Form */}
+                        {isAdding && (
+                          <div className="bg-green-50 border border-green-200 rounded-lg p-3 mb-3">
+                            <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-sm items-end">
+                              <div>
+                                <label className="block text-xs font-medium text-gray-600 mb-1">Crop *</label>
+                                <select value={newCrop.commodity_id} 
+                                  onChange={(e) => setNewCrop({ ...newCrop, commodity_id: e.target.value, is_double_crop: commodities.find(c => c.id === e.target.value)?.name === 'Corn' ? false : newCrop.is_double_crop })}
+                                  className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-green-500">
+                                  <option value="">Select...</option>
+                                  {commodities.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                                </select>
+                              </div>
+                              <div>
+                                <label className="block text-xs font-medium text-gray-600 mb-1">Acres *</label>
+                                <input type="number" step="0.1" value={newCrop.planted_acres}
+                                  onChange={(e) => setNewCrop({ ...newCrop, planted_acres: e.target.value })}
+                                  className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-green-500" />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-medium text-gray-600 mb-1">Yield *</label>
+                                <input type="number" step="0.1" value={newCrop.estimated_yield}
+                                  onChange={(e) => setNewCrop({ ...newCrop, estimated_yield: e.target.value })}
+                                  className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-green-500" />
+                              </div>
+                              <div className="flex items-center gap-4 pt-4">
+                                <label className="flex items-center gap-1.5 text-sm cursor-pointer">
+                                  <input type="checkbox" checked={newCrop.is_irrigated}
+                                    onChange={(e) => setNewCrop({ ...newCrop, is_irrigated: e.target.checked })}
+                                    className="w-4 h-4 rounded border-gray-300 text-amber-500 focus:ring-amber-500" />
+                                  <span className="text-gray-700">Irrigated</span>
+                                </label>
+                                {!isCorn && (
+                                  <label className="flex items-center gap-1.5 text-sm cursor-pointer">
+                                    <input type="checkbox" checked={newCrop.is_double_crop}
+                                      onChange={(e) => setNewCrop({ ...newCrop, is_double_crop: e.target.checked })}
+                                      className="w-4 h-4 rounded border-gray-300 text-amber-500 focus:ring-amber-500" />
+                                    <span className="text-gray-700">Double Crop</span>
+                                  </label>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-1 pt-4">
+                                <button onClick={() => handleAddCrop(field.id)} disabled={saving}
+                                  className="flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white rounded text-sm hover:bg-green-700 disabled:opacity-50">
+                                  <Icon name="check" size={14} /> Add
+                                </button>
+                                <button onClick={handleCancelAddCrop} className="p-1.5 text-gray-500 hover:bg-gray-100 rounded">
+                                  <Icon name="x" size={16} />
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Existing Crops Table */}
+                        {fieldCrops.length > 0 && (
+                          <table className="w-full text-sm">
+                            <thead className="bg-gray-50">
+                              <tr>
+                                <th className="text-left px-2 py-2 font-medium text-gray-600">Crop</th>
+                                <th className="text-right px-2 py-2 font-medium text-gray-600 w-20">Acres</th>
+                                <th className="text-right px-2 py-2 font-medium text-gray-600 w-20">Yield</th>
+                                <th className="text-right px-2 py-2 font-medium text-gray-600 w-28">Expected Bu</th>
+                                <th className="text-right px-2 py-2 font-medium text-gray-600 w-24">Actual</th>
+                                <th className="text-center px-2 py-2 font-medium text-gray-600 w-16">IR</th>
+                                <th className="text-center px-2 py-2 font-medium text-gray-600 w-16">DC</th>
+                                <th className="text-center px-2 py-2 font-medium text-gray-600 w-16"></th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-100">
+                              {fieldCrops.map(crop => {
+                                const cropIsCorn = crop.commodity_name === 'Corn';
+                                return (
+                                  <tr key={crop.id} className={crop.isModified ? 'bg-yellow-50' : ''}>
+                                    <td className="px-2 py-2 font-medium text-gray-900">{crop.display_name}</td>
+                                    <td className="px-2 py-2">
+                                      <input type="number" step="0.1" value={crop.planted_acres || ''}
+                                        onChange={(e) => handleCellChange(crop.id, 'planted_acres', parseFloat(e.target.value) || 0)}
+                                        className="w-full px-2 py-1 text-right border border-gray-200 rounded focus:ring-1 focus:ring-amber-500" />
+                                    </td>
+                                    <td className="px-2 py-2">
+                                      <input type="number" step="0.1" value={crop.estimated_yield || ''}
+                                        onChange={(e) => handleCellChange(crop.id, 'estimated_yield', parseFloat(e.target.value) || 0)}
+                                        className="w-full px-2 py-1 text-right border border-gray-200 rounded focus:ring-1 focus:ring-amber-500" />
+                                    </td>
+                                    <td className="px-2 py-2 text-right text-gray-600">{Math.round(crop.expected_marketable).toLocaleString()}</td>
+                                    <td className="px-2 py-2">
+                                      <input type="number" value={crop.actual_production ?? ''}
+                                        onChange={(e) => handleCellChange(crop.id, 'actual_production', e.target.value ? parseInt(e.target.value) : null)}
+                                        className="w-full px-2 py-1 text-right border border-gray-200 rounded focus:ring-1 focus:ring-amber-500" placeholder="-" />
+                                    </td>
+                                    <td className="px-2 py-2 text-center">
+                                      <input type="checkbox" checked={crop.is_irrigated || false}
+                                        onChange={(e) => handleCellChange(crop.id, 'is_irrigated', e.target.checked)}
+                                        className="w-4 h-4 rounded border-gray-300 text-amber-500 focus:ring-amber-500" />
+                                    </td>
+                                    <td className="px-2 py-2 text-center">
+                                      {!cropIsCorn ? (
+                                        <input type="checkbox" checked={crop.is_double_crop || false}
+                                          onChange={(e) => handleCellChange(crop.id, 'is_double_crop', e.target.checked)}
+                                          className="w-4 h-4 rounded border-gray-300 text-amber-500 focus:ring-amber-500" />
+                                      ) : (
+                                        <span className="text-gray-300">-</span>
+                                      )}
+                                    </td>
+                                    <td className="px-2 py-2 text-center">
+                                      <button onClick={() => handleDelete(crop)} className="p-1 text-red-500 hover:bg-red-50 rounded">
+                                        <Icon name="trash-2" size={14} />
+                                      </button>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        )}
+
+                        {fieldCrops.length === 0 && !isAdding && (
+                          <p className="text-sm text-gray-400 italic">No crops assigned for {cropYear}</p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Insurance Page
+function InsurancePage({ cropYear, onYearChange }) {
+  const [commodities, setCommodities] = useState([]);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState(null);
+  const [practiceMode, setPracticeMode] = useState('commodity'); // 'commodity', 'irrigation', 'season'
+
+  const currentYear = new Date().getFullYear();
+  const cropYears = [currentYear - 1, currentYear, currentYear + 1, currentYear + 2];
+
+  const loadData = async () => {
+    setLoading(true);
+    const [comms, settings] = await Promise.all([
+      getCommodities(),
+      getInsuranceSettings(cropYear)
+    ]);
+    setCommodities(comms);
+
+    const allRows = [];
+
+    if (practiceMode === 'commodity') {
+      // One row per commodity
+      for (const c of comms) {
+        const existing = settings.find(s => s.commodity_id === c.id && !s.practice_type);
+        allRows.push({
+          commodity_id: c.id,
+          commodity_name: c.name,
+          practice_type: null,
+          display_name: c.name,
+          coverage_level: existing?.coverage_level || 0.75,
+          price_election: existing?.price_election || 0,
+          policy_type: existing?.policy_type || 'RP',
+          notes: existing?.notes || '',
+          isModified: false
+        });
+      }
+    } else if (practiceMode === 'irrigation') {
+      // Two rows per commodity: IR and DL
+      for (const c of comms) {
+        for (const practice of [{ type: 'IR', name: 'Irrigated' }, { type: 'DL', name: 'Dryland' }]) {
+          const existing = settings.find(s => s.commodity_id === c.id && s.practice_type === practice.type);
+          const fallback = settings.find(s => s.commodity_id === c.id && !s.practice_type);
+          const setting = existing || fallback;
+          allRows.push({
+            commodity_id: c.id,
+            commodity_name: c.name,
+            practice_type: practice.type,
+            display_name: `${c.name} ${practice.type}`,
+            coverage_level: setting?.coverage_level || 0.75,
+            price_election: setting?.price_election || 0,
+            policy_type: setting?.policy_type || 'RP',
+            notes: setting?.notes || '',
+            isModified: false
+          });
+        }
+      }
+    } else if (practiceMode === 'season') {
+      // Two rows per commodity (except Corn): FS and DC
+      for (const c of comms) {
+        if (c.name === 'Corn') {
+          // Corn is always full season, just show one row
+          const existing = settings.find(s => s.commodity_id === c.id && !s.practice_type);
+          allRows.push({
+            commodity_id: c.id,
+            commodity_name: c.name,
+            practice_type: null,
+            display_name: c.name,
+            coverage_level: existing?.coverage_level || 0.75,
+            price_election: existing?.price_election || 0,
+            policy_type: existing?.policy_type || 'RP',
+            notes: existing?.notes || '',
+            isModified: false
+          });
+        } else {
+          for (const practice of [{ type: 'FS', name: 'Full Season' }, { type: 'DC', name: 'Double Crop' }]) {
+            const existing = settings.find(s => s.commodity_id === c.id && s.practice_type === practice.type);
+            const fallback = settings.find(s => s.commodity_id === c.id && !s.practice_type);
+            const setting = existing || fallback;
+            allRows.push({
+              commodity_id: c.id,
+              commodity_name: c.name,
+              practice_type: practice.type,
+              display_name: `${c.name} ${practice.type === 'DC' ? '(DC)' : ''}`.trim(),
+              coverage_level: setting?.coverage_level || 0.75,
+              price_election: setting?.price_election || 0,
+              policy_type: setting?.policy_type || 'RP',
+              notes: setting?.notes || '',
+              isModified: false
+            });
+          }
+        }
+      }
+    }
+
+    setRows(allRows);
+    setLoading(false);
+  };
+
+  useEffect(() => { loadData(); }, [cropYear, practiceMode]);
+
+  const handleCellChange = (index, field, value) => {
+    setRows(prev => {
+      const newRows = [...prev];
+      newRows[index] = { ...newRows[index], [field]: value, isModified: true };
+      return newRows;
+    });
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setMessage(null);
+
+    const modifiedRows = rows.filter(r => r.isModified);
+    let successCount = 0;
+    let errorCount = 0;
+
+    for (const row of modifiedRows) {
+      const result = await upsertInsuranceSetting({
+        crop_year: cropYear,
+        commodity_id: row.commodity_id,
+        practice_type: row.practice_type,
+        coverage_level: row.coverage_level,
+        price_election: row.price_election,
+        policy_type: row.policy_type,
+        notes: row.notes || null
+      });
+      if (result) successCount++; else errorCount++;
+    }
+
+    if (errorCount > 0) setMessage({ type: 'error', text: `Saved ${successCount} settings, ${errorCount} failed` });
+    else if (successCount > 0) setMessage({ type: 'success', text: `Saved ${successCount} insurance settings` });
+
+    await loadData();
+    setSaving(false);
+    setTimeout(() => setMessage(null), 3000);
+  };
+
+  const hasModifiedRows = rows.some(r => r.isModified);
+
+  if (loading) return <div className="flex items-center justify-center h-64"><Icon name="refresh-cw" className="animate-spin text-amber-600" size={32} /></div>;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Insurance Settings</h1>
+          <p className="text-sm text-gray-500 mt-1">Configure crop insurance coverage levels</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <select value={cropYear} onChange={(e) => onYearChange(parseInt(e.target.value))}
+            className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium focus:ring-2 focus:ring-amber-500">
+            {cropYears.map(year => <option key={year} value={year}>{year} Crop Year</option>)}
+          </select>
+          <button onClick={handleSave} disabled={!hasModifiedRows || saving}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium ${
+              hasModifiedRows ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}>
+            {saving ? <Icon name="refresh-cw" className="animate-spin" size={16} /> : <Icon name="save" size={16} />}
+            Save
+          </button>
+        </div>
+      </div>
+
+      {message && (
+        <div className={`px-4 py-3 rounded-lg flex items-center gap-2 text-sm ${
+          message.type === 'success' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+          <Icon name={message.type === 'success' ? 'check' : 'x'} size={16} />
+          {message.text}
+        </div>
+      )}
+
+      {/* Practice Mode Toggle */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+        <div className="flex items-center gap-4 flex-wrap">
+          <Icon name="layers" size={16} className="text-gray-500" />
+          <span className="text-sm font-medium text-gray-700">Coverage By:</span>
+          <div className="flex rounded-lg border border-gray-200 overflow-hidden">
+            <button onClick={() => setPracticeMode('commodity')}
+              className={`px-3 py-1.5 text-sm font-medium transition-colors ${
+                practiceMode === 'commodity' ? 'bg-blue-500 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
+              Commodity Only
+            </button>
+            <button onClick={() => setPracticeMode('irrigation')}
+              className={`px-3 py-1.5 text-sm font-medium transition-colors border-l border-gray-200 ${
+                practiceMode === 'irrigation' ? 'bg-blue-500 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
+              By Irrigation (IR/DL)
+            </button>
+            <button onClick={() => setPracticeMode('season')}
+              className={`px-3 py-1.5 text-sm font-medium transition-colors border-l border-gray-200 ${
+                practiceMode === 'season' ? 'bg-blue-500 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
+              By Season (FS/DC)
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-blue-800">
+        <p><strong>Insurance Production</strong> is calculated as: Expected Production Ãƒâ€” Coverage Level</p>
+        <p className="mt-1">Choose how you want to configure coverage: by commodity only, by irrigation practice, or by season type.</p>
+        {practiceMode !== 'commodity' && (
+          <p className="mt-2 text-blue-600"><strong>Note:</strong> You can only insure by ONE dimension (irrigation OR season), not both combined.</p>
+        )}
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th className="text-left px-4 py-3 font-semibold text-gray-700">
+                  {practiceMode === 'commodity' ? 'Commodity' : 'Commodity / Practice'}
+                </th>
+                <th className="text-center px-4 py-3 font-semibold text-gray-700 w-32">Coverage Level</th>
+                <th className="text-right px-4 py-3 font-semibold text-gray-700 w-32">Price Election</th>
+                <th className="text-center px-4 py-3 font-semibold text-gray-700 w-28">Policy Type</th>
+                <th className="text-left px-4 py-3 font-semibold text-gray-700">Notes</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {rows.map((row, index) => (
+                <tr key={`${row.commodity_id}-${row.practice_type || 'all'}`} className={row.isModified ? 'bg-yellow-50' : ''}>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <Icon name="shield" size={16} className="text-amber-500" />
+                      <span className="font-medium text-gray-900">{row.display_name}</span>
+                    </div>
+                  </td>
+                  <td className="px-2 py-3">
+                    <select value={row.coverage_level} onChange={(e) => handleCellChange(index, 'coverage_level', parseFloat(e.target.value))}
+                      className="w-full px-2 py-1.5 border border-gray-300 rounded text-center focus:ring-2 focus:ring-amber-500">
+                      {[0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85].map(v => (
+                        <option key={v} value={v}>{(v * 100).toFixed(0)}%</option>
+                      ))}
+                    </select>
+                  </td>
+                  <td className="px-2 py-3">
+                    <div className="flex items-center">
+                      <span className="text-gray-500 mr-1">$</span>
+                      <input type="number" step="0.01" value={row.price_election || ''}
+                        onChange={(e) => handleCellChange(index, 'price_election', parseFloat(e.target.value) || 0)}
+                        className="w-full px-2 py-1.5 text-right border border-gray-300 rounded focus:ring-2 focus:ring-amber-500" placeholder="0.00" />
+                    </div>
+                  </td>
+                  <td className="px-2 py-3">
+                    <select value={row.policy_type} onChange={(e) => handleCellChange(index, 'policy_type', e.target.value)}
+                      className="w-full px-2 py-1.5 border border-gray-300 rounded text-center focus:ring-2 focus:ring-amber-500">
+                      <option value="RP">RP</option>
+                      <option value="RP-HPE">RP-HPE</option>
+                      <option value="YP">YP</option>
+                    </select>
+                  </td>
+                  <td className="px-2 py-3">
+                    <input type="text" value={row.notes} onChange={(e) => handleCellChange(index, 'notes', e.target.value)}
+                      className="w-full px-2 py-1.5 border border-gray-300 rounded focus:ring-2 focus:ring-amber-500" placeholder="Notes..." />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Buyers Page
+function BuyersPage() {
+  const [buyers, setBuyers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [newBuyerName, setNewBuyerName] = useState('');
+  const [editingId, setEditingId] = useState(null);
+  const [editingName, setEditingName] = useState('');
+
+  const loadData = async () => {
+    setLoading(true);
+    const data = await getBuyers(true);
+    setBuyers(data);
+    setLoading(false);
+  };
+
+  useEffect(() => { loadData(); }, []);
+
+  const handleAdd = async () => {
+    if (!newBuyerName.trim()) return;
+    try {
+      await createBuyer(newBuyerName.trim());
+      setNewBuyerName('');
+      loadData();
+    } catch (e) { console.error(e); }
+  };
+
+  const handleUpdate = async (id) => {
+    if (!editingName.trim()) return;
+    try {
+      await updateBuyer(id, { name: editingName.trim() });
+      setEditingId(null);
+      loadData();
+    } catch (e) { console.error(e); }
+  };
+
+  const handleToggleActive = async (id, active) => {
+    try {
+      await updateBuyer(id, { active: !active });
+      loadData();
+    } catch (e) { console.error(e); }
+  };
+
+  const handleDelete = async (id) => {
+    if (!confirm('Delete this buyer?')) return;
+    try {
+      await deleteBuyer(id);
+      loadData();
+    } catch (e) { console.error(e); }
+  };
+
+  if (loading) return <div className="flex items-center justify-center h-64"><Icon name="refresh-cw" className="animate-spin text-amber-600" size={32} /></div>;
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold text-gray-900">Buyers</h1>
+        <p className="text-sm text-gray-500 mt-1">Manage grain buyers and elevators</p>
+      </div>
+
+      {/* Add new buyer */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+        <div className="flex items-center gap-3">
+          <input type="text" value={newBuyerName} onChange={(e) => setNewBuyerName(e.target.value)}
+            placeholder="New buyer name..." onKeyPress={(e) => e.key === 'Enter' && handleAdd()}
+            className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" />
+          <button onClick={handleAdd} className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 flex items-center gap-2">
+            <Icon name="plus" size={16} /> Add Buyer
+          </button>
+        </div>
+      </div>
+
+      {/* Buyers list */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50 border-b border-gray-200">
+            <tr>
+              <th className="text-left px-4 py-3 font-semibold text-gray-700">Name</th>
+              <th className="text-center px-4 py-3 font-semibold text-gray-700 w-24">Status</th>
+              <th className="text-center px-4 py-3 font-semibold text-gray-700 w-32">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {buyers.map(buyer => (
+              <tr key={buyer.id} className={!buyer.active ? 'bg-gray-50' : ''}>
+                <td className="px-4 py-3">
+                  {editingId === buyer.id ? (
+                    <div className="flex items-center gap-2">
+                      <input type="text" value={editingName} onChange={(e) => setEditingName(e.target.value)}
+                        className="flex-1 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-amber-500" autoFocus />
+                      <button onClick={() => handleUpdate(buyer.id)} className="text-green-600"><Icon name="check" size={16} /></button>
+                      <button onClick={() => setEditingId(null)} className="text-gray-400"><Icon name="x" size={16} /></button>
+                    </div>
+                  ) : (
+                    <span className={`font-medium ${buyer.active ? 'text-gray-900' : 'text-gray-400'}`}>{buyer.name}</span>
+                  )}
+                </td>
+                <td className="px-4 py-3 text-center">
+                  <span className={`px-2 py-1 rounded text-xs font-medium ${
+                    buyer.active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                    {buyer.active ? 'Active' : 'Inactive'}
+                  </span>
+                </td>
+                <td className="px-4 py-3 text-center">
+                  <div className="flex items-center justify-center gap-1">
+                    <button onClick={() => { setEditingId(buyer.id); setEditingName(buyer.name); }}
+                      className="p-1.5 text-blue-500 hover:bg-blue-50 rounded" title="Edit">
+                      <Icon name="pencil" size={16} />
+                    </button>
+                    <button onClick={() => handleToggleActive(buyer.id, buyer.active)}
+                      className={`p-1.5 rounded ${buyer.active ? 'text-gray-500 hover:bg-gray-100' : 'text-green-500 hover:bg-green-50'}`}
+                      title={buyer.active ? 'Deactivate' : 'Activate'}>
+                      <Icon name={buyer.active ? 'eye-off' : 'eye'} size={16} />
+                    </button>
+                    <button onClick={() => handleDelete(buyer.id)} className="p-1.5 text-red-500 hover:bg-red-50 rounded" title="Delete">
+                      <Icon name="trash-2" size={16} />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {buyers.length === 0 && (
+          <div className="p-8 text-center text-gray-500">No buyers configured</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Storage Page
+function StoragePage() {
+  const [locations, setLocations] = useState([]);
+  const [buyers, setBuyers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editingLocation, setEditingLocation] = useState({ name: '', location_type: 'COMMERCIAL', is_storage: true, is_delivery: true, notes: '', buyer_ids: [] });
+  const [isEditing, setIsEditing] = useState(false);
+  const [showInactive, setShowInactive] = useState(false);
+
+  const loadData = async () => {
+    setLoading(true);
+    const [locs, buys] = await Promise.all([getGrainLocations(true), getBuyers()]);
+    setLocations(locs);
+    setBuyers(buys);
+    setLoading(false);
+  };
+
+  useEffect(() => { loadData(); }, []);
+
+  const handleSave = async () => {
+    if (!editingLocation.name.trim()) return;
+    
+    if (isEditing && editingLocation.id) {
+      await updateGrainLocation(editingLocation.id, {
+        name: editingLocation.name.trim(),
+        location_type: editingLocation.location_type,
+        is_storage: editingLocation.is_storage,
+        is_delivery: editingLocation.is_delivery,
+        notes: editingLocation.notes.trim() || null
+      });
+      await setLocationBuyers(editingLocation.id, editingLocation.buyer_ids);
+    } else {
+      const newLoc = await createGrainLocation({
+        name: editingLocation.name.trim(),
+        location_type: editingLocation.location_type,
+        is_storage: editingLocation.is_storage,
+        is_delivery: editingLocation.is_delivery,
+        notes: editingLocation.notes.trim() || null
+      });
+      if (newLoc && editingLocation.buyer_ids.length > 0) {
+        await setLocationBuyers(newLoc.id, editingLocation.buyer_ids);
+      }
+    }
+    
+    setShowForm(false);
+    setEditingLocation({ name: '', location_type: 'COMMERCIAL', is_storage: true, is_delivery: true, notes: '', buyer_ids: [] });
+    setIsEditing(false);
+    loadData();
+  };
+
+  const handleEdit = (loc) => {
+    setEditingLocation({
+      id: loc.id,
+      name: loc.name,
+      location_type: loc.location_type,
+      is_storage: loc.is_storage,
+      is_delivery: loc.is_delivery,
+      notes: loc.notes || '',
+      buyer_ids: loc.buyers?.map(b => b.buyer_id) || []
+    });
+    setIsEditing(true);
+    setShowForm(true);
+  };
+
+  const handleToggleActive = async (id, active) => {
+    await toggleGrainLocationActive(id, !active);
+    loadData();
+  };
+
+  const handleDelete = async (id) => {
+    if (!confirm('Delete this location?')) return;
+    await deleteGrainLocation(id);
+    loadData();
+  };
+
+  const filteredLocations = showInactive ? locations : locations.filter(l => l.active);
+
+  if (loading) return <div className="flex items-center justify-center h-64"><Icon name="refresh-cw" className="animate-spin text-amber-600" size={32} /></div>;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Storage Locations</h1>
+          <p className="text-sm text-gray-500 mt-1">Manage grain storage and delivery locations</p>
+        </div>
+        <button onClick={() => { setShowForm(true); setIsEditing(false); setEditingLocation({ name: '', location_type: 'COMMERCIAL', is_storage: true, is_delivery: true, notes: '', buyer_ids: [] }); }}
+          className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 flex items-center gap-2">
+          <Icon name="plus" size={16} /> Add Location
+        </button>
+      </div>
+
+      <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)}
+          className="w-4 h-4 rounded border-gray-300 text-amber-500" />
+        Show inactive locations
+      </label>
+
+      {/* Add/Edit Form */}
+      {showForm && (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+          <h3 className="text-lg font-semibold mb-4">{isEditing ? 'Edit Location' : 'Add New Location'}</h3>
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Name *</label>
+              <input type="text" value={editingLocation.name} onChange={(e) => setEditingLocation({ ...editingLocation, name: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Type</label>
+              <select value={editingLocation.location_type} onChange={(e) => setEditingLocation({ ...editingLocation, location_type: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500">
+                <option value="ON_FARM">On-Farm Bin</option>
+                <option value="COMMERCIAL">Commercial Elevator</option>
+                <option value="DELIVERY">Delivery Only</option>
+              </select>
+            </div>
+            <div className="flex items-center gap-6">
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={editingLocation.is_storage} onChange={(e) => setEditingLocation({ ...editingLocation, is_storage: e.target.checked })}
+                  className="w-4 h-4 rounded border-gray-300 text-amber-500" />
+                <span className="text-sm">Can store grain</span>
+              </label>
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={editingLocation.is_delivery} onChange={(e) => setEditingLocation({ ...editingLocation, is_delivery: e.target.checked })}
+                  className="w-4 h-4 rounded border-gray-300 text-amber-500" />
+                <span className="text-sm">Can deliver to</span>
+              </label>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
+              <textarea value={editingLocation.notes} onChange={(e) => setEditingLocation({ ...editingLocation, notes: e.target.value })}
+                rows={2} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" />
+            </div>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => { setShowForm(false); setIsEditing(false); }} className="px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg">Cancel</button>
+              <button onClick={handleSave} className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600">
+                {isEditing ? 'Update' : 'Create'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Locations list */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50 border-b border-gray-200">
+            <tr>
+              <th className="text-left px-4 py-3 font-semibold text-gray-700">Name</th>
+              <th className="text-center px-4 py-3 font-semibold text-gray-700 w-28">Type</th>
+              <th className="text-center px-4 py-3 font-semibold text-gray-700 w-20">Storage</th>
+              <th className="text-center px-4 py-3 font-semibold text-gray-700 w-20">Delivery</th>
+              <th className="text-center px-4 py-3 font-semibold text-gray-700 w-32">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {filteredLocations.map(loc => (
+              <tr key={loc.id} className={!loc.active ? 'bg-gray-50' : ''}>
+                <td className="px-4 py-3">
+                  <span className={`font-medium ${loc.active ? 'text-gray-900' : 'text-gray-400'}`}>{loc.name}</span>
+                </td>
+                <td className="px-4 py-3 text-center">
+                  <span className={`px-2 py-1 rounded text-xs font-medium ${
+                    loc.location_type === 'ON_FARM' ? 'bg-green-100 text-green-700' :
+                    loc.location_type === 'COMMERCIAL' ? 'bg-blue-100 text-blue-700' :
+                    'bg-purple-100 text-purple-700'
+                  }`}>{loc.location_type.replace('_', ' ')}</span>
+                </td>
+                <td className="px-4 py-3 text-center">{loc.is_storage ? <Icon name="check" size={16} className="text-green-500 mx-auto" /> : '-'}</td>
+                <td className="px-4 py-3 text-center">{loc.is_delivery ? <Icon name="check" size={16} className="text-green-500 mx-auto" /> : '-'}</td>
+                <td className="px-4 py-3 text-center">
+                  <div className="flex items-center justify-center gap-1">
+                    <button onClick={() => handleEdit(loc)} className="p-1.5 text-blue-500 hover:bg-blue-50 rounded" title="Edit">
+                      <Icon name="pencil" size={16} />
+                    </button>
+                    <button onClick={() => handleToggleActive(loc.id, loc.active)}
+                      className={`p-1.5 rounded ${loc.active ? 'text-gray-500 hover:bg-gray-100' : 'text-green-500 hover:bg-green-50'}`}
+                      title={loc.active ? 'Deactivate' : 'Activate'}>
+                      <Icon name={loc.active ? 'eye-off' : 'eye'} size={16} />
+                    </button>
+                    <button onClick={() => handleDelete(loc.id)} className="p-1.5 text-red-500 hover:bg-red-50 rounded" title="Delete">
+                      <Icon name="trash-2" size={16} />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {filteredLocations.length === 0 && <div className="p-8 text-center text-gray-500">No locations configured</div>}
+      </div>
+    </div>
+  );
+}
+
+// Basis Management Page
+function BasisPage() {
+  const [viewMode, setViewMode] = useState('old'); // 'old' or 'new'
+  const [commodities, setCommodities] = useState([]);
+  const [locations, setLocations] = useState([]);
+  const [basisData, setBasisData] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState({});
+  const [message, setMessage] = useState(null);
+  const [localValues, setLocalValues] = useState({});
+
+  // Commodity-specific rollover dates (month is 0-indexed)
+  const CROP_ROLLOVER = {
+    'Wheat': { month: 5, day: 1 },      // June 1
+    'Corn': { month: 8, day: 1 },       // Sept 1
+    'Soybeans': { month: 9, day: 1 },   // Oct 1
+    'Milo': { month: 9, day: 1 },       // Oct 1
+    'Grain Sorghum': { month: 9, day: 1 }
+  };
+
+  const getCropYear = (commodityName, isNewCrop) => {
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth();
+    const currentDay = now.getDate();
+    
+    const rollover = CROP_ROLLOVER[commodityName] || { month: 9, day: 1 };
+    const hasRolled = currentMonth > rollover.month || 
+                      (currentMonth === rollover.month && currentDay >= rollover.day);
+    
+    if (isNewCrop) {
+      return hasRolled ? currentYear + 1 : currentYear;
+    } else {
+      return hasRolled ? currentYear : currentYear - 1;
+    }
+  };
+
+  const loadData = async () => {
+    setLoading(true);
+    const [comms, locs] = await Promise.all([
+      getCommodities(),
+      getGrainLocations(false)
+    ]);
+    setCommodities(comms);
+    setLocations(locs);
+    
+    // Load basis for all relevant crop years
+    const years = new Set();
+    for (const c of comms) {
+      years.add(getCropYear(c.name, false));
+      years.add(getCropYear(c.name, true));
+    }
+    
+    const allBasis = [];
+    for (const year of years) {
+      const basis = await getLocationBasis(year);
+      allBasis.push(...basis);
+    }
+    setBasisData(allBasis);
+    
+    const initial = {};
+    for (const b of allBasis) {
+      initial[`${b.location_id}-${b.commodity_id}-${b.crop_year}`] = b.basis?.toString() || '';
+    }
+    setLocalValues(initial);
+    setLoading(false);
+  };
+
+  useEffect(() => { loadData(); }, []);
+
+  const basisMap = {};
+  for (const b of basisData) {
+    basisMap[`${b.location_id}-${b.commodity_id}-${b.crop_year}`] = b;
+  }
+
+  const handleInputChange = (locationId, commodityId, cropYear, value) => {
+    const key = `${locationId}-${commodityId}-${cropYear}`;
+    setLocalValues(prev => ({ ...prev, [key]: value }));
+  };
+
+  const handleSave = async (locationId, commodityId, cropYear) => {
+    const key = `${locationId}-${commodityId}-${cropYear}`;
+    const value = localValues[key];
+    const numValue = parseFloat(value);
+    
+    if (value === '' || isNaN(numValue)) {
+      const existing = basisMap[key];
+      if (existing?.id) {
+        setSaving(prev => ({ ...prev, [key]: true }));
+        try {
+          await deleteLocationBasis(existing.id);
+          setMessage({ type: 'success', text: 'Cleared' });
+          loadData();
+        } catch (e) {
+          setMessage({ type: 'error', text: 'Failed' });
+        }
+        setSaving(prev => ({ ...prev, [key]: false }));
+      }
+      return;
+    }
+    
+    setSaving(prev => ({ ...prev, [key]: true }));
+    try {
+      await upsertLocationBasis(locationId, commodityId, cropYear, numValue);
+      setMessage({ type: 'success', text: 'Saved' });
+      setTimeout(() => setMessage(null), 1500);
+      loadData();
+    } catch (e) {
+      setMessage({ type: 'error', text: 'Failed' });
+    }
+    setSaving(prev => ({ ...prev, [key]: false }));
+  };
+
+  const getInputValue = (locationId, commodityId, cropYear) => {
+    const key = `${locationId}-${commodityId}-${cropYear}`;
+    if (localValues[key] !== undefined) return localValues[key];
+    const existing = basisMap[key];
+    return existing?.basis?.toString() || '';
+  };
+
+  if (loading) return <div className="flex items-center justify-center h-64"><Icon name="refresh-cw" className="animate-spin text-amber-600" size={32} /></div>;
+
+  const isNewCrop = viewMode === 'new';
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between flex-wrap gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Basis Management</h1>
+          <p className="text-sm text-gray-500 mt-1">Enter basis. Tab or click out to save.</p>
+        </div>
+        
+        <div className="flex rounded-lg overflow-hidden border border-gray-300">
+          <button
+            onClick={() => setViewMode('old')}
+            className={`px-4 py-2 text-sm font-medium ${
+              viewMode === 'old' ? 'bg-amber-500 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            ðŸŒ¾ Old Crop
+          </button>
+          <button
+            onClick={() => setViewMode('new')}
+            className={`px-4 py-2 text-sm font-medium border-l border-gray-300 ${
+              viewMode === 'new' ? 'bg-green-500 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            ðŸŒ± New Crop
+          </button>
+        </div>
+      </div>
+
+      {message && (
+        <div className={`p-3 rounded-lg text-sm ${message.type === 'error' ? 'bg-red-50 text-red-700' : 'bg-green-50 text-green-700'}`}>
+          {message.text}
+        </div>
+      )}
+
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className={`p-3 border-b ${isNewCrop ? 'bg-green-50 border-green-200' : 'bg-amber-50 border-amber-200'}`}>
+          <span className={`font-semibold ${isNewCrop ? 'text-green-700' : 'text-amber-700'}`}>
+            {isNewCrop ? 'ðŸŒ± New Crop' : 'ðŸŒ¾ Old Crop'} Basis
+          </span>
+          <span className="text-gray-500 text-sm ml-2">
+            {isNewCrop ? '(upcoming harvest)' : '(harvested grain)'}
+          </span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead className="bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th className="text-left px-4 py-3 font-semibold text-gray-700 text-sm">Location</th>
+                {commodities.map(c => {
+                  const cropYear = getCropYear(c.name, isNewCrop);
+                  return (
+                    <th key={c.id} className="text-center px-3 py-2 font-semibold text-gray-700 text-sm min-w-24">
+                      <div>{c.name}</div>
+                      <div className="text-xs font-normal text-gray-400">{cropYear}</div>
+                    </th>
+                  );
+                })}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {locations.filter(l => l.is_delivery).map(loc => (
+                <tr key={loc.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3 font-medium text-gray-900 text-sm whitespace-nowrap">{loc.name}</td>
+                  {commodities.map(c => {
+                    const cropYear = getCropYear(c.name, isNewCrop);
+                    const key = `${loc.id}-${c.id}-${cropYear}`;
+                    const isSaving = saving[key];
+                    
+                    return (
+                      <td key={c.id} className="px-3 py-2 text-center">
+                        <input
+                          type="number"
+                          step="0.01"
+                          placeholder="-0.00"
+                          value={getInputValue(loc.id, c.id, cropYear)}
+                          onChange={(e) => handleInputChange(loc.id, c.id, cropYear, e.target.value)}
+                          onBlur={() => handleSave(loc.id, c.id, cropYear)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); }}
+                          disabled={isSaving}
+                          className={`w-20 px-2 py-1.5 text-center text-sm border rounded 
+                            focus:ring-2 focus:ring-amber-500 focus:border-amber-500
+                            ${isSaving ? 'bg-gray-100 text-gray-400' : 'bg-white'}
+                            ${getInputValue(loc.id, c.id, cropYear) ? 'border-gray-300 font-medium' : 'border-gray-200 text-gray-400'}
+                          `}
+                        />
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        
+        {locations.filter(l => l.is_delivery).length === 0 && (
+          <div className="p-8 text-center text-gray-500">No delivery locations. Add in Storage page.</div>
+        )}
+      </div>
+
+      <div className="text-xs text-gray-400">
+        Crop year rolls: Wheat Jun 1 â€¢ Corn Sep 1 â€¢ Soybeans Oct 1 â€¢ Milo Oct 1
+      </div>
+    </div>
+  );
+}
+
+// Inventory Page
+function InventoryPage({ cropYear, onYearChange }) {
+  const [inventory, setInventory] = useState([]);
+  const [transactions, setTransactions] = useState({});
+  const [expandedRows, setExpandedRows] = useState(new Set());
+  const [loading, setLoading] = useState(true);
+  const [commodities, setCommodities] = useState([]);
+  const [locations, setLocations] = useState([]);
+  const [elevatorMappings, setElevatorMappings] = useState([]);
+  const [message, setMessage] = useState(null);
+  
+  // Modal states
+  const [showPoyModal, setShowPoyModal] = useState(false);
+  const [showAdjustModal, setShowAdjustModal] = useState(false);
+  const [showTransferModal, setShowTransferModal] = useState(false);
+  const [showAddGrainModal, setShowAddGrainModal] = useState(false);
+  
+  // POY Import state
+  const [poyFile, setPoyFile] = useState(null);
+  const [poyParsing, setPoyParsing] = useState(false);
+  const [poyData, setPoyData] = useState(null);
+  const [poyError, setPoyError] = useState(null);
+  const [poyMappings, setPoyMappings] = useState({});
+  const [poyDuplicates, setPoyDuplicates] = useState([]);
+  const [poyImporting, setPoyImporting] = useState(false);
+  
+  // Adjustment state
+  const [adjustForm, setAdjustForm] = useState({
+    location_id: '', commodity_id: '', adjustment_type: 'SHRINK',
+    bushels: '', reason: '', transaction_date: new Date().toISOString().split('T')[0]
+  });
+  
+  // Transfer state
+  const [transferForm, setTransferForm] = useState({
+    transfer_type: 'SINGLE', // SINGLE or SWAP
+    from_location_id: '', to_location_id: '',
+    commodity_id: '', bushels: '', counterparty: '',
+    notes: '', transaction_date: new Date().toISOString().split('T')[0]
+  });
+  
+  // Add Grain state
+  const [addGrainForm, setAddGrainForm] = useState({
+    location_id: '', commodity_id: '', bushels: '',
+    transaction_date: new Date().toISOString().split('T')[0], notes: ''
+  });
+
+  const currentYear = new Date().getFullYear();
+  const cropYears = [currentYear - 1, currentYear, currentYear + 1, currentYear + 2];
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    const [inv, comms, locs, mappings] = await Promise.all([
+      getInventory(cropYear),
+      getCommodities(),
+      getStorageLocations(),
+      getElevatorMappings()
+    ]);
+    setInventory(inv);
+    setCommodities(comms);
+    setLocations(locs);
+    setElevatorMappings(mappings);
+    setLoading(false);
+  }, [cropYear]);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  const loadTransactions = async (locationId, commodityId) => {
+    const key = `${locationId}-${commodityId}`;
+    if (transactions[key]) return; // Already loaded
+    
+    const data = await getInventoryTransactions(locationId, commodityId, cropYear);
+    setTransactions(prev => ({ ...prev, [key]: data }));
+  };
+
+  const toggleRow = async (item) => {
+    const key = `${item.location_id}-${item.commodity_id}`;
+    const newExpanded = new Set(expandedRows);
+    
+    if (newExpanded.has(key)) {
+      newExpanded.delete(key);
+    } else {
+      newExpanded.add(key);
+      await loadTransactions(item.location_id, item.commodity_id);
+    }
+    setExpandedRows(newExpanded);
+  };
+
+  const showMsg = (type, text) => {
+    setMessage({ type, text });
+    setTimeout(() => setMessage(null), 4000);
+  };
+
+  // ========== POY IMPORT HANDLERS ==========
+  
+  const handlePoyFileSelect = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      setPoyFile(file);
+      setPoyData(null);
+      setPoyError(null);
+      setPoyMappings({});
+      setPoyDuplicates([]);
+    }
+  };
+
+  const handlePoyParse = async () => {
+    if (!poyFile) return;
+    
+    setPoyParsing(true);
+    setPoyError(null);
+    
+    try {
+      const base64 = await fileToBase64(poyFile);
+      const mimeType = poyFile.type || 'application/pdf';
+      
+      const result = await parsePoYWithClaude(base64, mimeType);
+      
+      if (!result.success) {
+        setPoyError(result.error);
+        setPoyParsing(false);
+        return;
+      }
+      
+      setPoyData(result.data);
+      
+      // Check for duplicate tickets
+      const ticketNumbers = result.data.deliveries?.map(d => d.ticket_number) || [];
+      const existingTickets = await checkExistingTickets(ticketNumbers);
+      setPoyDuplicates(existingTickets);
+      
+      // Initialize mappings from existing elevator mappings
+      const initialMappings = {};
+      const uniqueLocations = [...new Set(result.data.deliveries?.map(d => d.location) || [])];
+      
+      for (const loc of uniqueLocations) {
+        const existing = elevatorMappings.find(m => m.elevator_name.toLowerCase() === loc.toLowerCase());
+        if (existing) {
+          initialMappings[loc] = existing.location_id;
+        }
+      }
+      setPoyMappings(initialMappings);
+      
+    } catch (err) {
+      setPoyError(err.message);
+    }
+    
+    setPoyParsing(false);
+  };
+
+  const handlePoyImport = async () => {
+    if (!poyData) return;
+    
+    // Check all locations are mapped
+    const uniqueLocations = [...new Set(poyData.deliveries?.map(d => d.location) || [])];
+    const unmapped = uniqueLocations.filter(loc => !poyMappings[loc]);
+    if (unmapped.length > 0) {
+      showMsg('error', `Please map all locations: ${unmapped.join(', ')}`);
+      return;
+    }
+    
+    setPoyImporting(true);
+    
+    try {
+      // Filter out duplicates
+      const newDeliveries = poyData.deliveries.filter(d => !poyDuplicates.includes(d.ticket_number));
+      
+      if (newDeliveries.length === 0) {
+        showMsg('error', 'All tickets have already been imported');
+        setPoyImporting(false);
+        return;
+      }
+      
+      // Create import record
+      const importRecord = await createPoyImport({
+        file_name: poyFile.name,
+        crop_year: poyData.crop_year,
+        producer_name: poyData.producer_name,
+        total_bushels_imported: newDeliveries.reduce((sum, d) => sum + d.your_bushels, 0),
+        total_tickets_imported: newDeliveries.length,
+        tickets_skipped: poyDuplicates.length,
+        commodities_imported: [...new Set(newDeliveries.map(d => d.commodity))],
+        locations_imported: [...new Set(newDeliveries.map(d => d.location))],
+        raw_response: poyData
+      });
+      
+      if (!importRecord) {
+        throw new Error('Failed to create import record');
+      }
+      
+      // Group deliveries by date + location + commodity
+      const grouped = {};
+      for (const delivery of newDeliveries) {
+        const key = `${delivery.date}|${delivery.location}|${delivery.commodity}`;
+        if (!grouped[key]) {
+          grouped[key] = {
+            date: delivery.date,
+            location: delivery.location,
+            commodity: delivery.commodity,
+            total_bushels: 0,
+            tickets: []
+          };
+        }
+        grouped[key].total_bushels += delivery.your_bushels;
+        grouped[key].tickets.push(delivery);
+      }
+      
+      // Create inventory transactions for each group
+      for (const group of Object.values(grouped)) {
+        const locationId = poyMappings[group.location];
+        const commodity = commodities.find(c => c.name.toLowerCase() === group.commodity.toLowerCase());
+        
+        if (!commodity) {
+          console.warn(`Unknown commodity: ${group.commodity}`);
+          continue;
+        }
+        
+        const ticketNumbers = group.tickets.map(t => t.ticket_number).join(', ');
+        
+        await recordInventoryChange(
+          locationId,
+          commodity.id,
+          poyData.crop_year,
+          Math.round(group.total_bushels),
+          'DEPOSIT',
+          {
+            transaction_date: group.date,
+            ticket_numbers: ticketNumbers,
+            import_id: importRecord.id,
+            notes: `POY Import: ${group.tickets.length} tickets`
+          }
+        );
+        
+        // Record individual tickets for duplicate detection
+        for (const ticket of group.tickets) {
+          await recordImportedTicket({
+            ticket_number: ticket.ticket_number,
+            import_id: importRecord.id,
+            delivery_date: ticket.date,
+            commodity_id: commodity.id,
+            location_id: locationId,
+            bushels: ticket.your_bushels,
+            elevator_name: ticket.location
+          });
+        }
+      }
+      
+      // Save any new elevator mappings
+      for (const [elevatorName, locationId] of Object.entries(poyMappings)) {
+        const exists = elevatorMappings.find(m => m.elevator_name.toLowerCase() === elevatorName.toLowerCase());
+        if (!exists) {
+          await createElevatorMapping(elevatorName, locationId);
+        }
+      }
+      
+      showMsg('success', `Imported ${newDeliveries.length} tickets (${poyDuplicates.length} skipped as duplicates)`);
+      setShowPoyModal(false);
+      setPoyFile(null);
+      setPoyData(null);
+      setPoyMappings({});
+      setPoyDuplicates([]);
+      await loadData();
+      setTransactions({}); // Clear cached transactions
+      setExpandedRows(new Set());
+      
+    } catch (err) {
+      console.error('Import error:', err);
+      showMsg('error', `Import failed: ${err.message}`);
+    }
+    
+    setPoyImporting(false);
+  };
+
+  // ========== ADJUSTMENT HANDLERS ==========
+  
+  const handleAdjustSubmit = async () => {
+    const { location_id, commodity_id, adjustment_type, bushels, reason, transaction_date } = adjustForm;
+    
+    if (!location_id || !commodity_id || !bushels || !reason) {
+      showMsg('error', 'Please fill in all required fields');
+      return;
+    }
+    
+    const bushelsNum = parseFloat(bushels);
+    if (isNaN(bushelsNum) || bushelsNum <= 0) {
+      showMsg('error', 'Please enter a valid bushel amount');
+      return;
+    }
+    
+    // Shrink is always negative, reconciliation can be positive or negative
+    const adjustedBushels = adjustment_type === 'SHRINK' ? -Math.abs(bushelsNum) : bushelsNum;
+    
+    const result = await recordInventoryChange(
+      location_id,
+      commodity_id,
+      cropYear,
+      adjustedBushels,
+      adjustment_type,
+      {
+        transaction_date,
+        reason,
+        notes: adjustment_type === 'SHRINK' ? `Shrink: ${Math.abs(bushelsNum).toLocaleString()} bu` : `Reconciliation: ${bushelsNum > 0 ? '+' : ''}${bushelsNum.toLocaleString()} bu`
+      }
+    );
+    
+    if (result) {
+      showMsg('success', `${adjustment_type === 'SHRINK' ? 'Shrink' : 'Reconciliation'} recorded successfully`);
+      setShowAdjustModal(false);
+      setAdjustForm({
+        location_id: '', commodity_id: '', adjustment_type: 'SHRINK',
+        bushels: '', reason: '', transaction_date: new Date().toISOString().split('T')[0]
+      });
+      await loadData();
+      setTransactions({});
+      setExpandedRows(new Set());
+    } else {
+      showMsg('error', 'Failed to record adjustment. Check inventory balance.');
+    }
+  };
+
+  // ========== TRANSFER HANDLERS ==========
+  
+  const handleTransferSubmit = async () => {
+    const { transfer_type, from_location_id, to_location_id, commodity_id, bushels, counterparty, notes, transaction_date } = transferForm;
+    
+    if (!commodity_id || !bushels || !counterparty) {
+      showMsg('error', 'Please fill in commodity, bushels, and counterparty');
+      return;
+    }
+    
+    const bushelsNum = parseFloat(bushels);
+    if (isNaN(bushelsNum) || bushelsNum <= 0) {
+      showMsg('error', 'Please enter a valid bushel amount');
+      return;
+    }
+    
+    if (transfer_type === 'SWAP') {
+      // Swap requires both locations
+      if (!from_location_id || !to_location_id) {
+        showMsg('error', 'Please select both From and To locations for a swap');
+        return;
+      }
+      
+      // Create TRANSFER_OUT from one location
+      const outResult = await recordInventoryChange(
+        from_location_id,
+        commodity_id,
+        cropYear,
+        -bushelsNum,
+        'TRANSFER_OUT',
+        { transaction_date, counterparty, notes: notes || `Swap with ${counterparty}` }
+      );
+      
+      if (!outResult) {
+        showMsg('error', 'Failed to record transfer out. Check inventory balance.');
+        return;
+      }
+      
+      // Create TRANSFER_IN to the other location
+      const inResult = await recordInventoryChange(
+        to_location_id,
+        commodity_id,
+        cropYear,
+        bushelsNum,
+        'TRANSFER_IN',
+        { 
+          transaction_date, 
+          counterparty, 
+          notes: notes || `Swap with ${counterparty}`,
+          linked_transaction_id: outResult.id
+        }
+      );
+      
+      if (inResult) {
+        showMsg('success', 'Swap recorded successfully');
+      }
+      
+    } else {
+      // Single transfer - either IN or OUT
+      if (!from_location_id && !to_location_id) {
+        showMsg('error', 'Please select a location');
+        return;
+      }
+      
+      const isTransferIn = !!to_location_id;
+      const locationId = isTransferIn ? to_location_id : from_location_id;
+      const transactionType = isTransferIn ? 'TRANSFER_IN' : 'TRANSFER_OUT';
+      const bushelsValue = isTransferIn ? bushelsNum : -bushelsNum;
+      
+      const result = await recordInventoryChange(
+        locationId,
+        commodity_id,
+        cropYear,
+        bushelsValue,
+        transactionType,
+        { transaction_date, counterparty, notes }
+      );
+      
+      if (result) {
+        showMsg('success', `Transfer ${isTransferIn ? 'in' : 'out'} recorded successfully`);
+      } else {
+        showMsg('error', 'Failed to record transfer. Check inventory balance.');
+        return;
+      }
+    }
+    
+    setShowTransferModal(false);
+    setTransferForm({
+      transfer_type: 'SINGLE', from_location_id: '', to_location_id: '',
+      commodity_id: '', bushels: '', counterparty: '',
+      notes: '', transaction_date: new Date().toISOString().split('T')[0]
+    });
+    await loadData();
+    setTransactions({});
+    setExpandedRows(new Set());
+  };
+
+  // ========== ADD GRAIN HANDLERS ==========
+  
+  const handleAddGrainSubmit = async () => {
+    const { location_id, commodity_id, bushels, transaction_date, notes } = addGrainForm;
+    
+    if (!location_id || !commodity_id || !bushels) {
+      showMsg('error', 'Please fill in location, commodity, and bushels');
+      return;
+    }
+    
+    const bushelsNum = parseFloat(bushels);
+    if (isNaN(bushelsNum) || bushelsNum <= 0) {
+      showMsg('error', 'Please enter a valid bushel amount');
+      return;
+    }
+    
+    const result = await recordInventoryChange(
+      location_id,
+      commodity_id,
+      cropYear,
+      bushelsNum,
+      'DEPOSIT',
+      { transaction_date, notes }
+    );
+    
+    if (result) {
+      showMsg('success', 'Grain added successfully');
+      setShowAddGrainModal(false);
+      setAddGrainForm({
+        location_id: '', commodity_id: '', bushels: '',
+        transaction_date: new Date().toISOString().split('T')[0], notes: ''
+      });
+      await loadData();
+      setTransactions({});
+      setExpandedRows(new Set());
+    } else {
+      showMsg('error', 'Failed to add grain');
+    }
+  };
+
+  // ========== RENDER HELPERS ==========
+  
+  const getTransactionTypeStyle = (type) => {
+    switch (type) {
+      case 'DEPOSIT': return 'bg-green-100 text-green-800';
+      case 'WITHDRAWAL': 
+      case 'SALE': return 'bg-blue-100 text-blue-800';
+      case 'TRANSFER_IN': return 'bg-purple-100 text-purple-800';
+      case 'TRANSFER_OUT': return 'bg-orange-100 text-orange-800';
+      case 'SHRINK': return 'bg-red-100 text-red-800';
+      case 'RECONCILIATION': return 'bg-yellow-100 text-yellow-800';
+      default: return 'bg-gray-100 text-gray-800';
+    }
+  };
+
+  const formatBushels = (n) => {
+    if (n == null) return '-';
+    const prefix = n > 0 ? '+' : '';
+    return prefix + Math.round(n).toLocaleString();
+  };
+
+  if (loading) return <div className="flex items-center justify-center h-64"><Icon name="refresh-cw" className="animate-spin text-amber-600" size={32} /></div>;
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Inventory</h1>
+          <p className="text-sm text-gray-500 mt-1">Current grain inventory by location</p>
+        </div>
+        <select value={cropYear} onChange={(e) => onYearChange(parseInt(e.target.value))}
+          className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium focus:ring-2 focus:ring-amber-500">
+          {cropYears.map(year => <option key={year} value={year}>{year}</option>)}
+        </select>
+      </div>
+      
+      {/* Action Buttons */}
+      <div className="flex flex-wrap gap-3">
+        <button onClick={() => setShowPoyModal(true)}
+          className="flex items-center gap-2 px-4 py-2 bg-amber-600 text-white rounded-lg text-sm font-medium hover:bg-amber-700">
+          <Icon name="file-up" size={18} /> Import POY
+        </button>
+        <button onClick={() => setShowAdjustModal(true)}
+          className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg text-sm font-medium hover:bg-gray-700">
+          <Icon name="scale" size={18} /> Adjust
+        </button>
+        <button onClick={() => setShowTransferModal(true)}
+          className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg text-sm font-medium hover:bg-purple-700">
+          <Icon name="arrow-right-left" size={18} /> Transfer
+        </button>
+        <button onClick={() => setShowAddGrainModal(true)}
+          className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700">
+          <Icon name="plus" size={18} /> Add Grain
+        </button>
+      </div>
+
+      {/* Messages */}
+      {message && (
+        <div className={`p-4 rounded-lg ${message.type === 'success' ? 'bg-green-50 text-green-800 border border-green-200' : 'bg-red-50 text-red-800 border border-red-200'}`}>
+          {message.text}
+        </div>
+      )}
+
+      {/* Inventory Table */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50 border-b border-gray-200">
+            <tr>
+              <th className="w-8 px-2 py-3"></th>
+              <th className="text-left px-4 py-3 font-semibold text-gray-700">Location</th>
+              <th className="text-left px-4 py-3 font-semibold text-gray-700">Commodity</th>
+              <th className="text-right px-4 py-3 font-semibold text-gray-700">Bushels</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {inventory.map(item => {
+              const key = `${item.location_id}-${item.commodity_id}`;
+              const isExpanded = expandedRows.has(key);
+              const itemTransactions = transactions[key] || [];
+              
+              return (
+                <React.Fragment key={item.id}>
+                  <tr className="hover:bg-gray-50 cursor-pointer" onClick={() => toggleRow(item)}>
+                    <td className="px-2 py-3 text-center">
+                      <Icon name={isExpanded ? 'chevron-down' : 'chevron-right'} size={16} className="text-gray-400" />
+                    </td>
+                    <td className="px-4 py-3 font-medium text-gray-900">{item.location_name}</td>
+                    <td className="px-4 py-3 text-gray-600">{item.commodity_name}</td>
+                    <td className="px-4 py-3 text-right font-medium text-gray-900">{Math.round(item.bushels).toLocaleString()}</td>
+                  </tr>
+                  {isExpanded && (
+                    <tr>
+                      <td colSpan={4} className="bg-gray-50 px-4 py-3">
+                        <div className="ml-6">
+                          <h4 className="font-medium text-gray-700 mb-2 flex items-center gap-2">
+                            <Icon name="history" size={16} /> Transaction History
+                          </h4>
+                          {itemTransactions.length === 0 ? (
+                            <p className="text-gray-500 text-sm">No transactions recorded</p>
+                          ) : (
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="text-gray-500">
+                                    <th className="text-left py-1 pr-4">Date</th>
+                                    <th className="text-left py-1 pr-4">Type</th>
+                                    <th className="text-right py-1 pr-4">Bushels</th>
+                                    <th className="text-left py-1 pr-4">Counterparty</th>
+                                    <th className="text-left py-1">Notes</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {itemTransactions.map(tx => (
+                                    <tr key={tx.id} className="border-t border-gray-200">
+                                      <td className="py-2 pr-4 text-gray-600">{tx.transaction_date}</td>
+                                      <td className="py-2 pr-4">
+                                        <span className={`px-2 py-0.5 rounded text-xs font-medium ${getTransactionTypeStyle(tx.transaction_type)}`}>
+                                          {tx.transaction_type.replace('_', ' ')}
+                                        </span>
+                                      </td>
+                                      <td className={`py-2 pr-4 text-right font-medium ${tx.bushels >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                        {formatBushels(tx.bushels)}
+                                      </td>
+                                      <td className="py-2 pr-4 text-gray-600">{tx.counterparty || '-'}</td>
+                                      <td className="py-2 text-gray-500 truncate max-w-xs" title={tx.notes || tx.reason || tx.ticket_numbers}>
+                                        {tx.notes || tx.reason || (tx.ticket_numbers ? `Tickets: ${tx.ticket_numbers.substring(0, 30)}...` : '-')}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+        {inventory.length === 0 && (
+          <div className="p-8 text-center text-gray-500">
+            <Icon name="package" size={48} className="mx-auto mb-4 text-gray-300" />
+            <p>No inventory for {cropYear}</p>
+          </div>
+        )}
+      </div>
+
+      {/* POY Import Modal */}
+      {showPoyModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl shadow-xl max-w-3xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-6 border-b border-gray-200 flex items-center justify-between">
+              <h2 className="text-xl font-bold text-gray-900">Import Proof of Yield</h2>
+              <button onClick={() => { setShowPoyModal(false); setPoyFile(null); setPoyData(null); setPoyError(null); }}
+                className="text-gray-400 hover:text-gray-600">
+                <Icon name="x" size={24} />
+              </button>
+            </div>
+            
+            <div className="p-6 space-y-6">
+              {/* File Upload */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Select PDF File</label>
+                <input type="file" accept=".pdf" onChange={handlePoyFileSelect}
+                  className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-amber-50 file:text-amber-700 hover:file:bg-amber-100" />
+                {poyFile && (
+                  <p className="mt-2 text-sm text-gray-600">Selected: {poyFile.name}</p>
+                )}
+              </div>
+              
+              {/* Parse Button */}
+              {poyFile && !poyData && (
+                <button onClick={handlePoyParse} disabled={poyParsing}
+                  className="flex items-center gap-2 px-4 py-2 bg-amber-600 text-white rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50">
+                  {poyParsing ? (
+                    <><Icon name="loader" size={18} className="animate-spin" /> Parsing with Claude...</>
+                  ) : (
+                    <><Icon name="search" size={18} /> Parse Document</>
+                  )}
+                </button>
+              )}
+              
+              {/* Error */}
+              {poyError && (
+                <div className="p-4 bg-red-50 text-red-700 rounded-lg border border-red-200">
+                  <strong>Error:</strong> {poyError}
+                </div>
+              )}
+              
+              {/* Parsed Data Preview */}
+              {poyData && (
+                <>
+                  <div className="p-4 bg-green-50 rounded-lg border border-green-200">
+                    <h3 className="font-medium text-green-800 mb-2">Parsed Successfully</h3>
+                    <p className="text-sm text-green-700">
+                      Producer: {poyData.producer_name || 'Unknown'} | 
+                      Crop Year: {poyData.crop_year} | 
+                      Tickets: {poyData.deliveries?.length || 0}
+                    </p>
+                  </div>
+                  
+                  {/* Totals */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                    {Object.entries(poyData.totals_by_commodity || {}).map(([commodity, total]) => (
+                      <div key={commodity} className="p-3 bg-gray-50 rounded-lg text-center">
+                        <div className="text-lg font-bold text-gray-900">{Math.round(total).toLocaleString()}</div>
+                        <div className="text-xs text-gray-500">{commodity}</div>
+                      </div>
+                    ))}
+                  </div>
+                  
+                  {/* Duplicate Warning */}
+                  {poyDuplicates.length > 0 && (
+                    <div className="p-4 bg-yellow-50 text-yellow-800 rounded-lg border border-yellow-200">
+                      <strong>Warning:</strong> {poyDuplicates.length} tickets already imported and will be skipped.
+                    </div>
+                  )}
+                  
+                  {/* Location Mapping */}
+                  <div>
+                    <h3 className="font-medium text-gray-900 mb-3">Map Elevator Locations</h3>
+                    <div className="space-y-3">
+                      {[...new Set(poyData.deliveries?.map(d => d.location) || [])].map(elevatorLoc => (
+                        <div key={elevatorLoc} className="flex items-center gap-4">
+                          <span className="text-sm text-gray-700 w-40 truncate" title={elevatorLoc}>{elevatorLoc}</span>
+                          <Icon name="arrow-right-left" size={16} className="text-gray-400" />
+                          <select 
+                            value={poyMappings[elevatorLoc] || ''}
+                            onChange={(e) => setPoyMappings(prev => ({ ...prev, [elevatorLoc]: e.target.value }))}
+                            className={`flex-1 px-3 py-2 border rounded-lg text-sm ${poyMappings[elevatorLoc] ? 'border-green-300 bg-green-50' : 'border-red-300 bg-red-50'}`}
+                          >
+                            <option value="">-- Select Location --</option>
+                            {locations.map(loc => (
+                              <option key={loc.id} value={loc.id}>{loc.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  
+                  {/* Import Button */}
+                  <button onClick={handlePoyImport} disabled={poyImporting}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 disabled:opacity-50">
+                    {poyImporting ? (
+                      <><Icon name="loader" size={18} className="animate-spin" /> Importing...</>
+                    ) : (
+                      <><Icon name="check" size={18} /> Import {(poyData.deliveries?.length || 0) - poyDuplicates.length} Tickets</>
+                    )}
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Adjustment Modal */}
+      {showAdjustModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full">
+            <div className="p-6 border-b border-gray-200 flex items-center justify-between">
+              <h2 className="text-xl font-bold text-gray-900">Inventory Adjustment</h2>
+              <button onClick={() => setShowAdjustModal(false)} className="text-gray-400 hover:text-gray-600">
+                <Icon name="x" size={24} />
+              </button>
+            </div>
+            
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Adjustment Type</label>
+                <select value={adjustForm.adjustment_type} onChange={(e) => setAdjustForm(f => ({ ...f, adjustment_type: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg">
+                  <option value="SHRINK">Shrink (moisture/handling loss)</option>
+                  <option value="RECONCILIATION">Reconciliation (inventory count)</option>
+                </select>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Location *</label>
+                  <select value={adjustForm.location_id} onChange={(e) => setAdjustForm(f => ({ ...f, location_id: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg">
+                    <option value="">Select...</option>
+                    {locations.map(loc => <option key={loc.id} value={loc.id}>{loc.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Commodity *</label>
+                  <select value={adjustForm.commodity_id} onChange={(e) => setAdjustForm(f => ({ ...f, commodity_id: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg">
+                    <option value="">Select...</option>
+                    {commodities.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </div>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Bushels * {adjustForm.adjustment_type === 'SHRINK' ? '(loss amount)' : '(+ or -)'}
+                  </label>
+                  <input type="number" value={adjustForm.bushels} onChange={(e) => setAdjustForm(f => ({ ...f, bushels: e.target.value }))}
+                    placeholder={adjustForm.adjustment_type === 'SHRINK' ? 'e.g., 500' : 'e.g., -500 or 500'}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Date</label>
+                  <input type="date" value={adjustForm.transaction_date} onChange={(e) => setAdjustForm(f => ({ ...f, transaction_date: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+                </div>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Reason *</label>
+                <input type="text" value={adjustForm.reason} onChange={(e) => setAdjustForm(f => ({ ...f, reason: e.target.value }))}
+                  placeholder={adjustForm.adjustment_type === 'SHRINK' ? 'e.g., 2% moisture shrink' : 'e.g., Physical count reconciliation'}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+              </div>
+              
+              <button onClick={handleAdjustSubmit}
+                className="w-full px-4 py-2 bg-gray-700 text-white rounded-lg font-medium hover:bg-gray-800">
+                Record Adjustment
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Transfer Modal */}
+      {showTransferModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full">
+            <div className="p-6 border-b border-gray-200 flex items-center justify-between">
+              <h2 className="text-xl font-bold text-gray-900">Grain Transfer</h2>
+              <button onClick={() => setShowTransferModal(false)} className="text-gray-400 hover:text-gray-600">
+                <Icon name="x" size={24} />
+              </button>
+            </div>
+            
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Transfer Type</label>
+                <div className="flex gap-4">
+                  <label className="flex items-center gap-2">
+                    <input type="radio" name="transfer_type" value="SINGLE" checked={transferForm.transfer_type === 'SINGLE'}
+                      onChange={(e) => setTransferForm(f => ({ ...f, transfer_type: e.target.value }))} />
+                    <span className="text-sm">Single (In or Out)</span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input type="radio" name="transfer_type" value="SWAP" checked={transferForm.transfer_type === 'SWAP'}
+                      onChange={(e) => setTransferForm(f => ({ ...f, transfer_type: e.target.value }))} />
+                    <span className="text-sm">Swap (Between Locations)</span>
+                  </label>
+                </div>
+              </div>
+              
+              {transferForm.transfer_type === 'SWAP' ? (
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">From Location *</label>
+                    <select value={transferForm.from_location_id} onChange={(e) => setTransferForm(f => ({ ...f, from_location_id: e.target.value }))}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg">
+                      <option value="">Select...</option>
+                      {locations.map(loc => <option key={loc.id} value={loc.id}>{loc.name}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">To Location *</label>
+                    <select value={transferForm.to_location_id} onChange={(e) => setTransferForm(f => ({ ...f, to_location_id: e.target.value }))}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg">
+                      <option value="">Select...</option>
+                      {locations.map(loc => <option key={loc.id} value={loc.id}>{loc.name}</option>)}
+                    </select>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Transfer Out From</label>
+                    <select value={transferForm.from_location_id} onChange={(e) => setTransferForm(f => ({ ...f, from_location_id: e.target.value, to_location_id: '' }))}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg">
+                      <option value="">Select...</option>
+                      {locations.map(loc => <option key={loc.id} value={loc.id}>{loc.name}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Transfer In To</label>
+                    <select value={transferForm.to_location_id} onChange={(e) => setTransferForm(f => ({ ...f, to_location_id: e.target.value, from_location_id: '' }))}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg">
+                      <option value="">Select...</option>
+                      {locations.map(loc => <option key={loc.id} value={loc.id}>{loc.name}</option>)}
+                    </select>
+                  </div>
+                </div>
+              )}
+              
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Commodity *</label>
+                  <select value={transferForm.commodity_id} onChange={(e) => setTransferForm(f => ({ ...f, commodity_id: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg">
+                    <option value="">Select...</option>
+                    {commodities.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Bushels *</label>
+                  <input type="number" value={transferForm.bushels} onChange={(e) => setTransferForm(f => ({ ...f, bushels: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+                </div>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Counterparty *</label>
+                  <input type="text" value={transferForm.counterparty} onChange={(e) => setTransferForm(f => ({ ...f, counterparty: e.target.value }))}
+                    placeholder="e.g., Dwight Baldwin"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Date</label>
+                  <input type="date" value={transferForm.transaction_date} onChange={(e) => setTransferForm(f => ({ ...f, transaction_date: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+                </div>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
+                <input type="text" value={transferForm.notes} onChange={(e) => setTransferForm(f => ({ ...f, notes: e.target.value }))}
+                  placeholder="Optional notes"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+              </div>
+              
+              <button onClick={handleTransferSubmit}
+                className="w-full px-4 py-2 bg-purple-600 text-white rounded-lg font-medium hover:bg-purple-700">
+                Record Transfer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add Grain Modal */}
+      {showAddGrainModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full">
+            <div className="p-6 border-b border-gray-200 flex items-center justify-between">
+              <h2 className="text-xl font-bold text-gray-900">Add Grain to Inventory</h2>
+              <button onClick={() => setShowAddGrainModal(false)} className="text-gray-400 hover:text-gray-600">
+                <Icon name="x" size={24} />
+              </button>
+            </div>
+            
+            <div className="p-6 space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Location *</label>
+                  <select value={addGrainForm.location_id} onChange={(e) => setAddGrainForm(f => ({ ...f, location_id: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg">
+                    <option value="">Select...</option>
+                    {locations.map(loc => <option key={loc.id} value={loc.id}>{loc.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Commodity *</label>
+                  <select value={addGrainForm.commodity_id} onChange={(e) => setAddGrainForm(f => ({ ...f, commodity_id: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg">
+                    <option value="">Select...</option>
+                    {commodities.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </div>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Bushels *</label>
+                  <input type="number" value={addGrainForm.bushels} onChange={(e) => setAddGrainForm(f => ({ ...f, bushels: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Date</label>
+                  <input type="date" value={addGrainForm.transaction_date} onChange={(e) => setAddGrainForm(f => ({ ...f, transaction_date: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+                </div>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
+                <input type="text" value={addGrainForm.notes} onChange={(e) => setAddGrainForm(f => ({ ...f, notes: e.target.value }))}
+                  placeholder="Optional notes"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+              </div>
+              
+              <button onClick={handleAddGrainSubmit}
+                className="w-full px-4 py-2 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700">
+                Add to Inventory
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Settings Page
+function SettingsPage({ isConnected }) {
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+
+  const handleTestConnection = async () => {
+    setTesting(true);
+    setTestResult(null);
+    const result = await testConnection();
+    setTestResult(result);
+    setTesting(false);
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
+        <p className="text-sm text-gray-500 mt-1">System configuration and connection status</p>
+      </div>
+
+      {/* Connection Status */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className="px-5 py-4 border-b border-gray-100 bg-gray-50 flex items-center gap-2">
+          <Icon name="database" size={20} className="text-gray-600" />
+          <h2 className="font-semibold text-gray-900">Database Connection</h2>
+        </div>
+        <div className="p-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-gray-600">Connection Status</span>
+            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${
+              isConnected === null ? 'bg-gray-100 text-gray-600' :
+              isConnected ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+            }`}>
+              {isConnected === null ? (
+                <><Icon name="refresh-cw" className="animate-spin" size={14} /> Checking...</>
+              ) : isConnected ? (
+                <><Icon name="check-circle" size={14} /> Connected</>
+              ) : (
+                <><Icon name="x-circle" size={14} /> Not Connected</>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-gray-600">Database</span>
+            <span className="text-sm font-mono text-gray-900">Chemical Project (Supabase)</span>
+          </div>
+          <div className="pt-4 border-t border-gray-100">
+            <button onClick={handleTestConnection} disabled={testing}
+              className="px-4 py-2 bg-amber-600 text-white rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50 flex items-center gap-2">
+              {testing ? <Icon name="refresh-cw" className="animate-spin" size={16} /> : <Icon name="database" size={16} />}
+              Test Connection
+            </button>
+            {testResult !== null && (
+              <p className={`mt-2 text-sm ${testResult ? 'text-green-600' : 'text-red-600'}`}>
+                {testResult ? 'Ã¢Å“â€œ Connection successful' : 'Ã¢Å“â€” Connection failed'}
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* App Info */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className="px-5 py-4 border-b border-gray-100 bg-gray-50 flex items-center gap-2">
+          <Icon name="info" size={20} className="text-gray-600" />
+          <h2 className="font-semibold text-gray-900">Application Info</h2>
+        </div>
+        <div className="p-5 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-gray-600">App Name</span>
+            <span className="text-sm font-medium text-gray-900">GrainTrack Suite</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-gray-600">Version</span>
+            <span className="text-sm font-mono text-gray-900">1.7.0</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-gray-600">Release</span>
+            <span className="text-sm text-gray-900">POY Import & Transfers</span>
+          </div>
+        </div>
+      </div>
+
+      {/* v1.7.0 Features */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className="px-5 py-4 border-b border-gray-100 bg-gray-50 flex items-center gap-2">
+          <Icon name="settings" size={20} className="text-gray-600" />
+          <h2 className="font-semibold text-gray-900">v1.7.0 Features</h2>
+        </div>
+        <div className="p-5">
+          <ul className="space-y-2 text-sm text-gray-600">
+            <li className="flex items-center gap-2"><Icon name="check-circle" className="text-green-500" size={16} /> POY Import via Claude API</li>
+            <li className="flex items-center gap-2"><Icon name="check-circle" className="text-green-500" size={16} /> Inventory transaction audit trail</li>
+            <li className="flex items-center gap-2"><Icon name="check-circle" className="text-green-500" size={16} /> Shrink and reconciliation adjustments</li>
+            <li className="flex items-center gap-2"><Icon name="check-circle" className="text-green-500" size={16} /> Transfer functionality (single and swap)</li>
+            <li className="flex items-center gap-2"><Icon name="check-circle" className="text-green-500" size={16} /> Elevator location mapping</li>
+            <li className="flex items-center gap-2"><Icon name="check-circle" className="text-green-500" size={16} /> Ticket-level duplicate detection</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// MAIN APP
+// ============================================================================
+function App() {
+  const [currentPage, setCurrentPage] = useState('dashboard');
+  const [isConnected, setIsConnected] = useState(null);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const currentYear = new Date().getFullYear();
+  const [selectedCropYear, setSelectedCropYear] = useState(currentYear);
+
+  useEffect(() => { testConnection().then(setIsConnected); }, []);
+
+  const renderPage = () => {
+    switch (currentPage) {
+      case 'dashboard': return <DashboardPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
+      case 'add-sale': return <AddSalePage cropYear={selectedCropYear} onSuccess={() => setCurrentPage('contracts')} />;
+      case 'contracts': return <ContractsPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
+      case 'production': return <ProductionPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
+      case 'inventory': return <InventoryPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
+      case 'insurance': return <InsurancePage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
+      case 'buyers': return <BuyersPage />;
+      case 'storage': return <StoragePage />;
+      case 'basis': return <BasisPage />;
+      case 'settings': return <SettingsPage isConnected={isConnected} />;
+      default: return <DashboardPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      {/* Mobile header */}
+      <div className="lg:hidden bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <button onClick={() => setIsSidebarOpen(true)} className="p-2 hover:bg-gray-100 rounded-lg">
+            <Icon name="menu" size={20} />
+          </button>
+          <div className="flex items-center gap-2">
+            <Icon name="wheat" size={24} className="text-amber-600" />
+            <span className="font-bold text-gray-900">GrainTrack</span>
+          </div>
+        </div>
+        <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : isConnected === false ? 'bg-red-500' : 'bg-gray-300'}`} />
+      </div>
+
+      {/* Mobile sidebar overlay */}
+      {isSidebarOpen && (
+        <div className="lg:hidden fixed inset-0 z-50">
+          <div className="fixed inset-0 bg-black bg-opacity-50" onClick={() => setIsSidebarOpen(false)} />
+          <div className="fixed left-0 top-0 bottom-0 w-64 bg-white shadow-xl">
+            <div className="p-4 border-b border-gray-200 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Icon name="wheat" size={24} className="text-amber-600" />
+                <span className="font-bold text-gray-900">GrainTrack</span>
+              </div>
+              <button onClick={() => setIsSidebarOpen(false)} className="p-2 hover:bg-gray-100 rounded-lg">
+                <Icon name="x" size={20} />
+              </button>
+            </div>
+            <nav className="p-2">
+              {navItems.map(item => (
+                <button key={item.id} onClick={() => { setCurrentPage(item.id); setIsSidebarOpen(false); }}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left mb-1 ${
+                    currentPage === item.id ? 'bg-amber-100 text-amber-900' : 'text-gray-600 hover:bg-gray-100'}`}>
+                  <Icon name={item.icon} size={20} />
+                  <span className="font-medium">{item.label}</span>
+                </button>
+              ))}
+            </nav>
+          </div>
+        </div>
+      )}
+
+      <div className="lg:flex">
+        {/* Desktop sidebar */}
+        <div className="hidden lg:block w-64 min-h-screen bg-white border-r border-gray-200">
+          <div className="p-4 border-b border-gray-200">
+            <div className="flex items-center gap-2">
+              <Icon name="wheat" size={28} className="text-amber-600" />
+              <div>
+                <div className="font-bold text-gray-900">GrainTrack Suite</div>
+                <div className="text-xs text-gray-500">v1.7.0</div>
+              </div>
+            </div>
+          </div>
+          <nav className="p-2">
+            {navItems.map(item => (
+              <button key={item.id} onClick={() => setCurrentPage(item.id)}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left mb-1 ${
+                  currentPage === item.id ? 'bg-amber-100 text-amber-900' : 'text-gray-600 hover:bg-gray-100'}`}>
+                <Icon name={item.icon} size={20} />
+                <span className="font-medium">{item.label}</span>
+              </button>
+            ))}
+          </nav>
+          <div className="absolute bottom-0 left-0 w-64 p-4 border-t border-gray-200">
+            <div className="flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : isConnected === false ? 'bg-red-500' : 'bg-gray-300'}`} />
+              <span className="text-sm text-gray-500">{isConnected ? 'Connected' : isConnected === false ? 'Disconnected' : 'Checking...'}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Main content */}
+        <div className="flex-1 p-4 lg:p-8">
+          {renderPage()}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Render the app
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
