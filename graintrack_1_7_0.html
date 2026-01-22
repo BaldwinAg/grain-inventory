@@ -1187,9 +1187,30 @@ async function parsePoYWithClaude(fileBase64, mimeType) {
     // Fix common JSON issues: trailing commas before ] or }
     jsonStr = jsonStr.replace(/,(\s*[}\]])/g, '$1');
 
-    const parsed = JSON.parse(jsonStr);
-    return { success: true, data: parsed };
-    
+    // Fix unquoted property names (rare but possible)
+    jsonStr = jsonStr.replace(/([{,]\s*)(\w+)(\s*:)/g, '$1"$2"$3');
+
+    // Try parsing, with detailed error on failure
+    try {
+      const parsed = JSON.parse(jsonStr);
+      return { success: true, data: parsed };
+    } catch (parseError) {
+      // Extract position from error message
+      const posMatch = parseError.message.match(/position (\d+)/);
+      if (posMatch) {
+        const pos = parseInt(posMatch[1]);
+        const start = Math.max(0, pos - 100);
+        const end = Math.min(jsonStr.length, pos + 100);
+        const context = jsonStr.substring(start, end);
+        console.error('JSON error near position', pos, ':', context);
+        console.error('Full response length:', jsonStr.length);
+
+        // Log the raw response for debugging
+        console.log('Raw Claude response (first 2000 chars):', textContent.substring(0, 2000));
+      }
+      throw parseError;
+    }
+
   } catch (error) {
     console.error('Error parsing POY with Claude:', error);
     return { success: false, error: error.message };
