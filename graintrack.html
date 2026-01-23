@@ -75,11 +75,11 @@ const { useState, useEffect, useCallback } = React;
 // ============================================================================
 const SUPABASE_URL = 'https://xehapaasizntuzqzvwej.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhlaGFwYWFzaXpudHV6cXp2d2VqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjgzMTkwOTksImV4cCI6MjA4Mzg5NTA5OX0.JTtRaVRfZ4DNddTdT2BsKgCNabErgsCB0rBCHlK0mbA';
-const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 async function testConnection() {
   try {
-    const { error } = await supabase.from('commodities').select('id').limit(1);
+    const { error } = await db.from('commodities').select('id').limit(1);
     return !error;
   } catch {
     return false;
@@ -315,8 +315,8 @@ function ConfirmModal({ isOpen, title, message, confirmText, cancelText, onConfi
 // ============================================================================
 async function logAudit(tableName, recordId, action, oldValues = null, newValues = null) {
   try {
-    const { data: { user } } = await supabase.auth.getUser();
-    await supabase.from('audit_log').insert([{
+    const { data: { user } } = await db.auth.getUser();
+    await db.from('audit_log').insert([{
       user_id: user?.id || null,
       user_email: user?.email || null,
       table_name: tableName,
@@ -671,7 +671,7 @@ async function getCommodities() {
 
 // Buyers
 async function getBuyers(includeInactive = false, includeDeleted = false) {
-  let query = supabase.from('buyers').select('*').order('name');
+  let query = db.from('buyers').select('*').order('name');
   if (!includeInactive) query = query.eq('active', true);
   if (!includeDeleted) query = query.is('deleted_at', null);
   const { data, error } = await query;
@@ -702,7 +702,7 @@ async function updateBuyer(id, updates) {
 
 async function deleteBuyer(id) {
   // Get current values for audit log
-  const { data: oldRecord } = await supabase.from('buyers').select('*').eq('id', id).single();
+  const { data: oldRecord } = await db.from('buyers').select('*').eq('id', id).single();
 
   // Soft delete
   await softDelete('buyers', id);
@@ -882,7 +882,7 @@ async function updateProduction(id, updates) {
 
 async function deleteProduction(id) {
   // Get current values for audit log
-  const { data: oldRecord } = await supabase.from('field_crop_years').select('*').eq('id', id).single();
+  const { data: oldRecord } = await db.from('field_crop_years').select('*').eq('id', id).single();
 
   // Soft delete
   await softDelete('field_crop_years', id);
@@ -895,7 +895,7 @@ async function deleteProduction(id) {
 
 // Restore a soft-deleted production record
 async function restoreProduction(id) {
-  const { data: record } = await supabase.from('field_crop_years').select('*').eq('id', id).single();
+  const { data: record } = await db.from('field_crop_years').select('*').eq('id', id).single();
 
   await restoreRecord('field_crop_years', id);
 
@@ -907,7 +907,7 @@ async function restoreProduction(id) {
 
 // Grain Field Settings
 async function getGrainFieldSettings() {
-  const { data, error } = await supabase.from('grain_field_settings').select('*');
+  const { data, error } = await db.from('grain_field_settings').select('*');
   if (error) { console.error('Error fetching grain field settings:', error); return []; }
   return data || [];
 }
@@ -1241,7 +1241,7 @@ async function updateContract(id, updates) {
 
 async function deleteContract(id) {
   // Get current values for audit log
-  const { data: oldRecord } = await supabase.from('contracts').select('*').eq('id', id).single();
+  const { data: oldRecord } = await db.from('contracts').select('*').eq('id', id).single();
 
   // Soft delete with status change
   const { error } = await supabase
@@ -1259,7 +1259,7 @@ async function deleteContract(id) {
 
 // Restore a soft-deleted contract
 async function restoreContract(id) {
-  const { data: record } = await supabase.from('contracts').select('*').eq('id', id).single();
+  const { data: record } = await db.from('contracts').select('*').eq('id', id).single();
 
   const { error } = await supabase
     .from('contracts')
@@ -1276,7 +1276,7 @@ async function restoreContract(id) {
 
 // Close a futures position - record exit price and P&L
 async function closeFuturesPosition(id, exitDate, exitPrice) {
-  const { data: contract } = await supabase.from('contracts').select('*').eq('id', id).single();
+  const { data: contract } = await db.from('contracts').select('*').eq('id', id).single();
   if (!contract) return null;
 
   // Calculate realized P&L
@@ -1308,7 +1308,7 @@ async function closeFuturesPosition(id, exitDate, exitPrice) {
 
 // Close an options position - record exit premium and P&L
 async function closeOptionsPosition(id, exitDate, exitPremium) {
-  const { data: contract } = await supabase.from('contracts').select('*').eq('id', id).single();
+  const { data: contract } = await db.from('contracts').select('*').eq('id', id).single();
   if (!contract) return null;
 
   // Calculate realized P&L for options
@@ -1340,7 +1340,7 @@ async function closeOptionsPosition(id, exitDate, exitPremium) {
 
 // Expire an option (worthless or exercised)
 async function expireOption(id, expired_worthless = true) {
-  const { data: contract } = await supabase.from('contracts').select('*').eq('id', id).single();
+  const { data: contract } = await db.from('contracts').select('*').eq('id', id).single();
   if (!contract) return null;
 
   // If expired worthless:
@@ -1369,7 +1369,7 @@ async function expireOption(id, expired_worthless = true) {
 
 // Insurance
 async function getInsuranceSettings(cropYear) {
-  let query = supabase.from('insurance_settings').select('*').order('crop_year', { ascending: false });
+  let query = db.from('insurance_settings').select('*').order('crop_year', { ascending: false });
   if (cropYear) query = query.eq('crop_year', cropYear);
   const { data, error } = await query;
   if (error) { console.error('Error fetching insurance settings:', error); return []; }
@@ -1578,9 +1578,9 @@ async function upsertMarketPrice(commodityId, price) {
     .maybeSingle();
 
   if (existing) {
-    await supabase.from('market_prices').update({ futures_price: price }).eq('id', existing.id);
+    await db.from('market_prices').update({ futures_price: price }).eq('id', existing.id);
   } else {
-    await supabase.from('market_prices').insert([{
+    await db.from('market_prices').insert([{
       commodity_id: commodityId,
       futures_price: price,
       price_date: today
@@ -1636,16 +1636,16 @@ async function upsertLocationBasis(locationId, commodityId, cropYear, basis, fut
 }
 
 async function deleteLocationBasis(id) {
-  const { error } = await supabase.from('location_basis').delete().eq('id', id);
+  const { error } = await db.from('location_basis').delete().eq('id', id);
   if (error) throw error;
   return true;
 }
 
 async function setReferenceLocation(locationId) {
   // Clear any existing reference
-  await supabase.from('grain_locations').update({ is_basis_reference: false }).eq('is_basis_reference', true);
+  await db.from('grain_locations').update({ is_basis_reference: false }).eq('is_basis_reference', true);
   // Set new reference
-  const { error } = await supabase.from('grain_locations').update({ is_basis_reference: true }).eq('id', locationId);
+  const { error } = await db.from('grain_locations').update({ is_basis_reference: true }).eq('id', locationId);
   if (error) throw error;
   return true;
 }
@@ -1673,14 +1673,14 @@ async function clearLocationOffset(locationId) {
 
 // Storage / Locations
 async function getGrainLocations(includeInactive = false) {
-  let query = supabase.from('grain_locations').select('*').order('sort_order');
+  let query = db.from('grain_locations').select('*').order('sort_order');
   if (!includeInactive) query = query.eq('active', true);
   const { data: locations, error } = await query;
   if (error) { console.error('Error fetching grain locations:', error); return []; }
   if (!locations?.length) return [];
 
-  const { data: links } = await supabase.from('grain_location_buyers').select('location_id, buyer_id');
-  const { data: buyers } = await supabase.from('buyers').select('id, name').eq('active', true);
+  const { data: links } = await db.from('grain_location_buyers').select('location_id, buyer_id');
+  const { data: buyers } = await db.from('buyers').select('id, name').eq('active', true);
   const buyerMap = new Map((buyers || []).map(b => [b.id, b.name]));
 
   return locations.map(loc => ({
@@ -1729,8 +1729,8 @@ async function updateGrainLocation(id, updates) {
 }
 
 async function deleteGrainLocation(id) {
-  await supabase.from('grain_location_buyers').delete().eq('location_id', id);
-  const { error } = await supabase.from('grain_locations').delete().eq('id', id);
+  await db.from('grain_location_buyers').delete().eq('location_id', id);
+  const { error } = await db.from('grain_locations').delete().eq('id', id);
   if (error) { console.error('Error deleting grain location:', error); return false; }
   return true;
 }
@@ -1745,7 +1745,7 @@ async function toggleGrainLocationActive(id, active) {
 }
 
 async function setLocationBuyers(locationId, buyerIds) {
-  await supabase.from('grain_location_buyers').delete().eq('location_id', locationId);
+  await db.from('grain_location_buyers').delete().eq('location_id', locationId);
   if (buyerIds.length === 0) return true;
   const { error } = await supabase
     .from('grain_location_buyers')
@@ -1839,9 +1839,9 @@ async function removeFromInventory(locationId, commodityId, cropYear, bushels) {
 
   const newBushels = existing.bushels - bushels;
   if (newBushels <= 0) {
-    await supabase.from('grain_inventory').delete().eq('id', existing.id);
+    await db.from('grain_inventory').delete().eq('id', existing.id);
   } else {
-    await supabase.from('grain_inventory').update({ bushels: newBushels }).eq('id', existing.id);
+    await db.from('grain_inventory').update({ bushels: newBushels }).eq('id', existing.id);
   }
   return true;
 }
@@ -6371,7 +6371,7 @@ function App() {
   // Check authentication
   useEffect(() => {
     async function checkAuth() {
-      const { data: { session } } = await supabase.auth.getSession();
+      const { data: { session } } = await db.auth.getSession();
       if (!session) {
         window.location.href = 'login.html';
         return;
@@ -6382,7 +6382,7 @@ function App() {
     checkAuth();
 
     // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+    const { data: { subscription } } = db.auth.onAuthStateChange((event, session) => {
       if (event === 'SIGNED_OUT' || !session) {
         window.location.href = 'login.html';
       } else {
@@ -6397,7 +6397,7 @@ function App() {
 
   // Logout handler
   const handleLogout = async () => {
-    await supabase.auth.signOut();
+    await db.auth.signOut();
     window.location.href = 'login.html';
   };
 

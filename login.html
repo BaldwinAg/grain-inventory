@@ -271,13 +271,13 @@
     // Supabase config
     const SUPABASE_URL = 'https://xehapaasizntuzqzvwej.supabase.co';
     const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhlaGFwYWFzaXpudHV6cXp2d2VqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjgzMTkwOTksImV4cCI6MjA4Mzg5NTA5OX0.JTtRaVRfZ4DNddTdT2BsKgCNabErgsCB0rBCHlK0mbA';
-    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+    const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
     // Check if already logged in
     async function checkAuth() {
-      const { data: { session } } = await supabase.auth.getSession();
+      const { data: { session } } = await db.auth.getSession();
       if (session) {
-        window.location.href = 'graintrack_1_7_0.html';
+        window.location.href = 'graintrack.html';
       }
     }
     checkAuth();
@@ -362,7 +362,7 @@
       const email = document.getElementById('email').value;
       const password = document.getElementById('password').value;
 
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      const { data, error } = await db.auth.signInWithPassword({ email, password });
 
       setLoading('submit-btn', 'btn-spinner', 'btn-text', false);
 
@@ -384,7 +384,7 @@
       const email = document.getElementById('signup-email').value;
       const password = document.getElementById('signup-password').value;
 
-      const { data, error } = await supabase.auth.signUp({
+      const { data, error } = await db.auth.signUp({
         email,
         password,
         options: {
@@ -416,7 +416,7 @@
 
       const email = document.getElementById('reset-email').value;
 
-      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      const { error } = await db.auth.resetPasswordForEmail(email, {
         redirectTo: window.location.origin + '/reset-password.html'
       });
 

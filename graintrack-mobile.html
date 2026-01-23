@@ -118,7 +118,7 @@ const { useState, useEffect, useCallback, useRef } = React;
 // ============================================================================
 const SUPABASE_URL = 'https://xehapaasizntuzqzvwej.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhlaGFwYWFzaXpudHV6cXp2d2VqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjgzMTkwOTksImV4cCI6MjA4Mzg5NTA5OX0.JTtRaVRfZ4DNddTdT2BsKgCNabErgsCB0rBCHlK0mbA';
-const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const BUSHELS_PER_CONTRACT = 5000;
 
@@ -128,7 +128,7 @@ const BUSHELS_PER_CONTRACT = 5000;
 
 async function testConnection() {
   try {
-    const { error } = await supabase.from('commodities').select('id').limit(1);
+    const { error } = await db.from('commodities').select('id').limit(1);
     return !error;
   } catch {
     return false;
@@ -136,19 +136,19 @@ async function testConnection() {
 }
 
 async function getCommodities() {
-  const { data, error } = await supabase.from('commodities').select('*').order('name');
+  const { data, error } = await db.from('commodities').select('*').order('name');
   if (error) { console.error('Error fetching commodities:', error); return []; }
   return data || [];
 }
 
 async function getBuyers() {
-  const { data, error } = await supabase.from('buyers').select('*').order('name');
+  const { data, error } = await db.from('buyers').select('*').order('name');
   if (error) { console.error('Error fetching buyers:', error); return []; }
   return data || [];
 }
 
 async function getContracts(cropYear) {
-  let query = supabase
+  let query = db
     .from('contracts')
     .select(`*, commodities:commodity_id (id, name)`)
     .neq('status', 'CANCELLED')
@@ -162,7 +162,7 @@ async function getContracts(cropYear) {
 }
 
 async function createContract(contract) {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('contracts')
     .insert([{
       contract_type: contract.contract_type,
@@ -199,7 +199,7 @@ async function createContract(contract) {
   }
 
   if (data && contract.strategy_group_id && contract.strategy_type) {
-    await supabase
+    await db
       .from('contracts')
       .update({ strategy_type: contract.strategy_type })
       .eq('strategy_group_id', contract.strategy_group_id);
@@ -485,7 +485,7 @@ function App() {
 
     if (result) {
       if (strategyGroupId && linkedContractIds.length > 0) {
-        await supabase
+        await db
           .from('contracts')
           .update({ strategy_group_id: strategyGroupId, strategy_type: strategyType })
           .in('id', linkedContractIds);
