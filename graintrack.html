@@ -5368,6 +5368,11 @@ function StoragePage() {
     loadData();
   };
 
+  const handleSetReference = async (id) => {
+    await setReferenceLocation(id);
+    loadData();
+  };
+
   const filteredLocations = showInactive ? locations : locations.filter(l => l.active);
 
   if (loading) return <div className="flex items-center justify-center h-64"><Icon name="refresh-cw" className="animate-spin text-amber-600" size={32} /></div>;
@@ -5446,6 +5451,7 @@ function StoragePage() {
               <th className="text-center px-4 py-3 font-semibold text-gray-700 w-28">Type</th>
               <th className="text-center px-4 py-3 font-semibold text-gray-700 w-20">Storage</th>
               <th className="text-center px-4 py-3 font-semibold text-gray-700 w-20">Delivery</th>
+              <th className="text-center px-4 py-3 font-semibold text-gray-700 w-24">Basis Ref</th>
               <th className="text-center px-4 py-3 font-semibold text-gray-700 w-32">Actions</th>
             </tr>
           </thead>
@@ -5464,6 +5470,18 @@ function StoragePage() {
                 </td>
                 <td className="px-4 py-3 text-center">{loc.is_storage ? <Icon name="check" size={16} className="text-green-500 mx-auto" /> : '-'}</td>
                 <td className="px-4 py-3 text-center">{loc.is_delivery ? <Icon name="check" size={16} className="text-green-500 mx-auto" /> : '-'}</td>
+                <td className="px-4 py-3 text-center">
+                  {loc.is_basis_reference ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-1 bg-amber-100 text-amber-700 rounded-full text-xs font-medium">
+                      <Icon name="star" size={12} /> Default
+                    </span>
+                  ) : (
+                    <button onClick={() => handleSetReference(loc.id)}
+                      className="text-xs text-gray-400 hover:text-amber-600 hover:underline" title="Set as default basis location">
+                      Set
+                    </button>
+                  )}
+                </td>
                 <td className="px-4 py-3 text-center">
                   <div className="flex items-center justify-center gap-1">
                     <button onClick={() => handleEdit(loc)} className="p-1.5 text-blue-500 hover:bg-blue-50 rounded" title="Edit">
