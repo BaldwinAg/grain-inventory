@@ -333,7 +333,7 @@ async function logAudit(tableName, recordId, action, oldValues = null, newValues
 // Soft delete helper - marks record as deleted instead of removing
 async function softDelete(tableName, id) {
   const deletedAt = new Date().toISOString();
-  const { error } = await supabase
+  const { error } = await db
     .from(tableName)
     .update({ deleted_at: deletedAt })
     .eq('id', id);
@@ -343,7 +343,7 @@ async function softDelete(tableName, id) {
 
 // Restore helper - removes deleted_at timestamp
 async function restoreRecord(tableName, id) {
-  const { error } = await supabase
+  const { error } = await db
     .from(tableName)
     .update({ deleted_at: null })
     .eq('id', id);
@@ -660,7 +660,7 @@ function generateContractsPDF(contracts, cropYear) {
 
 // Commodities
 async function getCommodities() {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('commodities')
     .select('*')
     .eq('active', true)
@@ -680,7 +680,7 @@ async function getBuyers(includeInactive = false, includeDeleted = false) {
 }
 
 async function createBuyer(name) {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('buyers')
     .insert([{ name, active: true }])
     .select()
@@ -690,7 +690,7 @@ async function createBuyer(name) {
 }
 
 async function updateBuyer(id, updates) {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('buyers')
     .update(updates)
     .eq('id', id)
@@ -715,7 +715,7 @@ async function deleteBuyer(id) {
 
 // Production / Fields
 async function getFieldsForGrain() {
-  const { data: grainSettings } = await supabase
+  const { data: grainSettings } = await db
     .from('grain_field_settings')
     .select('field_id, is_active_for_grain');
 
@@ -723,7 +723,7 @@ async function getFieldsForGrain() {
     (grainSettings || []).filter(s => s.is_active_for_grain).map(s => s.field_id)
   );
 
-  const { data: farms, error: farmsError } = await supabase
+  const { data: farms, error: farmsError } = await db
     .from('farms')
     .select('id, name, adams_grain_share, active')
     .gt('adams_grain_share', 0)
@@ -733,7 +733,7 @@ async function getFieldsForGrain() {
 
   const farmMap = new Map(farms.map(f => [f.id, f]));
 
-  const { data: fields, error: fieldsError } = await supabase
+  const { data: fields, error: fieldsError } = await db
     .from('fields')
     .select('id, farm_id, name, acres, tenant_share, active')
     .in('farm_id', farms.map(f => f.id))
@@ -845,7 +845,7 @@ async function getProductionSummary(cropYear, byPractice = false) {
 }
 
 async function createCropEntry(crop) {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('field_crop_years')
     .insert([{
       field_id: crop.field_id,
@@ -869,7 +869,7 @@ async function createCropEntry(crop) {
 }
 
 async function updateProduction(id, updates) {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('field_crop_years')
     .update({ ...updates, updated_at: new Date().toISOString() })
     .eq('id', id)
@@ -913,20 +913,20 @@ async function getGrainFieldSettings() {
 }
 
 async function updateGrainFieldSetting(fieldId, isActive) {
-  const { data: existing } = await supabase
+  const { data: existing } = await db
     .from('grain_field_settings')
     .select('id')
     .eq('field_id', fieldId)
     .maybeSingle();
 
   if (existing) {
-    const { error } = await supabase
+    const { error } = await db
       .from('grain_field_settings')
       .update({ is_active_for_grain: isActive })
       .eq('field_id', fieldId);
     if (error) { console.error('Error updating grain field setting:', error); return false; }
   } else {
-    const { error } = await supabase
+    const { error } = await db
       .from('grain_field_settings')
       .insert([{ field_id: fieldId, is_active_for_grain: isActive }]);
     if (error) { console.error('Error creating grain field setting:', error); return false; }
@@ -1179,7 +1179,7 @@ async function getContractsSummary(cropYear, byPractice = false) {
 }
 
 async function createContract(contract) {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('contracts')
     .insert([{
       contract_type: contract.contract_type,
@@ -1218,7 +1218,7 @@ async function createContract(contract) {
 
   // If joining a strategy group, update all contracts in the group with strategy_type
   if (data && contract.strategy_group_id && contract.strategy_type) {
-    await supabase
+    await db
       .from('contracts')
       .update({ strategy_type: contract.strategy_type })
       .eq('strategy_group_id', contract.strategy_group_id);
@@ -1228,7 +1228,7 @@ async function createContract(contract) {
 }
 
 async function updateContract(id, updates) {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('contracts')
     .update(updates)
     .eq('id', id)
@@ -1244,7 +1244,7 @@ async function deleteContract(id) {
   const { data: oldRecord } = await db.from('contracts').select('*').eq('id', id).single();
 
   // Soft delete with status change
-  const { error } = await supabase
+  const { error } = await db
     .from('contracts')
     .update({ status: 'CANCELLED', deleted_at: new Date().toISOString() })
     .eq('id', id);
@@ -1261,7 +1261,7 @@ async function deleteContract(id) {
 async function restoreContract(id) {
   const { data: record } = await db.from('contracts').select('*').eq('id', id).single();
 
-  const { error } = await supabase
+  const { error } = await db
     .from('contracts')
     .update({ status: 'OPEN', deleted_at: null })
     .eq('id', id);
@@ -1288,7 +1288,7 @@ async function closeFuturesPosition(id, exitDate, exitPrice) {
   const direction = contract.position_type === 'LONG' ? 1 : -1;
   const realizedPnl = priceDiff * direction * contract.bushels;
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('contracts')
     .update({
       exit_date: exitDate,
@@ -1320,7 +1320,7 @@ async function closeOptionsPosition(id, exitDate, exitPremium) {
     : exitPremium - entryPremium;
   const realizedPnl = premiumDiff * contract.bushels;
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('contracts')
     .update({
       exit_date: exitDate,
@@ -1350,7 +1350,7 @@ async function expireOption(id, expired_worthless = true) {
     ? (contract.position_type === 'SHORT' ? contract.premium * contract.bushels : -contract.premium * contract.bushels)
     : 0; // If exercised, handle separately
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('contracts')
     .update({
       exit_date: new Date().toISOString().split('T')[0],
@@ -1392,7 +1392,7 @@ async function upsertInsuranceSetting(setting) {
   const { data: existing } = await existingQuery.maybeSingle();
 
   if (existing) {
-    const { data, error } = await supabase
+    const { data, error } = await db
       .from('insurance_settings')
       .update({
         coverage_level: setting.coverage_level,
@@ -1406,7 +1406,7 @@ async function upsertInsuranceSetting(setting) {
     if (error) { console.error('Error updating insurance setting:', error); return null; }
     return data;
   } else {
-    const { data, error } = await supabase
+    const { data, error } = await db
       .from('insurance_settings')
       .insert([{
         crop_year: setting.crop_year,
@@ -1428,7 +1428,7 @@ async function upsertInsuranceSetting(setting) {
 // Market Prices - Enhanced with Barchart integration
 async function getLatestMarketPrices() {
   // First, get all commodities to build the mapping
-  const { data: commodities } = await supabase
+  const { data: commodities } = await db
     .from('commodities')
     .select('id, name')
     .eq('active', true);
@@ -1438,7 +1438,7 @@ async function getLatestMarketPrices() {
   const prices = {};
   
   // Try to get Barchart technicals (auto-updated from emails)
-  const { data: barchartData, error: barchartError } = await supabase
+  const { data: barchartData, error: barchartError } = await db
     .from('barchart_technicals')
     .select('symbol, name, latest_price, rsi_14d, stoch_14d_pct_d, stoch_9d_pct_k, trend_signal, data_timestamp');
   
@@ -1479,7 +1479,7 @@ async function getLatestMarketPrices() {
   }
   
   // Fall back to manual market_prices for anything not found
-  const { data: manualPrices, error: manualError } = await supabase
+  const { data: manualPrices, error: manualError } = await db
     .from('market_prices')
     .select('commodity_id, futures_price, updated_at')
     .order('price_date', { ascending: false });
@@ -1507,7 +1507,7 @@ async function getLatestMarketPrices() {
 // Get option quotes from Barchart technicals
 // Parses symbols like "ZCH6|445P" = Corn March 2026 $4.45 Put
 async function getOptionQuotes() {
-  const { data: barchartData, error } = await supabase
+  const { data: barchartData, error } = await db
     .from('barchart_technicals')
     .select('symbol, name, latest_price, data_timestamp');
 
@@ -1570,7 +1570,7 @@ async function getOptionQuotes() {
 async function upsertMarketPrice(commodityId, price) {
   const today = new Date().toISOString().split('T')[0];
   
-  const { data: existing } = await supabase
+  const { data: existing } = await db
     .from('market_prices')
     .select('id')
     .eq('commodity_id', commodityId)
@@ -1612,7 +1612,7 @@ async function getLocationBasis(cropYear = null) {
 }
 
 async function upsertLocationBasis(locationId, commodityId, cropYear, basis, futuresMonth = null) {
-  const { data: existing } = await supabase
+  const { data: existing } = await db
     .from('location_basis')
     .select('id')
     .eq('location_id', locationId)
@@ -1621,13 +1621,13 @@ async function upsertLocationBasis(locationId, commodityId, cropYear, basis, fut
     .maybeSingle();
 
   if (existing) {
-    const { error } = await supabase
+    const { error } = await db
       .from('location_basis')
       .update({ basis, futures_month: futuresMonth, updated_at: new Date().toISOString() })
       .eq('id', existing.id);
     if (error) throw error;
   } else {
-    const { error } = await supabase
+    const { error } = await db
       .from('location_basis')
       .insert([{ location_id: locationId, commodity_id: commodityId, crop_year: cropYear, basis, futures_month: futuresMonth }]);
     if (error) throw error;
@@ -1651,7 +1651,7 @@ async function setReferenceLocation(locationId) {
 }
 
 async function setLocationOffset(locationId, referenceLocationId, offset) {
-  const { error } = await supabase
+  const { error } = await db
     .from('grain_locations')
     .update({ 
       basis_reference_location_id: referenceLocationId, 
@@ -1663,7 +1663,7 @@ async function setLocationOffset(locationId, referenceLocationId, offset) {
 }
 
 async function clearLocationOffset(locationId) {
-  const { error } = await supabase
+  const { error } = await db
     .from('grain_locations')
     .update({ basis_reference_location_id: null, basis_offset: 0 })
     .eq('id', locationId);
@@ -1692,14 +1692,14 @@ async function getGrainLocations(includeInactive = false) {
 }
 
 async function createGrainLocation(location) {
-  const { data: maxData } = await supabase
+  const { data: maxData } = await db
     .from('grain_locations')
     .select('sort_order')
     .order('sort_order', { ascending: false })
     .limit(1)
     .single();
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('grain_locations')
     .insert([{
       name: location.name,
@@ -1718,7 +1718,7 @@ async function createGrainLocation(location) {
 }
 
 async function updateGrainLocation(id, updates) {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('grain_locations')
     .update({ ...updates, updated_at: new Date().toISOString() })
     .eq('id', id)
@@ -1736,7 +1736,7 @@ async function deleteGrainLocation(id) {
 }
 
 async function toggleGrainLocationActive(id, active) {
-  const { error } = await supabase
+  const { error } = await db
     .from('grain_locations')
     .update({ active, updated_at: new Date().toISOString() })
     .eq('id', id);
@@ -1747,7 +1747,7 @@ async function toggleGrainLocationActive(id, active) {
 async function setLocationBuyers(locationId, buyerIds) {
   await db.from('grain_location_buyers').delete().eq('location_id', locationId);
   if (buyerIds.length === 0) return true;
-  const { error } = await supabase
+  const { error } = await db
     .from('grain_location_buyers')
     .insert(buyerIds.map(buyerId => ({ location_id: locationId, buyer_id: buyerId })));
   if (error) { console.error('Error setting location buyers:', error); return false; }
@@ -1755,7 +1755,7 @@ async function setLocationBuyers(locationId, buyerIds) {
 }
 
 async function getStorageLocations() {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('grain_locations')
     .select('*')
     .eq('active', true)
@@ -1766,7 +1766,7 @@ async function getStorageLocations() {
 }
 
 async function getDeliveryLocations() {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('grain_locations')
     .select('*')
     .eq('active', true)
@@ -1803,7 +1803,7 @@ async function getInventory(cropYear) {
 }
 
 async function addToInventory(locationId, commodityId, cropYear, bushels) {
-  const { data: existing } = await supabase
+  const { data: existing } = await db
     .from('grain_inventory')
     .select('id, bushels')
     .eq('location_id', locationId)
@@ -1812,13 +1812,13 @@ async function addToInventory(locationId, commodityId, cropYear, bushels) {
     .maybeSingle();
 
   if (existing) {
-    const { error } = await supabase
+    const { error } = await db
       .from('grain_inventory')
       .update({ bushels: existing.bushels + bushels })
       .eq('id', existing.id);
     if (error) return false;
   } else {
-    const { error } = await supabase
+    const { error } = await db
       .from('grain_inventory')
       .insert([{ location_id: locationId, commodity_id: commodityId, crop_year: cropYear, bushels }]);
     if (error) return false;
@@ -1827,7 +1827,7 @@ async function addToInventory(locationId, commodityId, cropYear, bushels) {
 }
 
 async function removeFromInventory(locationId, commodityId, cropYear, bushels) {
-  const { data: existing } = await supabase
+  const { data: existing } = await db
     .from('grain_inventory')
     .select('id, bushels')
     .eq('location_id', locationId)
@@ -1877,7 +1877,7 @@ async function getInventoryTransactions(locationId, commodityId, cropYear) {
 }
 
 async function createInventoryTransaction(transaction) {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('inventory_transactions')
     .insert([{
       location_id: transaction.location_id,
@@ -1940,7 +1940,7 @@ async function recordInventoryChange(locationId, commodityId, cropYear, bushels,
 // ============================================================================
 
 async function getElevatorMappings() {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('elevator_location_mappings')
     .select(`
       *,
@@ -1953,7 +1953,7 @@ async function getElevatorMappings() {
 }
 
 async function createElevatorMapping(elevatorName, locationId) {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('elevator_location_mappings')
     .insert([{ elevator_name: elevatorName, location_id: locationId }])
     .select()
@@ -1964,7 +1964,7 @@ async function createElevatorMapping(elevatorName, locationId) {
 }
 
 async function updateElevatorMapping(id, locationId) {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('elevator_location_mappings')
     .update({ location_id: locationId })
     .eq('id', id)
@@ -1981,7 +1981,7 @@ async function updateElevatorMapping(id, locationId) {
 // ============================================================================
 
 async function createPoyImport(importData) {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('poy_imports')
     .insert([{
       file_name: importData.file_name,
@@ -2002,7 +2002,7 @@ async function createPoyImport(importData) {
 }
 
 async function getPoyImports() {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('poy_imports')
     .select('*')
     .order('import_date', { ascending: false });
@@ -2012,7 +2012,7 @@ async function getPoyImports() {
 }
 
 async function recordImportedTicket(ticket) {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('imported_tickets')
     .insert([{
       ticket_number: ticket.ticket_number,
@@ -2038,7 +2038,7 @@ async function recordImportedTicket(ticket) {
 async function checkExistingTickets(ticketNumbers) {
   if (!ticketNumbers || ticketNumbers.length === 0) return [];
   
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('imported_tickets')
     .select('ticket_number')
     .in('ticket_number', ticketNumbers);
@@ -3012,7 +3012,7 @@ function AddSalePage({ cropYear: initialCropYear, onSuccess, onYearChange }) {
     if (result) {
       // Update linked contracts to join the same strategy group
       if (strategyGroupId && linkedContractIds.length > 0) {
-        await supabase
+        await db
           .from('contracts')
           .update({ strategy_group_id: strategyGroupId, strategy_type: strategyType })
           .in('id', linkedContractIds);
