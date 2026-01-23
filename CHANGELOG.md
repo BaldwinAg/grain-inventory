@@ -1,5 +1,30 @@
 # GrainTrack Suite Changelog
 
+## [1.7.3] - 2026-01-22
+
+### Added - Export & Reporting (Phase 3)
+- **CSV Export** for contracts and production data
+  - Export button with dropdown menu
+  - Full data export with all fields
+  - Filename includes crop year
+- **PDF Reports** using jsPDF
+  - Marketing Summary PDF from Dashboard
+  - Contracts List PDF from Contracts page
+  - Professional formatting with tables
+  - Baldwin Ag green color scheme
+- **Print-friendly styles**
+  - Hides navigation and controls when printing
+  - Tables formatted for paper
+  - Progress bars preserve colors
+  - Page break handling
+
+### Changed
+- Dashboard has "PDF Report" button for marketing summary
+- Contracts page has Export dropdown (CSV/PDF options)
+- Production page has Export button for CSV
+
+---
+
 ## [1.7.2] - 2026-01-22
 
 ### Added - Data Integrity (Phase 2)

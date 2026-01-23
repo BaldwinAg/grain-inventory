@@ -1,5 +1,5 @@
 <!--
-  GrainTrack Suite v1.7.2
+  GrainTrack Suite v1.7.3
   Grain marketing and inventory management
   https://github.com/BaldwinAg/grain-inventory
 -->
@@ -8,16 +8,60 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>GrainTrack Suite v1.7.2</title>
+  <title>GrainTrack Suite v1.7.3</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; }
     .modified-row { background-color: #fef9c3 !important; }
+
+    /* Print-friendly styles */
+    @media print {
+      /* Hide navigation and controls */
+      .lg\\:w-64, /* Sidebar */
+      .lg\\:hidden, /* Mobile header */
+      button:not(.print-show),
+      select,
+      .fixed, /* Modals and overlays */
+      [class*="hover:"] { visibility: hidden; height: 0; overflow: hidden; }
+
+      /* Reset page layout */
+      body { background: white !important; }
+      .lg\\:pl-64 { padding-left: 0 !important; }
+      .space-y-6 > * { break-inside: avoid; }
+
+      /* Make content full width */
+      .max-w-7xl { max-width: 100% !important; }
+
+      /* Ensure tables are visible */
+      table { width: 100%; border-collapse: collapse; font-size: 10pt; }
+      th, td { border: 1px solid #ddd; padding: 4px 8px; text-align: left; }
+      th { background: #f5f5f5 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+      /* Progress bars - show as text */
+      .bg-amber-500, .bg-emerald-500, .bg-violet-500 {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+
+      /* Page breaks */
+      h1, h2 { page-break-after: avoid; }
+      .bg-white { box-shadow: none !important; border: 1px solid #ddd !important; }
+
+      /* Print header */
+      .print-header { display: block !important; text-align: center; margin-bottom: 20px; }
+      .print-header h1 { font-size: 18pt; color: #2d5016; }
+      .print-header p { font-size: 10pt; color: #666; }
+    }
+
+    /* Hide print header on screen */
+    .print-header { display: none; }
   </style>
 </head>
 <body class="bg-gray-50">
@@ -304,6 +348,310 @@ async function restoreRecord(tableName, id) {
     .update({ deleted_at: null })
     .eq('id', id);
   if (error) throw error;
+}
+
+// ============================================================================
+// EXPORT UTILITIES
+// ============================================================================
+
+// Convert data array to CSV string
+function arrayToCSV(data, columns) {
+  if (!data || data.length === 0) return '';
+
+  const headers = columns.map(c => c.label).join(',');
+  const rows = data.map(row =>
+    columns.map(c => {
+      let val = c.getter ? c.getter(row) : row[c.key];
+      if (val === null || val === undefined) val = '';
+      // Escape quotes and wrap in quotes if contains comma, quote, or newline
+      val = String(val);
+      if (val.includes(',') || val.includes('"') || val.includes('\n')) {
+        val = '"' + val.replace(/"/g, '""') + '"';
+      }
+      return val;
+    }).join(',')
+  );
+
+  return headers + '\n' + rows.join('\n');
+}
+
+// Download CSV file
+function downloadCSV(csvContent, filename) {
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(link.href);
+}
+
+// Format date for display
+function formatDate(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr);
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// Format currency
+function formatCurrency(val) {
+  if (val === null || val === undefined) return '';
+  return '$' + Number(val).toFixed(2);
+}
+
+// Format number with commas
+function formatNumber(val) {
+  if (val === null || val === undefined) return '';
+  return Number(val).toLocaleString();
+}
+
+// Export contracts to CSV
+function exportContractsCSV(contracts, cropYear) {
+  const columns = [
+    { label: 'Date', getter: r => formatDate(r.contract_date) },
+    { label: 'Type', key: 'contract_type' },
+    { label: 'Commodity', key: 'commodity_name' },
+    { label: 'Buyer', key: 'buyer_name' },
+    { label: 'Bushels', getter: r => r.bushels },
+    { label: 'Cash Price', getter: r => r.cash_price },
+    { label: 'Futures Price', getter: r => r.futures_price },
+    { label: 'Basis', getter: r => r.basis },
+    { label: 'Expected Basis', getter: r => r.expected_basis },
+    { label: 'Option Type', key: 'option_type' },
+    { label: 'Position', key: 'position_type' },
+    { label: 'Strike Price', getter: r => r.strike_price },
+    { label: 'Premium', getter: r => r.premium },
+    { label: 'Futures Month', key: 'futures_month' },
+    { label: 'Delivery Start', getter: r => formatDate(r.delivery_start) },
+    { label: 'Delivery End', getter: r => formatDate(r.delivery_end) },
+    { label: 'Contract #', key: 'contract_number' },
+    { label: 'Status', key: 'status' },
+    { label: 'Notes', key: 'notes' }
+  ];
+
+  const csv = arrayToCSV(contracts, columns);
+  const filename = `graintrack-contracts-${cropYear}.csv`;
+  downloadCSV(csv, filename);
+}
+
+// Export production to CSV
+function exportProductionCSV(production, cropYear) {
+  const columns = [
+    { label: 'Farm', key: 'farm_name' },
+    { label: 'Field', key: 'field_name' },
+    { label: 'Crop', key: 'display_name' },
+    { label: 'Planted Acres', getter: r => r.planted_acres },
+    { label: 'Est. Yield', getter: r => r.estimated_yield },
+    { label: 'Expected Bu', getter: r => Math.round(r.expected_marketable || 0) },
+    { label: 'Actual Production', getter: r => r.actual_production },
+    { label: 'Actual Bu', getter: r => r.actual_marketable ? Math.round(r.actual_marketable) : '' },
+    { label: 'Share', getter: r => r.effective_share ? (r.effective_share * 100).toFixed(1) + '%' : '' },
+    { label: 'Irrigated', getter: r => r.is_irrigated ? 'Yes' : 'No' },
+    { label: 'Double Crop', getter: r => r.is_double_crop ? 'Yes' : 'No' },
+    { label: 'Status', key: 'status' },
+    { label: 'Notes', key: 'notes' }
+  ];
+
+  const csv = arrayToCSV(production, columns);
+  const filename = `graintrack-production-${cropYear}.csv`;
+  downloadCSV(csv, filename);
+}
+
+// Generate marketing summary for PDF
+function generateMarketingSummary(contracts, production, cropYear) {
+  // Group contracts by commodity
+  const byComm = {};
+  contracts.forEach(c => {
+    if (!byComm[c.commodity_name]) {
+      byComm[c.commodity_name] = { contracted: 0, hedged: 0, cashValue: 0, contracts: [] };
+    }
+    byComm[c.commodity_name].contracts.push(c);
+    if (['CASH', 'HTA', 'BASIS'].includes(c.contract_type)) {
+      byComm[c.commodity_name].contracted += c.bushels;
+    }
+    if (['CASH', 'FUTURES', 'HTA'].includes(c.contract_type)) {
+      byComm[c.commodity_name].hedged += c.bushels;
+      byComm[c.commodity_name].cashValue += c.bushels * (c.effective_price || 0);
+    }
+  });
+
+  // Group production by commodity
+  const prodByComm = {};
+  production.forEach(p => {
+    if (!prodByComm[p.commodity_name]) {
+      prodByComm[p.commodity_name] = { expected: 0, actual: 0 };
+    }
+    prodByComm[p.commodity_name].expected += p.expected_marketable || 0;
+    if (p.actual_marketable) prodByComm[p.commodity_name].actual += p.actual_marketable;
+  });
+
+  return { byComm, prodByComm, cropYear };
+}
+
+// Generate PDF Marketing Summary Report
+function generateMarketingPDF(contracts, production, cropYear) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const margin = 14;
+
+  // Title
+  doc.setFontSize(20);
+  doc.setTextColor(45, 80, 22); // #2d5016
+  doc.text('GrainTrack Marketing Summary', margin, 20);
+
+  doc.setFontSize(12);
+  doc.setTextColor(100, 100, 100);
+  doc.text(`${cropYear} Crop Year`, margin, 28);
+  doc.text(`Generated: ${new Date().toLocaleDateString()}`, pageWidth - margin - 50, 28);
+
+  // Group by commodity
+  const summary = generateMarketingSummary(contracts, production, cropYear);
+  const commodities = Object.keys(summary.byComm).sort();
+
+  let yPos = 40;
+
+  commodities.forEach((comm, idx) => {
+    const data = summary.byComm[comm];
+    const prod = summary.prodByComm[comm] || { expected: 0, actual: 0 };
+
+    // Check if we need a new page
+    if (yPos > 250) {
+      doc.addPage();
+      yPos = 20;
+    }
+
+    // Commodity header
+    doc.setFontSize(14);
+    doc.setTextColor(45, 80, 22);
+    doc.text(comm, margin, yPos);
+    yPos += 8;
+
+    // Production summary
+    doc.setFontSize(10);
+    doc.setTextColor(60, 60, 60);
+    const expectedBu = Math.round(prod.expected).toLocaleString();
+    const actualBu = prod.actual ? Math.round(prod.actual).toLocaleString() : 'TBD';
+    doc.text(`Production: ${expectedBu} bu expected | ${actualBu} bu actual`, margin, yPos);
+    yPos += 6;
+
+    // Contracts summary
+    const contracted = data.contracted.toLocaleString();
+    const hedged = data.hedged.toLocaleString();
+    const pctContracted = prod.expected > 0 ? ((data.contracted / prod.expected) * 100).toFixed(1) : '0';
+    doc.text(`Contracted: ${contracted} bu (${pctContracted}%) | Hedged: ${hedged} bu`, margin, yPos);
+    yPos += 6;
+
+    if (data.hedged > 0) {
+      const avgPrice = (data.cashValue / data.hedged).toFixed(2);
+      doc.text(`Weighted Avg Price: $${avgPrice}/bu`, margin, yPos);
+      yPos += 6;
+    }
+
+    // Contracts table
+    const tableData = data.contracts.map(c => [
+      formatDate(c.contract_date),
+      c.contract_type,
+      c.bushels.toLocaleString(),
+      c.contract_type === 'CASH' ? formatCurrency(c.cash_price) :
+        c.contract_type === 'OPTIONS' ? `${c.option_type} ${formatCurrency(c.strike_price)}` :
+        formatCurrency(c.futures_price || c.effective_price),
+      c.buyer_name || '-'
+    ]);
+
+    if (tableData.length > 0) {
+      doc.autoTable({
+        startY: yPos,
+        head: [['Date', 'Type', 'Bushels', 'Price', 'Buyer']],
+        body: tableData,
+        margin: { left: margin, right: margin },
+        styles: { fontSize: 9, cellPadding: 2 },
+        headStyles: { fillColor: [45, 80, 22], textColor: 255 },
+        alternateRowStyles: { fillColor: [245, 241, 232] }
+      });
+      yPos = doc.lastAutoTable.finalY + 10;
+    } else {
+      yPos += 5;
+    }
+  });
+
+  // Footer
+  const pageCount = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    doc.setFontSize(8);
+    doc.setTextColor(150, 150, 150);
+    doc.text(`Page ${i} of ${pageCount}`, pageWidth / 2, doc.internal.pageSize.getHeight() - 10, { align: 'center' });
+  }
+
+  doc.save(`graintrack-marketing-${cropYear}.pdf`);
+}
+
+// Generate PDF Contracts List
+function generateContractsPDF(contracts, cropYear) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF('landscape');
+
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const margin = 14;
+
+  // Title
+  doc.setFontSize(18);
+  doc.setTextColor(45, 80, 22);
+  doc.text('GrainTrack Contracts', margin, 15);
+
+  doc.setFontSize(11);
+  doc.setTextColor(100, 100, 100);
+  doc.text(`${cropYear} Crop Year | Generated: ${new Date().toLocaleDateString()}`, margin, 22);
+
+  // Contracts table
+  const tableData = contracts.map(c => [
+    formatDate(c.contract_date),
+    c.contract_type,
+    c.commodity_name,
+    c.bushels.toLocaleString(),
+    c.contract_type === 'CASH' ? formatCurrency(c.cash_price) :
+      c.contract_type === 'OPTIONS' ? `${c.position_type || ''} ${c.option_type} ${formatCurrency(c.strike_price)}` :
+      c.contract_type === 'BASIS' ? formatCurrency(c.basis) :
+      formatCurrency(c.futures_price),
+    c.contract_type === 'OPTIONS' ? formatCurrency(c.premium) : (c.expected_basis ? formatCurrency(c.expected_basis) : '-'),
+    c.buyer_name || '-',
+    c.contract_number || '-'
+  ]);
+
+  doc.autoTable({
+    startY: 28,
+    head: [['Date', 'Type', 'Commodity', 'Bushels', 'Price', 'Basis/Premium', 'Buyer', 'Contract #']],
+    body: tableData,
+    margin: { left: margin, right: margin },
+    styles: { fontSize: 9, cellPadding: 2 },
+    headStyles: { fillColor: [45, 80, 22], textColor: 255 },
+    alternateRowStyles: { fillColor: [245, 241, 232] },
+    columnStyles: {
+      3: { halign: 'right' },
+      4: { halign: 'right' },
+      5: { halign: 'right' }
+    }
+  });
+
+  // Totals
+  const totalBushels = contracts.reduce((sum, c) => sum + c.bushels, 0);
+  doc.setFontSize(10);
+  doc.setTextColor(60, 60, 60);
+  doc.text(`Total: ${contracts.length} contracts | ${totalBushels.toLocaleString()} bushels`, margin, doc.lastAutoTable.finalY + 8);
+
+  // Footer
+  const pageCount = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    doc.setFontSize(8);
+    doc.setTextColor(150, 150, 150);
+    doc.text(`Page ${i} of ${pageCount}`, pageWidth / 2, doc.internal.pageSize.getHeight() - 10, { align: 'center' });
+  }
+
+  doc.save(`graintrack-contracts-${cropYear}.pdf`);
 }
 
 // ============================================================================
@@ -1997,6 +2345,24 @@ function DashboardPage({ cropYear, onYearChange }) {
   const [marketingView, setMarketingView] = useState(() => localStorage.getItem('graintrack_marketingview') || 'contracted');
   const [editingPrice, setEditingPrice] = useState(null);
   const [tempPrice, setTempPrice] = useState('');
+  const [exporting, setExporting] = useState(false);
+  const { addToast } = useToast();
+
+  const handleExportPDF = async () => {
+    setExporting(true);
+    try {
+      const [contracts, production] = await Promise.all([
+        getContracts(cropYear),
+        getProductionByCropYear(cropYear)
+      ]);
+      generateMarketingPDF(contracts, production, cropYear);
+      addToast('Marketing summary exported to PDF', { type: 'success' });
+    } catch (e) {
+      console.error('Export error:', e);
+      addToast('Failed to export PDF', { type: 'error' });
+    }
+    setExporting(false);
+  };
 
   const currentYear = new Date().getFullYear();
   const cropYears = [currentYear - 1, currentYear, currentYear + 1, currentYear + 2];
@@ -2095,6 +2461,15 @@ function DashboardPage({ cropYear, onYearChange }) {
               Hedged
             </button>
           </div>
+          <button
+            onClick={handleExportPDF}
+            disabled={exporting}
+            className="flex items-center gap-2 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm disabled:opacity-50"
+            title="Export Marketing Summary PDF"
+          >
+            {exporting ? <Icon name="refresh-cw" className="animate-spin" size={16} /> : <Icon name="download" size={16} />}
+            <span className="hidden sm:inline">PDF Report</span>
+          </button>
         </div>
       </div>
 
@@ -2818,6 +3193,7 @@ function ContractsPage({ cropYear, onYearChange }) {
   const [editForm, setEditForm] = useState({});
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [showExportMenu, setShowExportMenu] = useState(false);
   const { addToast } = useToast();
 
   const currentYear = new Date().getFullYear();
@@ -2837,6 +3213,17 @@ function ContractsPage({ cropYear, onYearChange }) {
   };
 
   useEffect(() => { loadData(); }, [cropYear]);
+
+  const handleExport = (format) => {
+    setShowExportMenu(false);
+    if (format === 'csv') {
+      exportContractsCSV(filteredContracts, cropYear);
+      addToast('Contracts exported to CSV', { type: 'success' });
+    } else if (format === 'pdf') {
+      generateContractsPDF(filteredContracts, cropYear);
+      addToast('Contracts exported to PDF', { type: 'success' });
+    }
+  };
 
   const handleDelete = async (contract) => {
     setConfirmDelete(contract);
@@ -2982,6 +3369,37 @@ function ContractsPage({ cropYear, onYearChange }) {
             className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium focus:ring-2 focus:ring-amber-500">
             {cropYears.map(year => <option key={year} value={year}>{year}</option>)}
           </select>
+          <div className="relative">
+            <button
+              onClick={() => setShowExportMenu(!showExportMenu)}
+              className="flex items-center gap-2 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm"
+            >
+              <Icon name="download" size={16} />
+              <span className="hidden sm:inline">Export</span>
+              <Icon name="chevron-down" size={14} />
+            </button>
+            {showExportMenu && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setShowExportMenu(false)} />
+                <div className="absolute right-0 mt-2 w-40 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-20">
+                  <button
+                    onClick={() => handleExport('csv')}
+                    className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 flex items-center gap-2"
+                  >
+                    <Icon name="file-text" size={16} />
+                    Export CSV
+                  </button>
+                  <button
+                    onClick={() => handleExport('pdf')}
+                    className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 flex items-center gap-2"
+                  >
+                    <Icon name="file-text" size={16} />
+                    Export PDF
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
@@ -3577,6 +3995,14 @@ function ProductionPage({ cropYear, onYearChange }) {
             className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium focus:ring-2 focus:ring-amber-500">
             {cropYears.map(year => <option key={year} value={year}>{year} Crop Year</option>)}
           </select>
+          <button
+            onClick={() => exportProductionCSV(rows, cropYear)}
+            className="flex items-center gap-2 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm"
+            title="Export to CSV"
+          >
+            <Icon name="download" size={16} />
+            <span className="hidden sm:inline">Export</span>
+          </button>
           <button onClick={handleSave} disabled={!hasModifiedRows || saving}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium ${
               hasModifiedRows ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}>
