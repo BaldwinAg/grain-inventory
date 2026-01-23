@@ -1741,6 +1741,33 @@ async function setReferenceLocation(locationId) {
   return true;
 }
 
+// Get default reference location basis (for pre-harvest cash price)
+async function getReferenceBasis(cropYear) {
+  // Find the reference location
+  const { data: refLocation } = await db
+    .from('grain_locations')
+    .select('id, name')
+    .eq('is_basis_reference', true)
+    .single();
+
+  if (!refLocation) return { location: null, basis: {} };
+
+  // Get basis for this location
+  const { data: basisData } = await db
+    .from('location_basis')
+    .select('commodity_id, basis')
+    .eq('location_id', refLocation.id)
+    .eq('crop_year', cropYear)
+    .is('deleted_at', null);
+
+  const basisByCommodity = {};
+  for (const b of (basisData || [])) {
+    basisByCommodity[b.commodity_id] = b.basis;
+  }
+
+  return { location: refLocation, basis: basisByCommodity };
+}
+
 async function setLocationOffset(locationId, referenceLocationId, offset) {
   const { error } = await db
     .from('grain_locations')
@@ -2324,14 +2351,15 @@ function fileToBase64(file) {
 // Dashboard data
 async function getDashboardData(cropYear, detailMode = 'combined') {
   const byPractice = detailMode === 'detailed';
-  
-  const [commodities, productionSummary, contractsSummary, insuranceSettings, marketPrices] = 
+
+  const [commodities, productionSummary, contractsSummary, insuranceSettings, marketPrices, referenceBasis] =
     await Promise.all([
       getCommodities(),
       getProductionSummary(cropYear, byPractice),
       getContractsSummary(cropYear),
       getInsuranceSettings(cropYear),
-      getLatestMarketPrices()
+      getLatestMarketPrices(),
+      getReferenceBasis(cropYear)
     ]);
 
   const commodityProgress = [];
@@ -2456,6 +2484,8 @@ async function getDashboardData(cropYear, detailMode = 'combined') {
           market_trend: marketData?.trend || null,
           market_support_1: marketData?.support_1 || null,
           market_resistance_1: marketData?.resistance_1 || null,
+          reference_basis: referenceBasis.basis[commodity.id] || null,
+          reference_location: referenceBasis.location?.name || null,
           contracts_by_type: contracts?.contracts_by_type || {
             CASH: { count: 0, bushels: 0 },
             FUTURES: { count: 0, bushels: 0 },
@@ -2553,6 +2583,8 @@ async function getDashboardData(cropYear, detailMode = 'combined') {
           market_trend: marketData?.trend || null,
           market_support_1: marketData?.support_1 || null,
           market_resistance_1: marketData?.resistance_1 || null,
+          reference_basis: referenceBasis.basis[commodity.id] || null,
+          reference_location: referenceBasis.location?.name || null,
           contracts_by_type: contracts?.contracts_by_type || {
             CASH: { count: 0, bushels: 0 },
             FUTURES: { count: 0, bushels: 0 },
@@ -2787,6 +2819,10 @@ function DashboardPage({ cropYear, onYearChange }) {
                                : signal === 'buy' ? 'text-red-600'
                                : 'text-gray-500';
 
+              const cashPrice = c.reference_basis !== null
+                ? c.current_market_price + c.reference_basis
+                : null;
+
               return (
                 <div key={c.commodity_id} className={`rounded-xl shadow-sm border-2 p-4 ${bgColor}`}>
                   {/* Header with signal */}
@@ -2804,10 +2840,23 @@ function DashboardPage({ cropYear, onYearChange }) {
                     )}
                   </div>
 
-                  {/* Price */}
-                  <p className={`text-2xl font-bold ${textColor}`}>
-                    ${c.current_market_price?.toFixed(2)}
-                  </p>
+                  {/* Prices */}
+                  <div className="flex items-baseline gap-2">
+                    <p className={`text-2xl font-bold ${textColor}`}>
+                      ${c.current_market_price?.toFixed(2)}
+                    </p>
+                    <span className="text-sm text-gray-400">futures</span>
+                  </div>
+                  {cashPrice !== null && (
+                    <div className="flex items-baseline gap-2 mt-1">
+                      <p className={`text-lg font-semibold ${textColor}`}>
+                        ${cashPrice.toFixed(2)}
+                      </p>
+                      <span className="text-xs text-gray-400">
+                        cash @ {c.reference_location} ({c.reference_basis >= 0 ? '+' : ''}{c.reference_basis?.toFixed(2)})
+                      </span>
+                    </div>
+                  )}
 
                   {/* Support / Resistance */}
                   <div className="flex gap-4 mt-2 text-sm">

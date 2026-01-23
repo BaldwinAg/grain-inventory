@@ -120,6 +120,21 @@ grain-inventory/
 - [ ] Warn 7/14/30 days before expiry
 - [ ] Dashboard widget for expiring options
 
+### 4.4 Technical Signal Alerts (Twilio SMS)
+- [ ] Supabase Edge Function to monitor signal changes
+- [ ] Twilio integration for SMS notifications
+- [ ] Alert when RSI crosses overbought (>70) or oversold (<30)
+- [ ] Alert when Stochastic crosses overbought (>80) or oversold (<20)
+- [ ] Alert when Barchart trend_signal changes to buy/sell
+- [ ] Configurable alert thresholds per user
+- [ ] Rate limiting to prevent spam (max alerts per hour)
+
+### 4.5 Inventory Cash Price by Location
+- [ ] Fetch location-specific basis for each storage location
+- [ ] Calculate cash price per inventory row (futures + location basis)
+- [ ] Show inventory value (bushels * cash price) per location
+- [ ] Total portfolio value across all locations
+
 ---
 
 ## Phase 5: Multi-User & Permissions
@@ -241,4 +256,4 @@ ALTER TABLE contracts ADD COLUMN organization_id UUID REFERENCES organizations(i
 
 ---
 
-*Last updated: 2026-01-22*
+*Last updated: 2026-01-23*
