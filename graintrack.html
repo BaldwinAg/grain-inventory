@@ -762,7 +762,7 @@ async function getProductionByCropYear(cropYear, commodityId, includeDeleted = f
 
   const fieldIds = fields.map(f => f.id);
 
-  let query = supabase
+  let query = db
     .from('field_crop_years')
     .select(`*, commodities:commodity_id (id, name)`)
     .eq('crop_year', cropYear)
@@ -936,7 +936,7 @@ async function updateGrainFieldSetting(fieldId, isActive) {
 
 // Contracts
 async function getContracts(cropYear, commodityId, includeOptionQuotes = true, includeDeleted = false) {
-  let query = supabase
+  let query = db
     .from('contracts')
     .select(`*, commodities:commodity_id (id, name), buyers:buyer_id (id, name)`)
     .neq('status', 'CANCELLED')
@@ -1377,7 +1377,7 @@ async function getInsuranceSettings(cropYear) {
 }
 
 async function upsertInsuranceSetting(setting) {
-  let existingQuery = supabase
+  let existingQuery = db
     .from('insurance_settings')
     .select('id')
     .eq('crop_year', setting.crop_year)
@@ -1594,7 +1594,7 @@ async function upsertMarketPrice(commodityId, price) {
 // ============================================================================
 
 async function getLocationBasis(cropYear = null) {
-  let query = supabase
+  let query = db
     .from('location_basis')
     .select(`
       id, location_id, commodity_id, crop_year, basis, futures_month, notes, updated_at,
@@ -1778,7 +1778,7 @@ async function getDeliveryLocations() {
 
 // Inventory
 async function getInventory(cropYear) {
-  let query = supabase
+  let query = db
     .from('grain_inventory')
     .select(`
       id, location_id, commodity_id, crop_year, bushels,
@@ -1852,7 +1852,7 @@ async function removeFromInventory(locationId, commodityId, cropYear, bushels) {
 // ============================================================================
 
 async function getInventoryTransactions(locationId, commodityId, cropYear) {
-  let query = supabase
+  let query = db
     .from('inventory_transactions')
     .select(`
       *,
