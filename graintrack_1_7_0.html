@@ -1,5 +1,5 @@
 <!--
-  GrainTrack Suite v1.7.1
+  GrainTrack Suite v1.7.2
   Grain marketing and inventory management
   https://github.com/BaldwinAg/grain-inventory
 -->
@@ -8,7 +8,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>GrainTrack Suite v1.7.1</title>
+  <title>GrainTrack Suite v1.7.2</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -120,6 +120,193 @@ function Icon({ name, size = 20, className = '' }) {
 }
 
 // ============================================================================
+// TOAST NOTIFICATION SYSTEM
+// ============================================================================
+const ToastContext = React.createContext(null);
+
+function ToastProvider({ children }) {
+  const [toasts, setToasts] = useState([]);
+
+  const addToast = useCallback((message, options = {}) => {
+    const id = Date.now();
+    const toast = {
+      id,
+      message,
+      type: options.type || 'info', // 'info', 'success', 'error', 'warning'
+      undoAction: options.undoAction || null,
+      duration: options.duration || 5000
+    };
+    setToasts(prev => [...prev, toast]);
+
+    // Auto-remove after duration (unless it has undo action)
+    if (!options.undoAction) {
+      setTimeout(() => {
+        setToasts(prev => prev.filter(t => t.id !== id));
+      }, toast.duration);
+    }
+
+    return id;
+  }, []);
+
+  const removeToast = useCallback((id) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  }, []);
+
+  return (
+    <ToastContext.Provider value={{ addToast, removeToast }}>
+      {children}
+      <ToastContainer toasts={toasts} onRemove={removeToast} />
+    </ToastContext.Provider>
+  );
+}
+
+function ToastContainer({ toasts, onRemove }) {
+  return (
+    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
+      {toasts.map(toast => (
+        <Toast key={toast.id} toast={toast} onRemove={onRemove} />
+      ))}
+    </div>
+  );
+}
+
+function Toast({ toast, onRemove }) {
+  const [timeLeft, setTimeLeft] = useState(5);
+  const timerRef = React.useRef(null);
+
+  useEffect(() => {
+    if (toast.undoAction) {
+      timerRef.current = setInterval(() => {
+        setTimeLeft(prev => {
+          if (prev <= 1) {
+            clearInterval(timerRef.current);
+            onRemove(toast.id);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [toast.id, toast.undoAction, onRemove]);
+
+  const handleUndo = async () => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    if (toast.undoAction) {
+      await toast.undoAction();
+    }
+    onRemove(toast.id);
+  };
+
+  const bgColor = {
+    info: 'bg-gray-800',
+    success: 'bg-green-600',
+    error: 'bg-red-600',
+    warning: 'bg-amber-600'
+  }[toast.type] || 'bg-gray-800';
+
+  return (
+    <div className={`${bgColor} text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-3 min-w-72`}>
+      <span className="flex-1">{toast.message}</span>
+      {toast.undoAction && (
+        <>
+          <button
+            onClick={handleUndo}
+            className="font-semibold hover:underline"
+          >
+            Undo ({timeLeft}s)
+          </button>
+        </>
+      )}
+      <button onClick={() => onRemove(toast.id)} className="hover:opacity-75">
+        <Icon name="x" size={16} />
+      </button>
+    </div>
+  );
+}
+
+function useToast() {
+  const context = React.useContext(ToastContext);
+  if (!context) throw new Error('useToast must be used within ToastProvider');
+  return context;
+}
+
+// ============================================================================
+// CONFIRMATION MODAL
+// ============================================================================
+function ConfirmModal({ isOpen, title, message, confirmText, cancelText, onConfirm, onCancel, variant }) {
+  if (!isOpen) return null;
+
+  const confirmBg = variant === 'danger' ? 'bg-red-600 hover:bg-red-700' : 'bg-amber-600 hover:bg-amber-700';
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="fixed inset-0 bg-black bg-opacity-50" onClick={onCancel} />
+      <div className="relative bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+        <h3 className="text-lg font-semibold text-gray-900 mb-2">{title || 'Confirm'}</h3>
+        <p className="text-gray-600 mb-6">{message}</p>
+        <div className="flex justify-end gap-3">
+          <button
+            onClick={onCancel}
+            className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg"
+          >
+            {cancelText || 'Cancel'}
+          </button>
+          <button
+            onClick={onConfirm}
+            className={`px-4 py-2 text-white rounded-lg ${confirmBg}`}
+          >
+            {confirmText || 'Confirm'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// AUDIT LOGGING
+// ============================================================================
+async function logAudit(tableName, recordId, action, oldValues = null, newValues = null) {
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    await supabase.from('audit_log').insert([{
+      user_id: user?.id || null,
+      user_email: user?.email || null,
+      table_name: tableName,
+      record_id: recordId,
+      action: action,
+      old_values: oldValues,
+      new_values: newValues
+    }]);
+  } catch (e) {
+    console.error('Audit log error:', e);
+  }
+}
+
+// Soft delete helper - marks record as deleted instead of removing
+async function softDelete(tableName, id) {
+  const deletedAt = new Date().toISOString();
+  const { error } = await supabase
+    .from(tableName)
+    .update({ deleted_at: deletedAt })
+    .eq('id', id);
+  if (error) throw error;
+  return deletedAt;
+}
+
+// Restore helper - removes deleted_at timestamp
+async function restoreRecord(tableName, id) {
+  const { error } = await supabase
+    .from(tableName)
+    .update({ deleted_at: null })
+    .eq('id', id);
+  if (error) throw error;
+}
+
+// ============================================================================
 // SERVICES
 // ============================================================================
 
@@ -135,9 +322,10 @@ async function getCommodities() {
 }
 
 // Buyers
-async function getBuyers(includeInactive = false) {
+async function getBuyers(includeInactive = false, includeDeleted = false) {
   let query = supabase.from('buyers').select('*').order('name');
   if (!includeInactive) query = query.eq('active', true);
+  if (!includeDeleted) query = query.is('deleted_at', null);
   const { data, error } = await query;
   if (error) { console.error('Error fetching buyers:', error); return []; }
   return data || [];
@@ -165,9 +353,16 @@ async function updateBuyer(id, updates) {
 }
 
 async function deleteBuyer(id) {
-  const { error } = await supabase.from('buyers').delete().eq('id', id);
-  if (error) throw error;
-  return true;
+  // Get current values for audit log
+  const { data: oldRecord } = await supabase.from('buyers').select('*').eq('id', id).single();
+
+  // Soft delete
+  await softDelete('buyers', id);
+
+  // Log audit
+  await logAudit('buyers', id, 'DELETE', oldRecord, null);
+
+  return oldRecord; // Return for undo
 }
 
 // Production / Fields
@@ -213,7 +408,7 @@ async function getFieldsForGrain() {
     });
 }
 
-async function getProductionByCropYear(cropYear, commodityId) {
+async function getProductionByCropYear(cropYear, commodityId, includeDeleted = false) {
   const fields = await getFieldsForGrain();
   if (!fields.length) return [];
 
@@ -226,6 +421,7 @@ async function getProductionByCropYear(cropYear, commodityId) {
     .in('field_id', fieldIds);
 
   if (commodityId) query = query.eq('commodity_id', commodityId);
+  if (!includeDeleted) query = query.is('deleted_at', null);
 
   const { data, error } = await query;
   if (error) { console.error('Error fetching production:', error); return []; }
@@ -337,8 +533,27 @@ async function updateProduction(id, updates) {
 }
 
 async function deleteProduction(id) {
-  const { error } = await supabase.from('field_crop_years').delete().eq('id', id);
-  if (error) { console.error('Error deleting production:', error); return false; }
+  // Get current values for audit log
+  const { data: oldRecord } = await supabase.from('field_crop_years').select('*').eq('id', id).single();
+
+  // Soft delete
+  await softDelete('field_crop_years', id);
+
+  // Log audit
+  await logAudit('field_crop_years', id, 'DELETE', oldRecord, null);
+
+  return oldRecord; // Return for undo
+}
+
+// Restore a soft-deleted production record
+async function restoreProduction(id) {
+  const { data: record } = await supabase.from('field_crop_years').select('*').eq('id', id).single();
+
+  await restoreRecord('field_crop_years', id);
+
+  // Log audit
+  await logAudit('field_crop_years', id, 'RESTORE', null, record);
+
   return true;
 }
 
@@ -372,7 +587,7 @@ async function updateGrainFieldSetting(fieldId, isActive) {
 }
 
 // Contracts
-async function getContracts(cropYear, commodityId, includeOptionQuotes = true) {
+async function getContracts(cropYear, commodityId, includeOptionQuotes = true, includeDeleted = false) {
   let query = supabase
     .from('contracts')
     .select(`*, commodities:commodity_id (id, name), buyers:buyer_id (id, name)`)
@@ -381,6 +596,7 @@ async function getContracts(cropYear, commodityId, includeOptionQuotes = true) {
 
   if (cropYear) query = query.eq('crop_year', cropYear);
   if (commodityId) query = query.eq('commodity_id', commodityId);
+  if (!includeDeleted) query = query.is('deleted_at', null);
 
   const { data, error } = await query;
   if (error) { console.error('Error fetching contracts:', error); return []; }
@@ -655,12 +871,37 @@ async function updateContract(id, updates) {
 }
 
 async function deleteContract(id) {
+  // Get current values for audit log
+  const { data: oldRecord } = await supabase.from('contracts').select('*').eq('id', id).single();
+
+  // Soft delete with status change
   const { error } = await supabase
     .from('contracts')
-    .update({ status: 'CANCELLED' })
+    .update({ status: 'CANCELLED', deleted_at: new Date().toISOString() })
     .eq('id', id);
 
-  if (error) { console.error('Error cancelling contract:', error); return false; }
+  if (error) { console.error('Error cancelling contract:', error); return null; }
+
+  // Log audit
+  await logAudit('contracts', id, 'DELETE', oldRecord, null);
+
+  return oldRecord; // Return for undo
+}
+
+// Restore a soft-deleted contract
+async function restoreContract(id) {
+  const { data: record } = await supabase.from('contracts').select('*').eq('id', id).single();
+
+  const { error } = await supabase
+    .from('contracts')
+    .update({ status: 'OPEN', deleted_at: null })
+    .eq('id', id);
+
+  if (error) { console.error('Error restoring contract:', error); return false; }
+
+  // Log audit
+  await logAudit('contracts', id, 'RESTORE', null, record);
+
   return true;
 }
 
@@ -2576,6 +2817,8 @@ function ContractsPage({ cropYear, onYearChange }) {
   const [editingContract, setEditingContract] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [saving, setSaving] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const { addToast } = useToast();
 
   const currentYear = new Date().getFullYear();
   const cropYears = [currentYear - 1, currentYear, currentYear + 1, currentYear + 2];
@@ -2595,10 +2838,26 @@ function ContractsPage({ cropYear, onYearChange }) {
 
   useEffect(() => { loadData(); }, [cropYear]);
 
-  const handleDelete = async (id) => {
-    if (!confirm('Cancel this contract?')) return;
-    await deleteContract(id);
-    loadData();
+  const handleDelete = async (contract) => {
+    setConfirmDelete(contract);
+  };
+
+  const confirmDeleteContract = async () => {
+    const contract = confirmDelete;
+    setConfirmDelete(null);
+
+    const oldRecord = await deleteContract(contract.id);
+    if (oldRecord) {
+      loadData();
+      addToast(`Contract cancelled: ${contract.bushels?.toLocaleString()} bu ${contract.commodity_name}`, {
+        type: 'warning',
+        undoAction: async () => {
+          await restoreContract(contract.id);
+          loadData();
+          addToast('Contract restored', { type: 'success' });
+        }
+      });
+    }
   };
 
   const handleEdit = (contract) => {
@@ -2891,7 +3150,7 @@ function ContractsPage({ cropYear, onYearChange }) {
                         <button onClick={() => handleEdit(c)} className="p-1.5 text-blue-500 hover:bg-blue-50 rounded" title="Edit">
                           <Icon name="edit-2" size={16} />
                         </button>
-                        <button onClick={() => handleDelete(c.id)} className="p-1.5 text-red-500 hover:bg-red-50 rounded" title="Cancel">
+                        <button onClick={() => handleDelete(c)} className="p-1.5 text-red-500 hover:bg-red-50 rounded" title="Cancel">
                           <Icon name="trash-2" size={16} />
                         </button>
                       </div>
@@ -3113,6 +3372,18 @@ function ContractsPage({ cropYear, onYearChange }) {
           </div>
         </div>
       )}
+
+      {/* Delete Confirmation Modal */}
+      <ConfirmModal
+        isOpen={!!confirmDelete}
+        title="Cancel Contract"
+        message={confirmDelete ? `Are you sure you want to cancel this ${confirmDelete.bushels?.toLocaleString()} bu ${confirmDelete.commodity_name} contract?` : ''}
+        confirmText="Cancel Contract"
+        cancelText="Keep"
+        variant="danger"
+        onConfirm={confirmDeleteContract}
+        onCancel={() => setConfirmDelete(null)}
+      />
     </div>
   );
 }
@@ -3128,6 +3399,8 @@ function ProductionPage({ cropYear, onYearChange }) {
   const [addingToField, setAddingToField] = useState(null);
   const [newCrop, setNewCrop] = useState({ commodity_id: '', planted_acres: '', estimated_yield: '', share_override: '', is_irrigated: false, is_double_crop: false });
   const [collapsedFarms, setCollapsedFarms] = useState(new Set());
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const { addToast } = useToast();
 
   const currentYear = new Date().getFullYear();
   const cropYears = [currentYear - 1, currentYear, currentYear + 1, currentYear + 2];
@@ -3244,16 +3517,28 @@ function ProductionPage({ cropYear, onYearChange }) {
     setTimeout(() => setMessage(null), 3000);
   };
 
-  const handleDelete = async (row) => {
-    if (!confirm(`Delete ${row.display_name} on ${row.field_name}?`)) return;
-    const success = await deleteProduction(row.id);
-    if (success) {
-      setMessage({ type: 'success', text: 'Crop deleted' });
+  const handleDelete = (row) => {
+    setConfirmDelete(row);
+  };
+
+  const confirmDeleteProduction = async () => {
+    const row = confirmDelete;
+    setConfirmDelete(null);
+
+    const oldRecord = await deleteProduction(row.id);
+    if (oldRecord) {
       await loadProduction();
+      addToast(`Deleted ${row.display_name} on ${row.field_name}`, {
+        type: 'warning',
+        undoAction: async () => {
+          await restoreProduction(row.id);
+          await loadProduction();
+          addToast('Crop restored', { type: 'success' });
+        }
+      });
     } else {
-      setMessage({ type: 'error', text: 'Failed to delete' });
+      addToast('Failed to delete', { type: 'error' });
     }
-    setTimeout(() => setMessage(null), 3000);
   };
 
   const toggleFarm = (farmName) => {
@@ -3749,6 +4034,18 @@ function InsurancePage({ cropYear, onYearChange }) {
           </table>
         </div>
       </div>
+
+      {/* Delete Confirmation Modal */}
+      <ConfirmModal
+        isOpen={!!confirmDelete}
+        title="Delete Crop"
+        message={confirmDelete ? `Are you sure you want to delete ${confirmDelete.display_name} on ${confirmDelete.field_name}?` : ''}
+        confirmText="Delete"
+        cancelText="Cancel"
+        variant="danger"
+        onConfirm={confirmDeleteProduction}
+        onCancel={() => setConfirmDelete(null)}
+      />
     </div>
   );
 }
@@ -3760,6 +4057,8 @@ function BuyersPage() {
   const [newBuyerName, setNewBuyerName] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [editingName, setEditingName] = useState('');
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const { addToast } = useToast();
 
   const loadData = async () => {
     setLoading(true);
@@ -3795,12 +4094,30 @@ function BuyersPage() {
     } catch (e) { console.error(e); }
   };
 
-  const handleDelete = async (id) => {
-    if (!confirm('Delete this buyer?')) return;
+  const handleDelete = (buyer) => {
+    setConfirmDelete(buyer);
+  };
+
+  const confirmDeleteBuyer = async () => {
+    const buyer = confirmDelete;
+    setConfirmDelete(null);
+
     try {
-      await deleteBuyer(id);
+      const oldRecord = await deleteBuyer(buyer.id);
       loadData();
-    } catch (e) { console.error(e); }
+      addToast(`Deleted buyer: ${buyer.name}`, {
+        type: 'warning',
+        undoAction: async () => {
+          await restoreRecord('buyers', buyer.id);
+          await logAudit('buyers', buyer.id, 'RESTORE', null, oldRecord);
+          loadData();
+          addToast('Buyer restored', { type: 'success' });
+        }
+      });
+    } catch (e) {
+      console.error(e);
+      addToast('Failed to delete buyer', { type: 'error' });
+    }
   };
 
   if (loading) return <div className="flex items-center justify-center h-64"><Icon name="refresh-cw" className="animate-spin text-amber-600" size={32} /></div>;
@@ -3866,7 +4183,7 @@ function BuyersPage() {
                       title={buyer.active ? 'Deactivate' : 'Activate'}>
                       <Icon name={buyer.active ? 'eye-off' : 'eye'} size={16} />
                     </button>
-                    <button onClick={() => handleDelete(buyer.id)} className="p-1.5 text-red-500 hover:bg-red-50 rounded" title="Delete">
+                    <button onClick={() => handleDelete(buyer)} className="p-1.5 text-red-500 hover:bg-red-50 rounded" title="Delete">
                       <Icon name="trash-2" size={16} />
                     </button>
                   </div>
@@ -3879,6 +4196,18 @@ function BuyersPage() {
           <div className="p-8 text-center text-gray-500">No buyers configured</div>
         )}
       </div>
+
+      {/* Delete Confirmation Modal */}
+      <ConfirmModal
+        isOpen={!!confirmDelete}
+        title="Delete Buyer"
+        message={confirmDelete ? `Are you sure you want to delete "${confirmDelete.name}"?` : ''}
+        confirmText="Delete"
+        cancelText="Cancel"
+        variant="danger"
+        onConfirm={confirmDeleteBuyer}
+        onCancel={() => setConfirmDelete(null)}
+      />
     </div>
   );
 }
@@ -5562,7 +5891,11 @@ function App() {
 }
 
 // Render the app
-ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <ToastProvider>
+    <App />
+  </ToastProvider>
+);
 </script>
 </body>
 </html>

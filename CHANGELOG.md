@@ -1,5 +1,37 @@
 # GrainTrack Suite Changelog
 
+## [1.7.2] - 2026-01-22
+
+### Added - Data Integrity (Phase 2)
+- **Audit logging** - All create/update/delete operations logged to `audit_log` table
+  - Captures user, table, action, old/new values, timestamp
+- **Soft delete** for grain-specific tables
+  - Records marked with `deleted_at` instead of permanent removal
+  - Contracts, buyers, field_crop_years, etc.
+- **Toast notifications** with undo functionality
+  - 5-second undo window after delete actions
+  - Success, warning, and error message types
+- **Confirmation modals** for destructive actions
+  - Replaces native `confirm()` dialogs
+  - Better UX with clear messaging
+- **Restore functions** for undoing deletes
+  - `restoreContract()`, `restoreProduction()`, etc.
+  - Audit logged as 'RESTORE' action
+
+### Changed
+- Delete actions now show toast with "Undo" button
+- All queries filter out soft-deleted records by default
+- ContractsPage, ProductionPage, BuyersPage use new confirmation/toast system
+
+### Database
+New table:
+- `audit_log` - Stores all data change history
+
+New columns:
+- `deleted_at` (TIMESTAMPTZ) added to: contracts, buyers, commodities, field_crop_years, grain_field_settings, insurance_settings, location_basis, market_prices
+
+---
+
 ## [1.7.1] - 2026-01-22
 
 ### Added - Options Enhancements
