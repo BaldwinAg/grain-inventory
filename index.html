@@ -1,0 +1,63 @@
+<!--
+  GrainTrack Suite v1.7.1
+  Entry point - redirects to login or main app
+  https://github.com/BaldwinAg/grain-inventory
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#2d5016" />
+  <title>GrainTrack Suite</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      background: linear-gradient(135deg, #f5f1e8 0%, #e8e2d5 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .loader {
+      text-align: center;
+      color: #2d5016;
+    }
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid #e8e2d5;
+      border-top-color: #2d5016;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 16px;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <div class="loader">
+    <div class="spinner"></div>
+    <p>Loading GrainTrack...</p>
+  </div>
+
+  <script>
+    const SUPABASE_URL = 'https://xehapaasizntuzqzvwej.supabase.co';
+    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhlaGFwYWFzaXpudHV6cXp2d2VqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjgzMTkwOTksImV4cCI6MjA4Mzg5NTA5OX0.JTtRaVRfZ4DNddTdT2BsKgCNabErgsCB0rBCHlK0mbA';
+    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+    async function init() {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        window.location.href = 'graintrack_1_7_0.html';
+      } else {
+        window.location.href = 'login.html';
+      }
+    }
+    init();
+  </script>
+</body>
+</html>
