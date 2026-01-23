@@ -172,16 +172,22 @@ async function createContract(contract) {
       buyer_id: contract.buyer_id,
       bushels: contract.bushels,
       bushels_filled: 0,
+      filled_status: 'NOT_FILLED',
       cash_price: contract.cash_price,
       futures_price: contract.futures_price,
+      futures_reference: contract.futures_reference || null,
       basis: contract.basis,
       expected_basis: contract.expected_basis,
+      discounts: contract.discounts || null,
+      checkoff: contract.checkoff || null,
+      storage_charges: contract.storage_charges || null,
       option_type: contract.option_type,
       strike_price: contract.strike_price,
       premium: contract.premium,
       futures_month: contract.futures_month,
       delivery_start: contract.delivery_start,
       delivery_end: contract.delivery_end,
+      delivery_method: contract.delivery_method || 'DELIVERY',
       contract_date: contract.contract_date || new Date().toISOString().split('T')[0],
       contract_number: contract.contract_number,
       status: 'OPEN',
@@ -302,6 +308,7 @@ function App() {
   const [notes, setNotes] = useState('');
   const [linkedContractIds, setLinkedContractIds] = useState([]);
   const [strategyType, setStrategyType] = useState('');
+  const [deliveryMethod, setDeliveryMethod] = useState('DELIVERY');
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -367,6 +374,7 @@ function App() {
     setFuturesMonth('');
     setDeliveryStart('');
     setDeliveryEnd('');
+    setDeliveryMethod('DELIVERY');
     setContractNumber('');
     setNotes('');
     setPositionType('LONG');
@@ -470,6 +478,7 @@ function App() {
       futures_month: futuresMonth || null,
       delivery_start: deliveryStart || null,
       delivery_end: deliveryEnd || null,
+      delivery_method: ['FORWARD', 'SPOT', 'HTA', 'BASIS'].includes(contractType) ? deliveryMethod : null,
       contract_number: contractNumber || null,
       notes: notes || null,
       position_type: contractType === 'OPTIONS' ? positionType : null,
@@ -1015,7 +1024,7 @@ function App() {
         )}
 
         {/* Delivery Window */}
-        {['CASH', 'HTA', 'BASIS'].includes(contractType) && (
+        {['FORWARD', 'SPOT', 'HTA', 'BASIS'].includes(contractType) && (
           <div className="grid grid-cols-2 gap-3 mb-5">
             <div>
               <label className="block text-sm font-semibold text-gray-700 mb-2 uppercase tracking-wide">Delivery Start</label>
@@ -1034,6 +1043,48 @@ function App() {
                 onChange={(e) => setDeliveryEnd(e.target.value)}
                 className="w-full px-4 py-3.5 bg-white border-2 border-gray-200 rounded-xl text-gray-900"
               />
+            </div>
+          </div>
+        )}
+
+        {/* Delivery Method */}
+        {['FORWARD', 'SPOT', 'HTA', 'BASIS'].includes(contractType) && (
+          <div className="mb-5">
+            <label className="block text-sm font-semibold text-gray-700 mb-2 uppercase tracking-wide">Delivery Method</label>
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={() => setDeliveryMethod('DELIVERY')}
+                className={`py-3 rounded-xl text-xs font-bold btn-press border-2 ${
+                  deliveryMethod === 'DELIVERY'
+                    ? 'bg-baldwin-green text-white border-baldwin-green shadow-md'
+                    : 'bg-white text-gray-700 border-gray-200'
+                }`}
+              >
+                Delivery
+              </button>
+              <button
+                type="button"
+                onClick={() => setDeliveryMethod('PICKUP_FIELD')}
+                className={`py-3 rounded-xl text-xs font-bold btn-press border-2 ${
+                  deliveryMethod === 'PICKUP_FIELD'
+                    ? 'bg-orange-500 text-white border-orange-500 shadow-md'
+                    : 'bg-white text-gray-700 border-gray-200'
+                }`}
+              >
+                Pickup Field
+              </button>
+              <button
+                type="button"
+                onClick={() => setDeliveryMethod('PICKUP_BIN')}
+                className={`py-3 rounded-xl text-xs font-bold btn-press border-2 ${
+                  deliveryMethod === 'PICKUP_BIN'
+                    ? 'bg-blue-500 text-white border-blue-500 shadow-md'
+                    : 'bg-white text-gray-700 border-gray-200'
+                }`}
+              >
+                Pickup Bin
+              </button>
             </div>
           </div>
         )}

@@ -1,5 +1,53 @@
 # GrainTrack Suite Changelog
 
+## [1.9.0] - 2026-01-23
+
+### Added - Data Integrity & Feature Enhancements (Phase 5)
+
+- **Over-contracting warning**
+  - Dashboard shows red warning banner when any commodity is over-contracted
+  - Progress bars display >100% with red coloring for over-contracted commodities
+  - Over-contracted bushels displayed per commodity
+
+- **Bushels filled tracking**
+  - Track delivery progress on contracts (bushels_filled, filled_status)
+  - Status badges: NOT_FILLED (gray), PARTIALLY_FILLED (yellow), FILLED (green)
+  - "Record Delivery" button on Contracts page with modal interface
+  - Progress displayed as X / Y bushels in contracts table
+
+- **Quality fields on inventory**
+  - Moisture %, Test Weight, and Grade tracking
+  - Quality fields on grain_inventory and inventory_transactions tables
+  - Weighted average calculation when adding grain to existing inventory
+  - Quality columns in inventory table and transaction history
+
+- **Buyer-specific basis**
+  - New buyer_basis table for tracking basis by buyer
+  - "Buyer Basis" tab in Basis Management page
+  - Grid interface: buyers (rows) x commodities (columns)
+  - Supports buyers without physical delivery locations
+
+- **Delivery method option**
+  - New delivery_method field: DELIVERY, PICKUP_FIELD, PICKUP_BIN
+  - Delivery method buttons in Add Sale page
+  - Delivery method badge displayed in contracts table
+  - Mobile version updated with delivery method support
+
+- **Soft delete filtering fixes**
+  - Added `.is('deleted_at', null)` to all query functions
+  - Fixed: getCommodities, getGrainFieldSettings, getInsuranceSettings
+  - Fixed: getLocationBasis, getInventory, getGrainLocations
+
+### Database Migration
+New file: `migrations/phase5_data_integrity.sql`
+- Quality fields on grain_inventory (moisture, test_weight, grade, deleted_at)
+- Quality fields on inventory_transactions (moisture, test_weight, grade)
+- buyer_basis table with RLS policies
+- delivery_method and filled_status columns on contracts
+- Soft delete indexes on all grain tables
+
+---
+
 ## [1.8.0] - 2026-01-23
 
 ### Added - Contract Lifecycle Enhancements

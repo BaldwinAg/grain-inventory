@@ -664,6 +664,7 @@ async function getCommodities() {
     .from('commodities')
     .select('*')
     .eq('active', true)
+    .is('deleted_at', null)
     .order('sort_order');
   if (error) { console.error('Error fetching commodities:', error); return []; }
   return data || [];
@@ -907,7 +908,7 @@ async function restoreProduction(id) {
 
 // Grain Field Settings
 async function getGrainFieldSettings() {
-  const { data, error } = await db.from('grain_field_settings').select('*');
+  const { data, error } = await db.from('grain_field_settings').select('*').is('deleted_at', null);
   if (error) { console.error('Error fetching grain field settings:', error); return []; }
   return data || [];
 }
@@ -1189,6 +1190,7 @@ async function createContract(contract) {
       buyer_id: contract.buyer_id,
       bushels: contract.bushels,
       bushels_filled: 0,
+      filled_status: 'NOT_FILLED',
       cash_price: contract.cash_price,
       futures_price: contract.futures_price,
       futures_reference: contract.futures_reference || null,
@@ -1203,6 +1205,7 @@ async function createContract(contract) {
       futures_month: contract.futures_month,
       delivery_start: contract.delivery_start,
       delivery_end: contract.delivery_end,
+      delivery_method: contract.delivery_method || 'DELIVERY',
       contract_date: contract.contract_date || new Date().toISOString().split('T')[0],
       contract_number: contract.contract_number,
       status: 'OPEN',
@@ -1271,6 +1274,37 @@ async function restoreContract(id) {
   // Log audit
   await logAudit('contracts', id, 'RESTORE', null, record);
 
+  return true;
+}
+
+// Update bushels filled and calculate filled status
+async function updateContractFilled(contractId, bushelsFilled) {
+  const { data: contract, error: fetchError } = await db
+    .from('contracts')
+    .select('bushels')
+    .eq('id', contractId)
+    .single();
+
+  if (fetchError || !contract) {
+    console.error('Error fetching contract for filled update:', fetchError);
+    return false;
+  }
+
+  const filledStatus = bushelsFilled === 0 ? 'NOT_FILLED'
+    : bushelsFilled >= contract.bushels ? 'FILLED'
+    : 'PARTIALLY_FILLED';
+
+  const { error } = await db
+    .from('contracts')
+    .update({ bushels_filled: bushelsFilled, filled_status: filledStatus })
+    .eq('id', contractId);
+
+  if (error) {
+    console.error('Error updating contract filled:', error);
+    return false;
+  }
+
+  await logAudit('contracts', contractId, 'UPDATE', { bushels_filled: contract.bushels_filled }, { bushels_filled: bushelsFilled, filled_status: filledStatus });
   return true;
 }
 
@@ -1369,7 +1403,7 @@ async function expireOption(id, expired_worthless = true) {
 
 // Insurance
 async function getInsuranceSettings(cropYear) {
-  let query = db.from('insurance_settings').select('*').order('crop_year', { ascending: false });
+  let query = db.from('insurance_settings').select('*').is('deleted_at', null).order('crop_year', { ascending: false });
   if (cropYear) query = query.eq('crop_year', cropYear);
   const { data, error } = await query;
   if (error) { console.error('Error fetching insurance settings:', error); return []; }
@@ -1600,12 +1634,13 @@ async function getLocationBasis(cropYear = null) {
       id, location_id, commodity_id, crop_year, basis, futures_month, notes, updated_at,
       grain_locations:location_id (id, name, is_basis_reference, basis_reference_location_id, basis_offset),
       commodities:commodity_id (id, name)
-    `);
-  
+    `)
+    .is('deleted_at', null);
+
   if (cropYear) {
     query = query.eq('crop_year', cropYear);
   }
-  
+
   const { data, error } = await query;
   if (error) { console.error('Error fetching location basis:', error); return []; }
   return data || [];
@@ -1641,6 +1676,58 @@ async function deleteLocationBasis(id) {
   return true;
 }
 
+// Buyer-Specific Basis
+async function getBuyerBasis(cropYear = null) {
+  let query = db
+    .from('buyer_basis')
+    .select(`
+      id, buyer_id, commodity_id, crop_year, basis, futures_month, notes, updated_at,
+      buyers:buyer_id (id, name),
+      commodities:commodity_id (id, name)
+    `)
+    .is('deleted_at', null);
+
+  if (cropYear) {
+    query = query.eq('crop_year', cropYear);
+  }
+
+  const { data, error } = await query;
+  if (error) { console.error('Error fetching buyer basis:', error); return []; }
+  return data || [];
+}
+
+async function upsertBuyerBasis(buyerId, commodityId, cropYear, basis, futuresMonth = null, notes = null) {
+  const { data: existing } = await db
+    .from('buyer_basis')
+    .select('id')
+    .eq('buyer_id', buyerId)
+    .eq('commodity_id', commodityId)
+    .eq('crop_year', cropYear)
+    .is('futures_month', futuresMonth)
+    .is('deleted_at', null)
+    .maybeSingle();
+
+  if (existing) {
+    const { error } = await db
+      .from('buyer_basis')
+      .update({ basis, notes, updated_at: new Date().toISOString() })
+      .eq('id', existing.id);
+    if (error) throw error;
+  } else {
+    const { error } = await db
+      .from('buyer_basis')
+      .insert([{ buyer_id: buyerId, commodity_id: commodityId, crop_year: cropYear, basis, futures_month: futuresMonth, notes }]);
+    if (error) throw error;
+  }
+  return true;
+}
+
+async function deleteBuyerBasis(id) {
+  const { error } = await db.from('buyer_basis').update({ deleted_at: new Date().toISOString() }).eq('id', id);
+  if (error) throw error;
+  return true;
+}
+
 async function setReferenceLocation(locationId) {
   // Clear any existing reference
   await db.from('grain_locations').update({ is_basis_reference: false }).eq('is_basis_reference', true);
@@ -1672,9 +1759,10 @@ async function clearLocationOffset(locationId) {
 }
 
 // Storage / Locations
-async function getGrainLocations(includeInactive = false) {
+async function getGrainLocations(includeInactive = false, includeDeleted = false) {
   let query = db.from('grain_locations').select('*').order('sort_order');
   if (!includeInactive) query = query.eq('active', true);
+  if (!includeDeleted) query = query.is('deleted_at', null);
   const { data: locations, error } = await query;
   if (error) { console.error('Error fetching grain locations:', error); return []; }
   if (!locations?.length) return [];
@@ -1781,11 +1869,12 @@ async function getInventory(cropYear) {
   let query = db
     .from('grain_inventory')
     .select(`
-      id, location_id, commodity_id, crop_year, bushels,
+      id, location_id, commodity_id, crop_year, bushels, moisture, test_weight, grade,
       grain_locations:location_id (name, location_type),
       commodities:commodity_id (name)
-    `);
-  
+    `)
+    .is('deleted_at', null);
+
   if (cropYear) query = query.eq('crop_year', cropYear);
   const { data, error } = await query;
   if (error) { console.error('Error fetching inventory:', error); return []; }
@@ -1798,29 +1887,57 @@ async function getInventory(cropYear) {
     commodity_id: row.commodity_id,
     commodity_name: row.commodities?.name || 'Unknown',
     crop_year: row.crop_year,
-    bushels: row.bushels
+    bushels: row.bushels,
+    moisture: row.moisture,
+    test_weight: row.test_weight,
+    grade: row.grade
   }));
 }
 
-async function addToInventory(locationId, commodityId, cropYear, bushels) {
+async function addToInventory(locationId, commodityId, cropYear, bushels, moisture = null, testWeight = null, grade = null) {
   const { data: existing } = await db
     .from('grain_inventory')
-    .select('id, bushels')
+    .select('id, bushels, moisture, test_weight, grade')
     .eq('location_id', locationId)
     .eq('commodity_id', commodityId)
     .eq('crop_year', cropYear)
+    .is('deleted_at', null)
     .maybeSingle();
 
   if (existing) {
+    // Weighted average for moisture and test weight when adding more grain
+    const totalBushels = existing.bushels + bushels;
+    const newMoisture = (moisture !== null && existing.moisture !== null)
+      ? ((existing.moisture * existing.bushels) + (moisture * bushels)) / totalBushels
+      : moisture || existing.moisture;
+    const newTestWeight = (testWeight !== null && existing.test_weight !== null)
+      ? ((existing.test_weight * existing.bushels) + (testWeight * bushels)) / totalBushels
+      : testWeight || existing.test_weight;
+    // For grade, use the new one if provided, otherwise keep existing
+    const newGrade = grade || existing.grade;
+
     const { error } = await db
       .from('grain_inventory')
-      .update({ bushels: existing.bushels + bushels })
+      .update({
+        bushels: totalBushels,
+        moisture: newMoisture ? parseFloat(newMoisture.toFixed(2)) : null,
+        test_weight: newTestWeight ? parseFloat(newTestWeight.toFixed(2)) : null,
+        grade: newGrade
+      })
       .eq('id', existing.id);
     if (error) return false;
   } else {
     const { error } = await db
       .from('grain_inventory')
-      .insert([{ location_id: locationId, commodity_id: commodityId, crop_year: cropYear, bushels }]);
+      .insert([{
+        location_id: locationId,
+        commodity_id: commodityId,
+        crop_year: cropYear,
+        bushels,
+        moisture: moisture || null,
+        test_weight: testWeight || null,
+        grade: grade || null
+      }]);
     if (error) return false;
   }
   return true;
@@ -1892,7 +2009,10 @@ async function createInventoryTransaction(transaction) {
       linked_contract_id: transaction.linked_contract_id || null,
       linked_transaction_id: transaction.linked_transaction_id || null,
       import_id: transaction.import_id || null,
-      notes: transaction.notes || null
+      notes: transaction.notes || null,
+      moisture: transaction.moisture || null,
+      test_weight: transaction.test_weight || null,
+      grade: transaction.grade || null
     }])
     .select()
     .single();
@@ -1905,7 +2025,7 @@ async function createInventoryTransaction(transaction) {
 async function recordInventoryChange(locationId, commodityId, cropYear, bushels, transactionType, options = {}) {
   // 1. Update the balance in grain_inventory
   if (bushels > 0) {
-    await addToInventory(locationId, commodityId, cropYear, bushels);
+    await addToInventory(locationId, commodityId, cropYear, bushels, options.moisture, options.test_weight, options.grade);
   } else if (bushels < 0) {
     const success = await removeFromInventory(locationId, commodityId, cropYear, Math.abs(bushels));
     if (!success) {
@@ -1913,7 +2033,7 @@ async function recordInventoryChange(locationId, commodityId, cropYear, bushels,
       return null;
     }
   }
-  
+
   // 2. Create the audit trail transaction
   const transaction = await createInventoryTransaction({
     location_id: locationId,
@@ -1928,9 +2048,12 @@ async function recordInventoryChange(locationId, commodityId, cropYear, bushels,
     linked_contract_id: options.linked_contract_id,
     linked_transaction_id: options.linked_transaction_id,
     import_id: options.import_id,
-    notes: options.notes
+    notes: options.notes,
+    moisture: options.moisture,
+    test_weight: options.test_weight,
+    grade: options.grade
   });
-  
+
   return transaction;
 }
 
@@ -2252,11 +2375,16 @@ async function getDashboardData(cropYear, detailMode = 'combined') {
         const coverageLevel = practiceInsurance?.coverage_level || 0.75;
         const insuranceProduction = expectedProduction * coverageLevel;
 
-        const percentExpected = expectedProduction > 0 ? Math.min((bushelsSold / expectedProduction) * 100, 100) : 0;
-        const percentActual = actualProduction !== null && actualProduction > 0 
-          ? Math.min((bushelsSold / actualProduction) * 100, 100) : null;
-        const percentInsurance = insuranceProduction > 0 
-          ? Math.min((bushelsSold / insuranceProduction) * 100, 100) : 0;
+        // Calculate percentages (no cap - allow >100% for over-contracting)
+        const percentExpected = expectedProduction > 0 ? (bushelsSold / expectedProduction) * 100 : 0;
+        const percentActual = actualProduction !== null && actualProduction > 0
+          ? (bushelsSold / actualProduction) * 100 : null;
+        const percentInsurance = insuranceProduction > 0
+          ? (bushelsSold / insuranceProduction) * 100 : 0;
+
+        // Over-contracting detection
+        const overContracted = bushelsSold > expectedProduction;
+        const overContractedBushels = overContracted ? bushelsSold - expectedProduction : 0;
 
         // Contracted = firm delivery only
         const weightedAvg = contracts?.weighted_avg_price || null;
@@ -2280,7 +2408,7 @@ async function getDashboardData(cropYear, detailMode = 'combined') {
           blendedAvgHedged = ((bushelsHedged * (hedgedAvg || 0)) + (unsoldBu * (currentMarket || 0))) / expectedProduction;
         }
 
-        const percentHedged = expectedProduction > 0 ? Math.min((bushelsHedged / expectedProduction) * 100, 100) : 0;
+        const percentHedged = expectedProduction > 0 ? (bushelsHedged / expectedProduction) * 100 : 0;
 
         commodityProgress.push({
           commodity_id: commodity.id,
@@ -2299,6 +2427,9 @@ async function getDashboardData(cropYear, detailMode = 'combined') {
           percent_insurance: percentInsurance,
           weighted_avg_price: weightedAvg,
           blended_avg_price: blendedAvg,
+          // Over-contracting
+          over_contracted: overContracted,
+          over_contracted_bushels: overContractedBushels,
           // Hedged (includes futures + short calls)
           bushels_hedged: bushelsHedged,
           percent_hedged: percentHedged,
@@ -2342,11 +2473,16 @@ async function getDashboardData(cropYear, detailMode = 'combined') {
       const coverageLevel = insurance?.coverage_level || 0.75;
       const insuranceProduction = expectedProduction * coverageLevel;
 
-      const percentExpected = expectedProduction > 0 ? Math.min((bushelsSold / expectedProduction) * 100, 100) : 0;
-      const percentActual = actualProduction !== null && actualProduction > 0 
-        ? Math.min((bushelsSold / actualProduction) * 100, 100) : null;
-      const percentInsurance = insuranceProduction > 0 
-        ? Math.min((bushelsSold / insuranceProduction) * 100, 100) : 0;
+      // Calculate percentages (no cap - allow >100% for over-contracting)
+      const percentExpected = expectedProduction > 0 ? (bushelsSold / expectedProduction) * 100 : 0;
+      const percentActual = actualProduction !== null && actualProduction > 0
+        ? (bushelsSold / actualProduction) * 100 : null;
+      const percentInsurance = insuranceProduction > 0
+        ? (bushelsSold / insuranceProduction) * 100 : 0;
+
+      // Over-contracting detection
+      const overContracted = bushelsSold > expectedProduction;
+      const overContractedBushels = overContracted ? bushelsSold - expectedProduction : 0;
 
       // Contracted = firm delivery only
       const weightedAvg = contracts?.weighted_avg_price || null;
@@ -2366,7 +2502,7 @@ async function getDashboardData(cropYear, detailMode = 'combined') {
         blendedAvgHedged = ((bushelsHedged * (hedgedAvg || 0)) + (unsoldBu * (currentMarket || 0))) / expectedProduction;
       }
 
-      const percentHedged = expectedProduction > 0 ? Math.min((bushelsHedged / expectedProduction) * 100, 100) : 0;
+      const percentHedged = expectedProduction > 0 ? (bushelsHedged / expectedProduction) * 100 : 0;
 
       if (expectedProduction > 0 || bushelsSold > 0 || bushelsHedged > 0) {
         commodityProgress.push({
@@ -2386,6 +2522,9 @@ async function getDashboardData(cropYear, detailMode = 'combined') {
           percent_insurance: percentInsurance,
           weighted_avg_price: weightedAvg,
           blended_avg_price: blendedAvg,
+          // Over-contracting
+          over_contracted: overContracted,
+          over_contracted_bushels: overContractedBushels,
           // Hedged (includes futures + short calls)
           bushels_hedged: bushelsHedged,
           percent_hedged: percentHedged,
@@ -2421,6 +2560,7 @@ async function getDashboardData(cropYear, detailMode = 'combined') {
   const totalExpected = commodityProgress.reduce((sum, c) => sum + c.expected_production, 0);
   const totalContracted = commodityProgress.reduce((sum, c) => sum + c.bushels_contracted, 0);
   const totalPercent = totalExpected > 0 ? (totalContracted / totalExpected) * 100 : 0;
+  const hasOverContracted = commodityProgress.some(c => c.over_contracted);
 
   return {
     crop_year: cropYear,
@@ -2428,6 +2568,7 @@ async function getDashboardData(cropYear, detailMode = 'combined') {
     total_expected: totalExpected,
     total_contracted: totalContracted,
     total_percent: totalPercent,
+    has_over_contracted: hasOverContracted,
     market_prices: marketPrices
   };
 }
@@ -2645,6 +2786,21 @@ function DashboardPage({ cropYear, onYearChange }) {
         );
       })()}
 
+      {/* Over-Contracting Warning Banner */}
+      {data?.has_over_contracted && (
+        <div className="bg-red-100 border border-red-300 rounded-lg p-4 flex items-center gap-3">
+          <Icon name="alert-triangle" size={24} className="text-red-600" />
+          <div>
+            <p className="font-semibold text-red-800">Over-Contracting Warning</p>
+            <p className="text-sm text-red-700">
+              {(data?.commodities || []).filter(c => c.over_contracted).map(c =>
+                `${c.display_name}: ${formatNumber(c.over_contracted_bushels)} bu over`
+              ).join(' | ')}
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Commodity Cards */}
       <div className="space-y-4">
         {(data?.commodities || []).map(c => {
@@ -2654,13 +2810,22 @@ function DashboardPage({ cropYear, onYearChange }) {
           const displayAvg = isHedgedView ? c.hedged_avg_price : c.weighted_avg_price;
           const displayBlended = isHedgedView ? c.blended_avg_hedged : c.blended_avg_price;
           const displayPercent = isHedgedView ? c.percent_hedged : getProgressPercent(c);
+          // Use red colors when over-contracted
+          const progressColors = c.over_contracted
+            ? { bg: 'bg-red-100', fill: 'bg-red-500' }
+            : colors;
 
           return (
-            <div key={`${c.commodity_id}-${c.is_irrigated}-${c.is_double_crop}`} className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+            <div key={`${c.commodity_id}-${c.is_irrigated}-${c.is_double_crop}`} className={`bg-white rounded-xl shadow-sm border p-5 ${c.over_contracted ? 'border-red-300' : 'border-gray-200'}`}>
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-3">
-                  <span className={`text-lg font-bold ${colors.text}`}>{c.display_name}</span>
+                  <span className={`text-lg font-bold ${c.over_contracted ? 'text-red-600' : colors.text}`}>{c.display_name}</span>
                   <span className="text-sm text-gray-500">{formatNumber(displayBushels)} / {formatNumber(c.expected_production)} bu</span>
+                  {c.over_contracted && (
+                    <span className="text-xs px-2 py-0.5 bg-red-100 text-red-700 rounded-full font-semibold">
+                      Over by {formatNumber(c.over_contracted_bushels)} bu
+                    </span>
+                  )}
                   {isHedgedView && c.bushels_protected > 0 && (
                     <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full">
                       {formatNumber(c.bushels_protected)} bu protected
@@ -2732,10 +2897,12 @@ function DashboardPage({ cropYear, onYearChange }) {
               
               {/* Progress bar */}
               <div className="relative">
-                <div className={`h-6 rounded-full ${colors.bg} overflow-hidden`}>
-                  <div className={`h-full ${colors.fill} rounded-full transition-all duration-300`} style={{ width: `${Math.min(displayPercent, 100)}%` }} />
+                <div className={`h-6 rounded-full ${progressColors.bg} overflow-hidden`}>
+                  <div className={`h-full ${progressColors.fill} rounded-full transition-all duration-300`} style={{ width: `${Math.min(displayPercent, 100)}%` }} />
                 </div>
-                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-sm font-bold text-gray-700">{formatPercent(displayPercent)}</span>
+                <span className={`absolute right-2 top-1/2 -translate-y-1/2 text-sm font-bold ${c.over_contracted ? 'text-red-700' : 'text-gray-700'}`}>
+                  {formatPercent(displayPercent)}
+                </span>
               </div>
 
               {/* Contract summary */}
@@ -2808,6 +2975,8 @@ function AddSalePage({ cropYear: initialCropYear, onSuccess, onYearChange }) {
   const [strategyType, setStrategyType] = useState('');
   const [existingOptions, setExistingOptions] = useState([]);
   const [existingStrategyGroups, setExistingStrategyGroups] = useState([]);
+  // Delivery method for cash contracts
+  const [deliveryMethod, setDeliveryMethod] = useState('DELIVERY');
 
   // Contract size for options (bushels per contract)
   const BUSHELS_PER_CONTRACT = 5000;
@@ -2872,6 +3041,7 @@ function AddSalePage({ cropYear: initialCropYear, onSuccess, onYearChange }) {
     setFuturesMonth('');
     setDeliveryStart('');
     setDeliveryEnd('');
+    setDeliveryMethod('DELIVERY');
     setContractNumber('');
     setNotes('');
     setPositionType('LONG');
@@ -3001,6 +3171,7 @@ function AddSalePage({ cropYear: initialCropYear, onSuccess, onYearChange }) {
       futures_month: futuresMonth || null,
       delivery_start: deliveryStart || null,
       delivery_end: deliveryEnd || null,
+      delivery_method: ['FORWARD', 'SPOT', 'HTA', 'BASIS'].includes(contractType) ? deliveryMethod : null,
       contract_number: contractNumber || null,
       notes: notes || null,
       position_type: contractType === 'OPTIONS' ? positionType : null,
@@ -3359,7 +3530,7 @@ function AddSalePage({ cropYear: initialCropYear, onSuccess, onYearChange }) {
         )}
 
         {/* Delivery Window */}
-        {['CASH', 'HTA', 'BASIS'].includes(contractType) && (
+        {['FORWARD', 'SPOT', 'HTA', 'BASIS'].includes(contractType) && (
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Delivery Start</label>
@@ -3370,6 +3541,30 @@ function AddSalePage({ cropYear: initialCropYear, onSuccess, onYearChange }) {
               <label className="block text-sm font-medium text-gray-700 mb-1">Delivery End</label>
               <input type="date" value={deliveryEnd} onChange={(e) => setDeliveryEnd(e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" />
+            </div>
+          </div>
+        )}
+
+        {/* Delivery Method */}
+        {['FORWARD', 'SPOT', 'HTA', 'BASIS'].includes(contractType) && (
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Delivery Method</label>
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setDeliveryMethod('DELIVERY')}
+                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium border ${
+                  deliveryMethod === 'DELIVERY' ? 'bg-amber-500 text-white border-amber-500' : 'bg-white text-gray-700 border-gray-300'}`}>
+                Delivery
+              </button>
+              <button type="button" onClick={() => setDeliveryMethod('PICKUP_FIELD')}
+                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium border ${
+                  deliveryMethod === 'PICKUP_FIELD' ? 'bg-orange-500 text-white border-orange-500' : 'bg-white text-gray-700 border-gray-300'}`}>
+                Pickup - Field
+              </button>
+              <button type="button" onClick={() => setDeliveryMethod('PICKUP_BIN')}
+                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium border ${
+                  deliveryMethod === 'PICKUP_BIN' ? 'bg-blue-500 text-white border-blue-500' : 'bg-white text-gray-700 border-gray-300'}`}>
+                Pickup - Bin
+              </button>
             </div>
           </div>
         )}
@@ -3415,6 +3610,8 @@ function ContractsPage({ cropYear, onYearChange }) {
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [deliveryContract, setDeliveryContract] = useState(null);
+  const [deliveryBushels, setDeliveryBushels] = useState('');
   const { addToast } = useToast();
 
   const currentYear = new Date().getFullYear();
@@ -3487,6 +3684,27 @@ function ContractsPage({ cropYear, onYearChange }) {
       notes: contract.notes || '',
       buyer_id: contract.buyer_id || ''
     });
+  };
+
+  const handleRecordDelivery = (contract) => {
+    setDeliveryContract(contract);
+    setDeliveryBushels(contract.bushels_filled?.toString() || '');
+  };
+
+  const handleDeliverySave = async () => {
+    if (!deliveryContract) return;
+    setSaving(true);
+    const bushels = parseInt(deliveryBushels) || 0;
+    const success = await updateContractFilled(deliveryContract.id, bushels);
+    if (success) {
+      addToast(`Recorded ${bushels.toLocaleString()} bu delivered`, { type: 'success' });
+      loadData();
+    } else {
+      addToast('Failed to record delivery', { type: 'error' });
+    }
+    setSaving(false);
+    setDeliveryContract(null);
+    setDeliveryBushels('');
   };
 
   const handleEditSave = async () => {
@@ -3703,6 +3921,7 @@ function ContractsPage({ cropYear, onYearChange }) {
                 <th className="text-right px-4 py-3 font-semibold text-gray-700">Price</th>
                 <th className="text-left px-4 py-3 font-semibold text-gray-700">Buyer</th>
                 <th className="text-left px-4 py-3 font-semibold text-gray-700">Delivery</th>
+                <th className="text-center px-4 py-3 font-semibold text-gray-700">Filled</th>
                 <th className="text-center px-4 py-3 font-semibold text-gray-700">Actions</th>
               </tr>
             </thead>
@@ -3783,9 +4002,45 @@ function ContractsPage({ cropYear, onYearChange }) {
                       )}
                     </td>
                     <td className="px-4 py-3 text-gray-600">{c.buyer_name || '-'}</td>
-                    <td className="px-4 py-3 text-gray-600">{formatDelivery(c)}</td>
+                    <td className="px-4 py-3 text-gray-600">
+                      <div className="flex items-center gap-2">
+                        <span>{formatDelivery(c)}</span>
+                        {c.delivery_method && c.delivery_method !== 'DELIVERY' && (
+                          <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${
+                            c.delivery_method === 'PICKUP_FIELD' ? 'bg-orange-100 text-orange-700' : 'bg-blue-100 text-blue-700'
+                          }`}>
+                            {c.delivery_method === 'PICKUP_FIELD' ? 'Pickup-Field' : 'Pickup-Bin'}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      {/* Only show filled status for contracts that require delivery */}
+                      {['FORWARD', 'SPOT', 'HTA', 'BASIS'].includes(c.contract_type) ? (
+                        <div>
+                          <div className="text-xs text-gray-500 mb-1">
+                            {formatNumber(c.bushels_filled || 0)} / {formatNumber(c.bushels)}
+                          </div>
+                          <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                            c.filled_status === 'FILLED' ? 'bg-green-100 text-green-700' :
+                            c.filled_status === 'PARTIALLY_FILLED' ? 'bg-yellow-100 text-yellow-700' :
+                            'bg-gray-100 text-gray-500'
+                          }`}>
+                            {c.filled_status === 'FILLED' ? 'Filled' :
+                             c.filled_status === 'PARTIALLY_FILLED' ? 'Partial' : 'Open'}
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="text-gray-400">-</span>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-center">
                       <div className="flex items-center justify-center gap-1">
+                        {['FORWARD', 'SPOT', 'HTA', 'BASIS'].includes(c.contract_type) && c.filled_status !== 'FILLED' && (
+                          <button onClick={() => handleRecordDelivery(c)} className="p-1.5 text-green-500 hover:bg-green-50 rounded" title="Record Delivery">
+                            <Icon name="truck" size={16} />
+                          </button>
+                        )}
                         <button onClick={() => handleEdit(c)} className="p-1.5 text-blue-500 hover:bg-blue-50 rounded" title="Edit">
                           <Icon name="edit-2" size={16} />
                         </button>
@@ -4023,6 +4278,79 @@ function ContractsPage({ cropYear, onYearChange }) {
         onConfirm={confirmDeleteContract}
         onCancel={() => setConfirmDelete(null)}
       />
+
+      {/* Record Delivery Modal */}
+      {deliveryContract && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full">
+            <div className="p-6 border-b border-gray-200">
+              <div className="flex items-center justify-between">
+                <h2 className="text-xl font-bold text-gray-900">Record Delivery</h2>
+                <button onClick={() => setDeliveryContract(null)} className="p-2 hover:bg-gray-100 rounded-lg">
+                  <Icon name="x" size={20} />
+                </button>
+              </div>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="bg-gray-50 rounded-lg p-4">
+                <p className="text-sm text-gray-500">Contract</p>
+                <p className="font-medium text-gray-900">
+                  {deliveryContract.bushels?.toLocaleString()} bu {deliveryContract.commodity_name}
+                </p>
+                <p className="text-sm text-gray-600">{deliveryContract.buyer_name || 'No buyer'}</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Bushels Delivered</label>
+                <input
+                  type="number"
+                  value={deliveryBushels}
+                  onChange={(e) => setDeliveryBushels(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500"
+                  placeholder="Enter bushels"
+                  max={deliveryContract.bushels}
+                />
+                <div className="mt-2 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setDeliveryBushels(deliveryContract.bushels.toString())}
+                    className="px-3 py-1 text-xs bg-green-100 text-green-700 rounded hover:bg-green-200"
+                  >
+                    Fill All ({deliveryContract.bushels?.toLocaleString()})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDeliveryBushels('0')}
+                    className="px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200"
+                  >
+                    Reset
+                  </button>
+                </div>
+              </div>
+
+              {parseInt(deliveryBushels) > 0 && (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm">
+                  <span className="text-blue-700">
+                    Status will change to: <strong>
+                      {parseInt(deliveryBushels) >= deliveryContract.bushels ? 'FILLED' : 'PARTIALLY_FILLED'}
+                    </strong>
+                  </span>
+                </div>
+              )}
+            </div>
+            <div className="p-6 border-t border-gray-200 flex justify-end gap-3">
+              <button onClick={() => setDeliveryContract(null)} className="px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg">
+                Cancel
+              </button>
+              <button onClick={handleDeliverySave} disabled={saving}
+                className="flex items-center gap-2 px-6 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:opacity-50">
+                {saving ? <Icon name="refresh-cw" className="animate-spin" size={16} /> : <Icon name="truck" size={16} />}
+                Record Delivery
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -5059,13 +5387,17 @@ function StoragePage() {
 // Basis Management Page
 function BasisPage() {
   const [viewMode, setViewMode] = useState('old'); // 'old' or 'new'
+  const [basisType, setBasisType] = useState('location'); // 'location' or 'buyer'
   const [commodities, setCommodities] = useState([]);
   const [locations, setLocations] = useState([]);
+  const [buyers, setBuyers] = useState([]);
   const [basisData, setBasisData] = useState([]);
+  const [buyerBasisData, setBuyerBasisData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState({});
   const [message, setMessage] = useState(null);
   const [localValues, setLocalValues] = useState({});
+  const [buyerLocalValues, setBuyerLocalValues] = useState({});
 
   // Commodity-specific rollover dates (month is 0-indexed)
   const CROP_ROLLOVER = {
@@ -5095,32 +5427,47 @@ function BasisPage() {
 
   const loadData = async () => {
     setLoading(true);
-    const [comms, locs] = await Promise.all([
+    const [comms, locs, buys] = await Promise.all([
       getCommodities(),
-      getGrainLocations(false)
+      getGrainLocations(false),
+      getBuyers()
     ]);
     setCommodities(comms);
     setLocations(locs);
-    
+    setBuyers(buys);
+
     // Load basis for all relevant crop years
     const years = new Set();
     for (const c of comms) {
       years.add(getCropYear(c.name, false));
       years.add(getCropYear(c.name, true));
     }
-    
+
     const allBasis = [];
+    const allBuyerBasis = [];
     for (const year of years) {
-      const basis = await getLocationBasis(year);
-      allBasis.push(...basis);
+      const [locBasis, buyBasis] = await Promise.all([
+        getLocationBasis(year),
+        getBuyerBasis(year)
+      ]);
+      allBasis.push(...locBasis);
+      allBuyerBasis.push(...buyBasis);
     }
     setBasisData(allBasis);
-    
+    setBuyerBasisData(allBuyerBasis);
+
     const initial = {};
     for (const b of allBasis) {
       initial[`${b.location_id}-${b.commodity_id}-${b.crop_year}`] = b.basis?.toString() || '';
     }
     setLocalValues(initial);
+
+    const buyerInitial = {};
+    for (const b of allBuyerBasis) {
+      buyerInitial[`${b.buyer_id}-${b.commodity_id}-${b.crop_year}`] = b.basis?.toString() || '';
+    }
+    setBuyerLocalValues(buyerInitial);
+
     setLoading(false);
   };
 
@@ -5176,6 +5523,57 @@ function BasisPage() {
     return existing?.basis?.toString() || '';
   };
 
+  // Buyer basis handlers
+  const buyerBasisMap = {};
+  for (const b of buyerBasisData) {
+    buyerBasisMap[`${b.buyer_id}-${b.commodity_id}-${b.crop_year}`] = b;
+  }
+
+  const handleBuyerInputChange = (buyerId, commodityId, cropYear, value) => {
+    const key = `${buyerId}-${commodityId}-${cropYear}`;
+    setBuyerLocalValues(prev => ({ ...prev, [key]: value }));
+  };
+
+  const handleBuyerSave = async (buyerId, commodityId, cropYear) => {
+    const key = `${buyerId}-${commodityId}-${cropYear}`;
+    const value = buyerLocalValues[key];
+    const numValue = parseFloat(value);
+
+    if (value === '' || isNaN(numValue)) {
+      const existing = buyerBasisMap[key];
+      if (existing?.id) {
+        setSaving(prev => ({ ...prev, [key]: true }));
+        try {
+          await deleteBuyerBasis(existing.id);
+          setMessage({ type: 'success', text: 'Cleared' });
+          loadData();
+        } catch (e) {
+          setMessage({ type: 'error', text: 'Failed' });
+        }
+        setSaving(prev => ({ ...prev, [key]: false }));
+      }
+      return;
+    }
+
+    setSaving(prev => ({ ...prev, [key]: true }));
+    try {
+      await upsertBuyerBasis(buyerId, commodityId, cropYear, numValue);
+      setMessage({ type: 'success', text: 'Saved' });
+      setTimeout(() => setMessage(null), 1500);
+      loadData();
+    } catch (e) {
+      setMessage({ type: 'error', text: 'Failed' });
+    }
+    setSaving(prev => ({ ...prev, [key]: false }));
+  };
+
+  const getBuyerInputValue = (buyerId, commodityId, cropYear) => {
+    const key = `${buyerId}-${commodityId}-${cropYear}`;
+    if (buyerLocalValues[key] !== undefined) return buyerLocalValues[key];
+    const existing = buyerBasisMap[key];
+    return existing?.basis?.toString() || '';
+  };
+
   if (loading) return <div className="flex items-center justify-center h-64"><Icon name="refresh-cw" className="animate-spin text-amber-600" size={32} /></div>;
 
   const isNewCrop = viewMode === 'new';
@@ -5214,6 +5612,29 @@ function BasisPage() {
         </div>
       )}
 
+      {/* Basis Type Tabs */}
+      <div className="flex gap-2 border-b border-gray-200">
+        <button
+          onClick={() => setBasisType('location')}
+          className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
+            basisType === 'location' ? 'border-amber-500 text-amber-600' : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <Icon name="map-pin" size={16} className="inline mr-2" />
+          Location Basis
+        </button>
+        <button
+          onClick={() => setBasisType('buyer')}
+          className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
+            basisType === 'buyer' ? 'border-amber-500 text-amber-600' : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <Icon name="users" size={16} className="inline mr-2" />
+          Buyer Basis
+        </button>
+      </div>
+
+      {basisType === 'location' && (
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
         <div className={`p-3 border-b ${isNewCrop ? 'bg-green-50 border-green-200' : 'bg-amber-50 border-amber-200'}`}>
           <span className={`font-semibold ${isNewCrop ? 'text-green-700' : 'text-amber-700'}`}>
@@ -5278,6 +5699,75 @@ function BasisPage() {
           <div className="p-8 text-center text-gray-500">No delivery locations. Add in Storage page.</div>
         )}
       </div>
+      )}
+
+      {/* Buyer Basis Tab */}
+      {basisType === 'buyer' && (
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className={`p-3 border-b ${isNewCrop ? 'bg-green-50 border-green-200' : 'bg-amber-50 border-amber-200'}`}>
+          <span className={`font-semibold ${isNewCrop ? 'text-green-700' : 'text-amber-700'}`}>
+            {isNewCrop ? '[New] New Crop' : '[Old] Old Crop'} Buyer Basis
+          </span>
+          <span className="text-gray-500 text-sm ml-2">
+            (for buyers without delivery locations)
+          </span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead className="bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th className="text-left px-4 py-3 font-semibold text-gray-700 text-sm">Buyer</th>
+                {commodities.map(c => {
+                  const cropYear = getCropYear(c.name, isNewCrop);
+                  return (
+                    <th key={c.id} className="text-center px-3 py-2 font-semibold text-gray-700 text-sm min-w-24">
+                      <div>{c.name}</div>
+                      <div className="text-xs font-normal text-gray-400">{cropYear}</div>
+                    </th>
+                  );
+                })}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {buyers.map(buyer => (
+                <tr key={buyer.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3 font-medium text-gray-900 text-sm whitespace-nowrap">{buyer.name}</td>
+                  {commodities.map(c => {
+                    const cropYear = getCropYear(c.name, isNewCrop);
+                    const key = `${buyer.id}-${c.id}-${cropYear}`;
+                    const isSaving = saving[key];
+
+                    return (
+                      <td key={c.id} className="px-3 py-2 text-center">
+                        <input
+                          type="number"
+                          step="0.01"
+                          placeholder="-0.00"
+                          value={getBuyerInputValue(buyer.id, c.id, cropYear)}
+                          onChange={(e) => handleBuyerInputChange(buyer.id, c.id, cropYear, e.target.value)}
+                          onBlur={() => handleBuyerSave(buyer.id, c.id, cropYear)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); }}
+                          disabled={isSaving}
+                          className={`w-20 px-2 py-1.5 text-center text-sm border rounded
+                            focus:ring-2 focus:ring-amber-500 focus:border-amber-500
+                            ${isSaving ? 'bg-gray-100 text-gray-400' : 'bg-white'}
+                            ${getBuyerInputValue(buyer.id, c.id, cropYear) ? 'border-gray-300 font-medium' : 'border-gray-200 text-gray-400'}
+                          `}
+                        />
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {buyers.length === 0 && (
+          <div className="p-8 text-center text-gray-500">No buyers configured. Add in Buyers page.</div>
+        )}
+      </div>
+      )}
 
       <div className="text-xs text-gray-400">
         Crop year rolls: Wheat Jun 1 * Corn Sep 1 * Soybeans Oct 1 * Milo Oct 1
@@ -5329,7 +5819,8 @@ function InventoryPage({ cropYear, onYearChange }) {
   // Add Grain state
   const [addGrainForm, setAddGrainForm] = useState({
     location_id: '', commodity_id: '', bushels: '',
-    transaction_date: new Date().toISOString().split('T')[0], notes: ''
+    transaction_date: new Date().toISOString().split('T')[0], notes: '',
+    moisture: '', test_weight: '', grade: ''
   });
 
   const currentYear = new Date().getFullYear();
@@ -5705,34 +6196,41 @@ function InventoryPage({ cropYear, onYearChange }) {
   // ========== ADD GRAIN HANDLERS ==========
   
   const handleAddGrainSubmit = async () => {
-    const { location_id, commodity_id, bushels, transaction_date, notes } = addGrainForm;
-    
+    const { location_id, commodity_id, bushels, transaction_date, notes, moisture, test_weight, grade } = addGrainForm;
+
     if (!location_id || !commodity_id || !bushels) {
       showMsg('error', 'Please fill in location, commodity, and bushels');
       return;
     }
-    
+
     const bushelsNum = parseFloat(bushels);
     if (isNaN(bushelsNum) || bushelsNum <= 0) {
       showMsg('error', 'Please enter a valid bushel amount');
       return;
     }
-    
+
     const result = await recordInventoryChange(
       location_id,
       commodity_id,
       cropYear,
       bushelsNum,
       'DEPOSIT',
-      { transaction_date, notes }
+      {
+        transaction_date,
+        notes,
+        moisture: moisture ? parseFloat(moisture) : null,
+        test_weight: test_weight ? parseFloat(test_weight) : null,
+        grade: grade || null
+      }
     );
-    
+
     if (result) {
       showMsg('success', 'Grain added successfully');
       setShowAddGrainModal(false);
       setAddGrainForm({
         location_id: '', commodity_id: '', bushels: '',
-        transaction_date: new Date().toISOString().split('T')[0], notes: ''
+        transaction_date: new Date().toISOString().split('T')[0], notes: '',
+        moisture: '', test_weight: '', grade: ''
       });
       await loadData();
       setTransactions({});
@@ -5815,6 +6313,9 @@ function InventoryPage({ cropYear, onYearChange }) {
               <th className="text-left px-4 py-3 font-semibold text-gray-700">Location</th>
               <th className="text-left px-4 py-3 font-semibold text-gray-700">Commodity</th>
               <th className="text-right px-4 py-3 font-semibold text-gray-700">Bushels</th>
+              <th className="text-center px-3 py-3 font-semibold text-gray-700">Moisture</th>
+              <th className="text-center px-3 py-3 font-semibold text-gray-700">Test Wt</th>
+              <th className="text-center px-3 py-3 font-semibold text-gray-700">Grade</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
@@ -5822,7 +6323,7 @@ function InventoryPage({ cropYear, onYearChange }) {
               const key = `${item.location_id}-${item.commodity_id}`;
               const isExpanded = expandedRows.has(key);
               const itemTransactions = transactions[key] || [];
-              
+
               return (
                 <React.Fragment key={item.id}>
                   <tr className="hover:bg-gray-50 cursor-pointer" onClick={() => toggleRow(item)}>
@@ -5832,10 +6333,13 @@ function InventoryPage({ cropYear, onYearChange }) {
                     <td className="px-4 py-3 font-medium text-gray-900">{item.location_name}</td>
                     <td className="px-4 py-3 text-gray-600">{item.commodity_name}</td>
                     <td className="px-4 py-3 text-right font-medium text-gray-900">{Math.round(item.bushels).toLocaleString()}</td>
+                    <td className="px-3 py-3 text-center text-gray-600">{item.moisture ? `${item.moisture}%` : '-'}</td>
+                    <td className="px-3 py-3 text-center text-gray-600">{item.test_weight ? `${item.test_weight}` : '-'}</td>
+                    <td className="px-3 py-3 text-center text-gray-600">{item.grade || '-'}</td>
                   </tr>
                   {isExpanded && (
                     <tr>
-                      <td colSpan={4} className="bg-gray-50 px-4 py-3">
+                      <td colSpan={7} className="bg-gray-50 px-4 py-3">
                         <div className="ml-6">
                           <h4 className="font-medium text-gray-700 mb-2 flex items-center gap-2">
                             <Icon name="history" size={16} /> Transaction History
@@ -5850,6 +6354,9 @@ function InventoryPage({ cropYear, onYearChange }) {
                                     <th className="text-left py-1 pr-4">Date</th>
                                     <th className="text-left py-1 pr-4">Type</th>
                                     <th className="text-right py-1 pr-4">Bushels</th>
+                                    <th className="text-center py-1 pr-4">Moist.</th>
+                                    <th className="text-center py-1 pr-4">TW</th>
+                                    <th className="text-center py-1 pr-4">Grade</th>
                                     <th className="text-left py-1 pr-4">Counterparty</th>
                                     <th className="text-left py-1">Notes</th>
                                   </tr>
@@ -5866,6 +6373,9 @@ function InventoryPage({ cropYear, onYearChange }) {
                                       <td className={`py-2 pr-4 text-right font-medium ${tx.bushels >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                                         {formatBushels(tx.bushels)}
                                       </td>
+                                      <td className="py-2 pr-4 text-center text-gray-500">{tx.moisture ? `${tx.moisture}%` : '-'}</td>
+                                      <td className="py-2 pr-4 text-center text-gray-500">{tx.test_weight || '-'}</td>
+                                      <td className="py-2 pr-4 text-center text-gray-500">{tx.grade || '-'}</td>
                                       <td className="py-2 pr-4 text-gray-600">{tx.counterparty || '-'}</td>
                                       <td className="py-2 text-gray-500 truncate max-w-xs" title={tx.notes || tx.reason || tx.ticket_numbers}>
                                         {tx.notes || tx.reason || (tx.ticket_numbers ? `Tickets: ${tx.ticket_numbers.substring(0, 30)}...` : '-')}
@@ -6233,13 +6743,41 @@ function InventoryPage({ cropYear, onYearChange }) {
                 </div>
               </div>
               
+              {/* Quality Fields */}
+              <div className="grid grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Moisture %</label>
+                  <input type="number" step="0.1" value={addGrainForm.moisture} onChange={(e) => setAddGrainForm(f => ({ ...f, moisture: e.target.value }))}
+                    placeholder="e.g. 13.5"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Test Weight</label>
+                  <input type="number" step="0.1" value={addGrainForm.test_weight} onChange={(e) => setAddGrainForm(f => ({ ...f, test_weight: e.target.value }))}
+                    placeholder="e.g. 56.0"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Grade</label>
+                  <select value={addGrainForm.grade} onChange={(e) => setAddGrainForm(f => ({ ...f, grade: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg">
+                    <option value="">Select...</option>
+                    <option value="#1">No. 1</option>
+                    <option value="#2">No. 2</option>
+                    <option value="#3">No. 3</option>
+                    <option value="#4">No. 4</option>
+                    <option value="Sample">Sample</option>
+                  </select>
+                </div>
+              </div>
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
                 <input type="text" value={addGrainForm.notes} onChange={(e) => setAddGrainForm(f => ({ ...f, notes: e.target.value }))}
                   placeholder="Optional notes"
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
               </div>
-              
+
               <button onClick={handleAddGrainSubmit}
                 className="w-full px-4 py-2 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700">
                 Add to Inventory
