@@ -1,0 +1,1023 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="GrainTrack" />
+  <meta name="theme-color" content="#2d5016" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>GrainTrack Mobile</title>
+
+  <!-- Apple Touch Icons -->
+  <link rel="apple-touch-icon" href="graintrack-icon.svg" />
+  <link rel="apple-touch-icon" sizes="180x180" href="graintrack-icon.svg" />
+  <link rel="icon" type="image/svg+xml" href="graintrack-icon.svg" />
+
+  <!-- PWA Manifest -->
+  <link rel="manifest" href="graintrack-manifest.json" />
+
+  <!-- Google Fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            'baldwin-green': {
+              DEFAULT: '#2d5016',
+              dark: '#1d3a0e',
+              light: '#3d6e22',
+            },
+            'baldwin-gold': {
+              DEFAULT: '#f4e157',
+              light: '#fff176',
+            },
+            'wheat': {
+              DEFAULT: '#f5f1e8',
+              dark: '#e8e2d5',
+            }
+          },
+          fontFamily: {
+            'display': ['Bebas Neue', 'sans-serif'],
+            'body': ['IBM Plex Sans', 'sans-serif'],
+          }
+        }
+      }
+    }
+  </script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <style>
+    * {
+      -webkit-tap-highlight-color: transparent;
+      -webkit-touch-callout: none;
+    }
+    body {
+      font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: linear-gradient(135deg, #f5f1e8 0%, #e8e2d5 100%);
+      min-height: 100vh;
+      overscroll-behavior: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    input, select, textarea {
+      -webkit-user-select: auto;
+      user-select: auto;
+      font-size: 16px !important;
+      font-family: 'IBM Plex Sans', sans-serif;
+    }
+    .safe-top { padding-top: env(safe-area-inset-top); }
+    .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+    .btn-press { transition: transform 0.1s ease, opacity 0.1s ease; }
+    .btn-press:active { transform: scale(0.97); opacity: 0.9; }
+    .hide-scrollbar::-webkit-scrollbar { display: none; }
+    .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner { animation: spin 1s linear infinite; }
+    @keyframes checkmark {
+      0% { transform: scale(0); }
+      50% { transform: scale(1.2); }
+      100% { transform: scale(1); }
+    }
+    .checkmark-animate { animation: checkmark 0.4s ease-out; }
+    @keyframes slideUp {
+      from { transform: translateY(100%); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+    .slide-up { animation: slideUp 0.3s ease-out; }
+    /* Focus states */
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: #2d5016 !important;
+      box-shadow: 0 0 0 3px rgba(45, 80, 22, 0.15);
+    }
+    /* Header font */
+    .font-display { font-family: 'Bebas Neue', sans-serif; letter-spacing: 0.05em; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+// ============================================================================
+// SUPABASE CLIENT (Same as main app)
+// ============================================================================
+const SUPABASE_URL = 'https://xehapaasizntuzqzvwej.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhlaGFwYWFzaXpudHV6cXp2d2VqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjgzMTkwOTksImV4cCI6MjA4Mzg5NTA5OX0.JTtRaVRfZ4DNddTdT2BsKgCNabErgsCB0rBCHlK0mbA';
+const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const BUSHELS_PER_CONTRACT = 5000;
+
+// ============================================================================
+// API FUNCTIONS
+// ============================================================================
+
+async function testConnection() {
+  try {
+    const { error } = await supabase.from('commodities').select('id').limit(1);
+    return !error;
+  } catch {
+    return false;
+  }
+}
+
+async function getCommodities() {
+  const { data, error } = await supabase.from('commodities').select('*').order('name');
+  if (error) { console.error('Error fetching commodities:', error); return []; }
+  return data || [];
+}
+
+async function getBuyers() {
+  const { data, error } = await supabase.from('buyers').select('*').order('name');
+  if (error) { console.error('Error fetching buyers:', error); return []; }
+  return data || [];
+}
+
+async function getContracts(cropYear) {
+  let query = supabase
+    .from('contracts')
+    .select(`*, commodities:commodity_id (id, name)`)
+    .neq('status', 'CANCELLED')
+    .eq('contract_type', 'OPTIONS')
+    .order('contract_date', { ascending: false });
+
+  if (cropYear) query = query.eq('crop_year', cropYear);
+  const { data, error } = await query;
+  if (error) { console.error('Error fetching contracts:', error); return []; }
+  return data || [];
+}
+
+async function createContract(contract) {
+  const { data, error } = await supabase
+    .from('contracts')
+    .insert([{
+      contract_type: contract.contract_type,
+      crop_year: contract.crop_year,
+      commodity_id: contract.commodity_id,
+      subcategory_id: null,
+      buyer_id: contract.buyer_id,
+      bushels: contract.bushels,
+      bushels_filled: 0,
+      cash_price: contract.cash_price,
+      futures_price: contract.futures_price,
+      basis: contract.basis,
+      expected_basis: contract.expected_basis,
+      option_type: contract.option_type,
+      strike_price: contract.strike_price,
+      premium: contract.premium,
+      futures_month: contract.futures_month,
+      delivery_start: contract.delivery_start,
+      delivery_end: contract.delivery_end,
+      contract_date: contract.contract_date || new Date().toISOString().split('T')[0],
+      contract_number: contract.contract_number,
+      status: 'OPEN',
+      notes: contract.notes,
+      position_type: contract.position_type || null,
+      strategy_group_id: contract.strategy_group_id || null,
+      strategy_type: contract.strategy_type || null
+    }])
+    .select()
+    .single();
+
+  if (error) {
+    console.error('Error creating contract:', error.message);
+    return null;
+  }
+
+  if (data && contract.strategy_group_id && contract.strategy_type) {
+    await supabase
+      .from('contracts')
+      .update({ strategy_type: contract.strategy_type })
+      .eq('strategy_group_id', contract.strategy_group_id);
+  }
+
+  return data;
+}
+
+// ============================================================================
+// ICONS
+// ============================================================================
+const Icons = {
+  check: () => (
+    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+    </svg>
+  ),
+  x: () => (
+    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+    </svg>
+  ),
+  chevronDown: () => (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+    </svg>
+  ),
+  loader: () => (
+    <svg className="w-6 h-6 spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+    </svg>
+  ),
+  wifiOff: () => (
+    <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18.364 5.636a9 9 0 010 12.728m0 0l-2.829-2.829m2.829 2.829L21 21M15.536 8.464a5 5 0 010 7.072m0 0l-2.829-2.829m-4.243 2.829a4.978 4.978 0 01-1.414-2.83m-1.414 5.658a9 9 0 01-2.167-9.238m7.824 2.167a1 1 0 111.414 1.414m-1.414-1.414L3 3m8.293 8.293l1.414 1.414" />
+    </svg>
+  ),
+  link: () => (
+    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+    </svg>
+  ),
+  history: () => (
+    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+  ),
+  wheat: () => (
+    <svg className="w-8 h-8" viewBox="0 0 24 24" fill="currentColor">
+      <path d="M12 3c-.5 0-1 .19-1.41.59L9 5.17V7c0 1.1.9 2 2 2h2c1.1 0 2-.9 2-2V5.17l-1.59-1.59C13 3.19 12.5 3 12 3zM9 9v2c0 1.1.9 2 2 2h2c1.1 0 2-.9 2-2V9h-2v2h-2V9H9zm0 6v2c0 1.1.9 2 2 2h2c1.1 0 2-.9 2-2v-2h-2v2h-2v-2H9zm2 6h2v2h-2v-2z"/>
+    </svg>
+  ),
+};
+
+// ============================================================================
+// MAIN APP
+// ============================================================================
+
+function App() {
+  const [isOnline, setIsOnline] = useState(true);
+  const [isConnected, setIsConnected] = useState(null);
+  const [commodities, setCommodities] = useState([]);
+  const [buyers, setBuyers] = useState([]);
+  const [existingOptions, setExistingOptions] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [showSuccess, setShowSuccess] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [recentContracts, setRecentContracts] = useState([]);
+
+  const currentYear = new Date().getFullYear();
+  const cropYears = [currentYear - 1, currentYear, currentYear + 1, currentYear + 2];
+  const [selectedCropYear, setSelectedCropYear] = useState(() => {
+    const saved = localStorage.getItem('graintrack_mobile_cropyear');
+    return saved ? parseInt(saved) : currentYear;
+  });
+
+  // Form state
+  const [contractType, setContractType] = useState('CASH');
+  const [commodityId, setCommodityId] = useState('');
+  const [bushels, setBushels] = useState('');
+  const [numContracts, setNumContracts] = useState('');
+  const [buyerId, setBuyerId] = useState('');
+  const [cashPrice, setCashPrice] = useState('');
+  const [futuresPrice, setFuturesPrice] = useState('');
+  const [expectedBasis, setExpectedBasis] = useState('');
+  const [basis, setBasis] = useState('');
+  const [optionType, setOptionType] = useState('PUT');
+  const [positionType, setPositionType] = useState('LONG');
+  const [strikePrice, setStrikePrice] = useState('');
+  const [premium, setPremium] = useState('');
+  const [futuresMonth, setFuturesMonth] = useState('');
+  const [deliveryStart, setDeliveryStart] = useState('');
+  const [deliveryEnd, setDeliveryEnd] = useState('');
+  const [contractNumber, setContractNumber] = useState('');
+  const [notes, setNotes] = useState('');
+  const [linkedContractIds, setLinkedContractIds] = useState([]);
+  const [strategyType, setStrategyType] = useState('');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    const checkConnection = async () => {
+      const online = navigator.onLine;
+      setIsOnline(online);
+      if (online) {
+        const connected = await testConnection();
+        setIsConnected(connected);
+      } else {
+        setIsConnected(false);
+      }
+    };
+    checkConnection();
+    window.addEventListener('online', checkConnection);
+    window.addEventListener('offline', checkConnection);
+    return () => {
+      window.removeEventListener('online', checkConnection);
+      window.removeEventListener('offline', checkConnection);
+    };
+  }, []);
+
+  useEffect(() => {
+    async function loadData() {
+      setLoading(true);
+      const [comms, buys, contracts] = await Promise.all([
+        getCommodities(),
+        getBuyers(),
+        getContracts(selectedCropYear)
+      ]);
+      setCommodities(comms);
+      setBuyers(buys);
+      setExistingOptions(contracts);
+      if (comms.length > 0 && !commodityId) {
+        setCommodityId(comms[0].id);
+      }
+      setLoading(false);
+    }
+    if (isConnected) loadData();
+  }, [isConnected, selectedCropYear]);
+
+  useEffect(() => {
+    localStorage.setItem('graintrack_mobile_cropyear', selectedCropYear.toString());
+  }, [selectedCropYear]);
+
+  useEffect(() => {
+    const saved = localStorage.getItem('graintrack_mobile_recent');
+    if (saved) {
+      try { setRecentContracts(JSON.parse(saved)); } catch (e) {}
+    }
+  }, []);
+
+  const resetForm = () => {
+    setBushels('');
+    setNumContracts('');
+    setBuyerId('');
+    setCashPrice('');
+    setFuturesPrice('');
+    setExpectedBasis('');
+    setBasis('');
+    setStrikePrice('');
+    setPremium('');
+    setFuturesMonth('');
+    setDeliveryStart('');
+    setDeliveryEnd('');
+    setContractNumber('');
+    setNotes('');
+    setPositionType('LONG');
+    setLinkedContractIds([]);
+    setStrategyType('');
+    setError('');
+  };
+
+  const getFuturesMonthOptions = () => {
+    const months = [];
+    const now = new Date();
+    for (let i = 0; i < 24; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+      months.push(d.toLocaleDateString('en-US', { year: 'numeric', month: 'short' }));
+    }
+    return months;
+  };
+
+  const detectStrategy = (currentOptionType, currentPositionType, linkedOptions) => {
+    if (!linkedOptions || linkedOptions.length === 0) return '';
+    const allOptions = [
+      { option_type: currentOptionType, position_type: currentPositionType },
+      ...linkedOptions.map(o => ({ option_type: o.option_type, position_type: o.position_type || 'LONG' }))
+    ];
+    const hasLongPut = allOptions.some(o => o.option_type === 'PUT' && o.position_type === 'LONG');
+    const hasShortCall = allOptions.some(o => o.option_type === 'CALL' && o.position_type === 'SHORT');
+    if (hasLongPut && hasShortCall) return 'COLLAR';
+    return '';
+  };
+
+  const toggleLinkedContract = (contractId) => {
+    const newIds = linkedContractIds.includes(contractId)
+      ? linkedContractIds.filter(id => id !== contractId)
+      : [...linkedContractIds, contractId];
+    setLinkedContractIds(newIds);
+    if (newIds.length > 0) {
+      const linkedOptions = existingOptions.filter(o => newIds.includes(o.id));
+      setStrategyType(detectStrategy(optionType, positionType, linkedOptions));
+    } else {
+      setStrategyType('');
+    }
+  };
+
+  const handleSubmit = async () => {
+    setError('');
+
+    if (!commodityId) {
+      setError('Please select a commodity');
+      return;
+    }
+    if (contractType === 'OPTIONS' && !numContracts) {
+      setError('Number of contracts is required');
+      return;
+    }
+    if (contractType !== 'OPTIONS' && !bushels) {
+      setError('Bushels are required');
+      return;
+    }
+
+    setSaving(true);
+
+    const finalBushels = contractType === 'OPTIONS'
+      ? parseInt(numContracts) * BUSHELS_PER_CONTRACT
+      : parseInt(bushels);
+
+    let strategyGroupId = null;
+    if (contractType === 'OPTIONS' && linkedContractIds.length > 0) {
+      const linkedOptions = existingOptions.filter(o => linkedContractIds.includes(o.id));
+      const existingGroupId = linkedOptions.find(o => o.strategy_group_id)?.strategy_group_id;
+      strategyGroupId = existingGroupId || crypto.randomUUID();
+    }
+
+    const contract = {
+      contract_type: contractType,
+      crop_year: selectedCropYear,
+      commodity_id: commodityId,
+      bushels: finalBushels,
+      buyer_id: buyerId || null,
+      cash_price: cashPrice ? parseFloat(cashPrice) : null,
+      futures_price: futuresPrice ? parseFloat(futuresPrice) : null,
+      expected_basis: expectedBasis ? parseFloat(expectedBasis) : null,
+      basis: basis ? parseFloat(basis) : null,
+      option_type: contractType === 'OPTIONS' ? optionType : null,
+      strike_price: strikePrice ? parseFloat(strikePrice) : null,
+      premium: premium ? parseFloat(premium) : null,
+      futures_month: futuresMonth || null,
+      delivery_start: deliveryStart || null,
+      delivery_end: deliveryEnd || null,
+      contract_number: contractNumber || null,
+      notes: notes || null,
+      position_type: contractType === 'OPTIONS' ? positionType : null,
+      strategy_group_id: strategyGroupId,
+      strategy_type: contractType === 'OPTIONS' && strategyType ? strategyType : null
+    };
+
+    const result = await createContract(contract);
+
+    if (result) {
+      if (strategyGroupId && linkedContractIds.length > 0) {
+        await supabase
+          .from('contracts')
+          .update({ strategy_group_id: strategyGroupId, strategy_type: strategyType })
+          .in('id', linkedContractIds);
+      }
+
+      const commodityName = commodities.find(c => c.id === commodityId)?.name || 'Unknown';
+      const newRecent = [{
+        id: result.id,
+        type: contractType,
+        commodity: commodityName,
+        bushels: finalBushels,
+        price: contract.cash_price || contract.futures_price || contract.strike_price,
+        date: new Date().toLocaleString()
+      }, ...recentContracts.slice(0, 9)];
+      setRecentContracts(newRecent);
+      localStorage.setItem('graintrack_mobile_recent', JSON.stringify(newRecent));
+
+      const contracts = await getContracts(selectedCropYear);
+      setExistingOptions(contracts);
+
+      setShowSuccess(true);
+      setTimeout(() => {
+        setShowSuccess(false);
+        resetForm();
+      }, 1500);
+    } else {
+      setError('Failed to create contract. Please try again.');
+    }
+
+    setSaving(false);
+  };
+
+  // Offline screen
+  if (!isOnline || isConnected === false) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center p-6 safe-top safe-bottom">
+        <div className="text-baldwin-green mb-4">
+          <Icons.wifiOff />
+        </div>
+        <h2 className="font-display text-2xl text-gray-800 mb-2">NO CONNECTION</h2>
+        <p className="text-gray-600 text-center mb-6 font-body">
+          {!isOnline ? 'You appear to be offline.' : 'Unable to connect to the server.'}
+        </p>
+        <button
+          onClick={() => window.location.reload()}
+          className="px-8 py-3 bg-baldwin-green text-white rounded-xl font-semibold btn-press shadow-lg"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  // Loading screen
+  if (loading || isConnected === null) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center safe-top safe-bottom">
+        <div className="text-baldwin-green mb-4">
+          <Icons.loader />
+        </div>
+        <p className="text-gray-600 font-body">Loading...</p>
+      </div>
+    );
+  }
+
+  // Success overlay
+  if (showSuccess) {
+    return (
+      <div className="min-h-screen bg-baldwin-green flex flex-col items-center justify-center safe-top safe-bottom">
+        <div className="w-20 h-20 bg-baldwin-gold rounded-full flex items-center justify-center checkmark-animate mb-4 shadow-lg">
+          <div className="text-baldwin-green-dark">
+            <Icons.check />
+          </div>
+        </div>
+        <h2 className="font-display text-3xl text-white tracking-wide">CONTRACT CREATED!</h2>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen safe-top">
+      {/* Header */}
+      <div className="bg-baldwin-green text-white px-4 py-4 sticky top-0 z-10 shadow-lg">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="font-display text-2xl tracking-wide">ADD SALE</h1>
+            <p className="text-baldwin-gold text-sm font-medium">{selectedCropYear} Crop Year</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowHistory(true)}
+              className="p-2 rounded-lg bg-baldwin-green-dark btn-press"
+              title="Recent"
+            >
+              <Icons.history />
+            </button>
+            <select
+              value={selectedCropYear}
+              onChange={(e) => setSelectedCropYear(parseInt(e.target.value))}
+              className="bg-baldwin-green-dark text-white px-3 py-2 rounded-lg text-sm font-semibold border border-baldwin-green-light"
+            >
+              {cropYears.map(year => (
+                <option key={year} value={year}>{year}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      {/* Form */}
+      <div className="p-4 pb-32 hide-scrollbar">
+        {error && (
+          <div className="mb-4 px-4 py-3 bg-red-50 border-2 border-red-200 text-red-700 rounded-xl text-sm flex items-center gap-2">
+            <Icons.x />
+            {error}
+          </div>
+        )}
+
+        {/* Contract Type */}
+        <div className="mb-5">
+          <label className="block text-sm font-semibold text-gray-700 mb-2 uppercase tracking-wide">Contract Type</label>
+          <div className="grid grid-cols-5 gap-2">
+            {['CASH', 'FUTURES', 'OPTIONS', 'HTA', 'BASIS'].map(type => (
+              <button
+                key={type}
+                type="button"
+                onClick={() => { setContractType(type); resetForm(); }}
+                className={`py-3 rounded-xl text-xs font-bold btn-press border-2 ${
+                  contractType === type
+                    ? 'bg-baldwin-green text-white border-baldwin-green shadow-md'
+                    : 'bg-white text-gray-700 border-gray-200 hover:border-baldwin-green'
+                }`}
+              >
+                {type}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Commodity */}
+        <div className="mb-5">
+          <label className="block text-sm font-semibold text-gray-700 mb-2 uppercase tracking-wide">Commodity</label>
+          <div className="relative">
+            <select
+              value={commodityId}
+              onChange={(e) => setCommodityId(e.target.value)}
+              className="w-full px-4 py-3.5 bg-white border-2 border-gray-200 rounded-xl appearance-none text-gray-900 font-semibold"
+            >
+              {commodities.map(c => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+            <div className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
+              <Icons.chevronDown />
+            </div>
+          </div>
+        </div>
+
+        {/* Bushels or Number of Contracts */}
+        {contractType === 'OPTIONS' ? (
+          <div className="mb-5">
+            <label className="block text-sm font-semibold text-gray-700 mb-2 uppercase tracking-wide">Number of Contracts</label>
+            <input
+              type="number"
+              inputMode="numeric"
+              value={numContracts}
+              onChange={(e) => setNumContracts(e.target.value)}
+              placeholder="e.g., 3"
+              className="w-full px-4 py-3.5 bg-white border-2 border-gray-200 rounded-xl text-gray-900 font-semibold"
+            />
+            <p className="mt-1.5 text-xs text-gray-500 font-medium">
+              {numContracts ? `= ${(parseInt(numContracts) * BUSHELS_PER_CONTRACT).toLocaleString()} bushels` : '1 contract = 5,000 bushels'}
+            </p>
+          </div>
+        ) : (
+          <div className="mb-5">
+            <label className="block text-sm font-semibold text-gray-700 mb-2 uppercase tracking-wide">Bushels</label>
+            <input
+              type="number"
+              inputMode="numeric"
+              value={bushels}
+              onChange={(e) => setBushels(e.target.value)}
+              placeholder="e.g., 5000"
+              className="w-full px-4 py-3.5 bg-white border-2 border-gray-200 rounded-xl text-gray-900 font-semibold"
+            />
+          </div>
+        )}
+
+        {/* Buyer */}
+        {['CASH', 'HTA', 'BASIS'].includes(contractType) && (
+          <div className="mb-5">
+            <label className="block text-sm font-semibold text-gray-700 mb-2 uppercase tracking-wide">Buyer</label>
+            <div className="relative">
+              <select
+                value={buyerId}
+                onChange={(e) => setBuyerId(e.target.value)}
+                className="w-full px-4 py-3.5 bg-white border-2 border-gray-200 rounded-xl appearance-none text-gray-900"
+              >
+                <option value="">Select buyer...</option>
+                {buyers.map(b => (
+                  <option key={b.id} value={b.id}>{b.name}</option>
+                ))}
+              </select>
+              <div className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
+                <Icons.chevronDown />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* CASH Price */}
+        {contractType === 'CASH' && (
+          <div className="mb-5">
+            <label className="block text-sm font-semibold text-gray-700 mb-2 uppercase tracking-wide">Cash Price ($/bu)</label>
+            <input
+              type="number"
+              inputMode="decimal"
+              step="0.01"
+              value={cashPrice}
+              onChange={(e) => setCashPrice(e.target.value)}
+              placeholder="e.g., 4.50"
+              className="w-full px-4 py-3.5 bg-white border-2 border-gray-200 rounded-xl text-gray-900 font-semibold"
+            />
+          </div>
+        )}
+
+        {/* FUTURES/HTA Fields */}
+        {['FUTURES', 'HTA'].includes(contractType) && (
+          <div className="grid grid-cols-2 gap-3 mb-5">
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2 uppercase tracking-wide">Futures Price</label>
+              <input
+                type="number"
+                inputMode="decimal"
+                step="0.01"
+                value={futuresPrice}
+                onChange={(e) => setFuturesPrice(e.target.value)}
+                placeholder="4.50"
+                className="w-full px-4 py-3.5 bg-white border-2 border-gray-200 rounded-xl text-gray-900 font-semibold"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2 uppercase tracking-wide">Exp. Basis</label>
+              <input
+                type="number"
+                inputMode="decimal"
+                step="0.01"
+                value={expectedBasis}
+                onChange={(e) => setExpectedBasis(e.target.value)}
+                placeholder="-0.25"
+                className="w-full px-4 py-3.5 bg-white border-2 border-gray-200 rounded-xl text-gray-900 font-semibold"
+              />
+            </div>
+          </div>
+        )}
+
+        {/* BASIS Fields */}
+        {contractType === 'BASIS' && (
+          <div className="mb-5">
+            <label className="block text-sm font-semibold text-gray-700 mb-2 uppercase tracking-wide">Basis ($/bu)</label>
+            <input
+              type="number"
+              inputMode="decimal"
+              step="0.01"
+              value={basis}
+              onChange={(e) => setBasis(e.target.value)}
+              placeholder="-0.25"
+              className="w-full px-4 py-3.5 bg-white border-2 border-gray-200 rounded-xl text-gray-900 font-semibold"
+            />
+          </div>
+        )}
+
+        {/* OPTIONS Fields */}
+        {contractType === 'OPTIONS' && (
+          <>
+            {/* Option Type */}
+            <div className="mb-5">
+              <label className="block text-sm font-semibold text-gray-700 mb-2 uppercase tracking-wide">Option Type</label>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setOptionType('PUT')}
+                  className={`py-3.5 rounded-xl text-sm font-bold btn-press border-2 ${
+                    optionType === 'PUT'
+                      ? 'bg-orange-500 text-white border-orange-500 shadow-md'
+                      : 'bg-white text-gray-700 border-gray-200'
+                  }`}
+                >
+                  PUT
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOptionType('CALL')}
+                  className={`py-3.5 rounded-xl text-sm font-bold btn-press border-2 ${
+                    optionType === 'CALL'
+                      ? 'bg-cyan-600 text-white border-cyan-600 shadow-md'
+                      : 'bg-white text-gray-700 border-gray-200'
+                  }`}
+                >
+                  CALL
+                </button>
+              </div>
+            </div>
+
+            {/* Position Type */}
+            <div className="mb-5">
+              <label className="block text-sm font-semibold text-gray-700 mb-2 uppercase tracking-wide">Position</label>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setPositionType('LONG')}
+                  className={`py-3.5 rounded-xl text-sm font-bold btn-press border-2 ${
+                    positionType === 'LONG'
+                      ? 'bg-green-600 text-white border-green-600 shadow-md'
+                      : 'bg-white text-gray-700 border-gray-200'
+                  }`}
+                >
+                  LONG (Buy)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPositionType('SHORT')}
+                  className={`py-3.5 rounded-xl text-sm font-bold btn-press border-2 ${
+                    positionType === 'SHORT'
+                      ? 'bg-red-600 text-white border-red-600 shadow-md'
+                      : 'bg-white text-gray-700 border-gray-200'
+                  }`}
+                >
+                  SHORT (Sell)
+                </button>
+              </div>
+              <p className="mt-1.5 text-xs text-gray-500 font-medium">
+                {positionType === 'LONG' ? 'Buying - paying premium' : 'Selling - receiving premium'}
+              </p>
+            </div>
+
+            {/* Strike & Premium */}
+            <div className="grid grid-cols-2 gap-3 mb-5">
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2 uppercase tracking-wide">Strike Price</label>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  step="0.01"
+                  value={strikePrice}
+                  onChange={(e) => setStrikePrice(e.target.value)}
+                  placeholder="4.45"
+                  className="w-full px-4 py-3.5 bg-white border-2 border-gray-200 rounded-xl text-gray-900 font-semibold"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2 uppercase tracking-wide">
+                  Premium {positionType === 'LONG' ? '(Paid)' : '(Rec\'d)'}
+                </label>
+                <div className="relative">
+                  <span className={`absolute left-3 top-1/2 -translate-y-1/2 font-bold text-lg ${
+                    positionType === 'LONG' ? 'text-red-500' : 'text-green-600'
+                  }`}>
+                    {positionType === 'LONG' ? '-' : '+'}
+                  </span>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    step="0.01"
+                    value={premium}
+                    onChange={(e) => setPremium(e.target.value)}
+                    placeholder="0.22"
+                    className="w-full pl-8 pr-4 py-3.5 bg-white border-2 border-gray-200 rounded-xl text-gray-900 font-semibold"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Link to existing options */}
+            {existingOptions.filter(o => o.commodity_id === commodityId).length > 0 && (
+              <div className="mb-5">
+                <label className="block text-sm font-semibold text-gray-700 mb-2 uppercase tracking-wide">Link to Strategy</label>
+                <div className="bg-white border-2 border-gray-200 rounded-xl p-3 max-h-40 overflow-y-auto">
+                  {existingOptions
+                    .filter(o => o.commodity_id === commodityId)
+                    .map(o => (
+                      <button
+                        key={o.id}
+                        type="button"
+                        onClick={() => toggleLinkedContract(o.id)}
+                        className={`w-full flex items-center gap-2 p-2.5 rounded-lg mb-1 btn-press ${
+                          linkedContractIds.includes(o.id) ? 'bg-baldwin-gold/20 border-2 border-baldwin-gold' : 'bg-gray-50 border-2 border-transparent'
+                        }`}
+                      >
+                        <div className={`w-5 h-5 rounded border-2 flex items-center justify-center ${
+                          linkedContractIds.includes(o.id) ? 'bg-baldwin-green border-baldwin-green' : 'border-gray-300'
+                        }`}>
+                          {linkedContractIds.includes(o.id) && (
+                            <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                            </svg>
+                          )}
+                        </div>
+                        <span className={`px-1.5 py-0.5 rounded text-xs font-bold ${
+                          (o.position_type || 'LONG') === 'SHORT' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'
+                        }`}>{o.position_type || 'LONG'}</span>
+                        <span className={`px-1.5 py-0.5 rounded text-xs font-bold ${
+                          o.option_type === 'PUT' ? 'bg-orange-100 text-orange-700' : 'bg-cyan-100 text-cyan-700'
+                        }`}>{o.option_type}</span>
+                        <span className="text-sm text-gray-700 font-semibold">${o.strike_price?.toFixed(2)}</span>
+                        <span className="text-xs text-gray-500">{o.futures_month || ''}</span>
+                      </button>
+                    ))}
+                </div>
+                {strategyType && (
+                  <div className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 bg-purple-100 text-purple-700 rounded-lg text-xs font-bold">
+                    <Icons.link />
+                    {strategyType} Strategy
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Futures Month */}
+        {['FUTURES', 'OPTIONS', 'HTA', 'BASIS'].includes(contractType) && (
+          <div className="mb-5">
+            <label className="block text-sm font-semibold text-gray-700 mb-2 uppercase tracking-wide">Futures Month</label>
+            <div className="relative">
+              <select
+                value={futuresMonth}
+                onChange={(e) => setFuturesMonth(e.target.value)}
+                className="w-full px-4 py-3.5 bg-white border-2 border-gray-200 rounded-xl appearance-none text-gray-900"
+              >
+                <option value="">Select month...</option>
+                {getFuturesMonthOptions().map(m => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+              <div className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
+                <Icons.chevronDown />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Delivery Window */}
+        {['CASH', 'HTA', 'BASIS'].includes(contractType) && (
+          <div className="grid grid-cols-2 gap-3 mb-5">
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2 uppercase tracking-wide">Delivery Start</label>
+              <input
+                type="date"
+                value={deliveryStart}
+                onChange={(e) => setDeliveryStart(e.target.value)}
+                className="w-full px-4 py-3.5 bg-white border-2 border-gray-200 rounded-xl text-gray-900"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2 uppercase tracking-wide">Delivery End</label>
+              <input
+                type="date"
+                value={deliveryEnd}
+                onChange={(e) => setDeliveryEnd(e.target.value)}
+                className="w-full px-4 py-3.5 bg-white border-2 border-gray-200 rounded-xl text-gray-900"
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Contract Number */}
+        <div className="mb-5">
+          <label className="block text-sm font-semibold text-gray-700 mb-2 uppercase tracking-wide">Contract # (optional)</label>
+          <input
+            type="text"
+            value={contractNumber}
+            onChange={(e) => setContractNumber(e.target.value)}
+            placeholder="ABC-12345"
+            className="w-full px-4 py-3.5 bg-white border-2 border-gray-200 rounded-xl text-gray-900"
+          />
+        </div>
+
+        {/* Notes */}
+        <div className="mb-5">
+          <label className="block text-sm font-semibold text-gray-700 mb-2 uppercase tracking-wide">Notes (optional)</label>
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            rows={2}
+            placeholder="Any additional notes..."
+            className="w-full px-4 py-3.5 bg-white border-2 border-gray-200 rounded-xl text-gray-900 resize-none"
+          />
+        </div>
+      </div>
+
+      {/* Fixed Bottom Button */}
+      <div className="fixed bottom-0 left-0 right-0 p-4 bg-wheat border-t-2 border-gray-200 safe-bottom">
+        <button
+          onClick={handleSubmit}
+          disabled={saving}
+          className={`w-full py-4 rounded-xl font-bold btn-press flex items-center justify-center gap-2 shadow-lg ${
+            saving ? 'bg-gray-400' : 'bg-baldwin-green hover:bg-baldwin-green-dark'
+          } text-white`}
+        >
+          {saving ? (
+            <>
+              <Icons.loader />
+              <span className="font-display text-lg tracking-wide">CREATING...</span>
+            </>
+          ) : (
+            <>
+              <Icons.check />
+              <span className="font-display text-lg tracking-wide">CREATE {contractType} CONTRACT</span>
+            </>
+          )}
+        </button>
+      </div>
+
+      {/* Recent History Modal */}
+      {showHistory && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-end">
+          <div className="bg-wheat w-full rounded-t-3xl max-h-[70vh] overflow-hidden slide-up safe-bottom">
+            <div className="p-4 border-b-2 border-gray-200 flex items-center justify-between bg-white">
+              <h2 className="font-display text-xl text-gray-900 tracking-wide">RECENT CONTRACTS</h2>
+              <button onClick={() => setShowHistory(false)} className="p-2 rounded-lg hover:bg-gray-100 btn-press text-gray-600">
+                <Icons.x />
+              </button>
+            </div>
+            <div className="p-4 overflow-y-auto max-h-[calc(70vh-80px)]">
+              {recentContracts.length === 0 ? (
+                <p className="text-gray-500 text-center py-8">No recent contracts</p>
+              ) : (
+                <div className="space-y-2">
+                  {recentContracts.map((c, i) => (
+                    <div key={i} className="bg-white rounded-xl p-4 border-2 border-gray-200">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className={`px-2 py-1 rounded text-xs font-bold ${
+                          c.type === 'CASH' ? 'bg-green-100 text-green-700' :
+                          c.type === 'FUTURES' ? 'bg-blue-100 text-blue-700' :
+                          c.type === 'OPTIONS' ? 'bg-purple-100 text-purple-700' :
+                          c.type === 'HTA' ? 'bg-amber-100 text-amber-700' :
+                          'bg-gray-100 text-gray-700'
+                        }`}>{c.type}</span>
+                        <span className="text-xs text-gray-500">{c.date}</span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold text-gray-900">{c.commodity}</span>
+                        <span className="text-gray-600 font-medium">
+                          {c.bushels?.toLocaleString()} bu {c.price && `@ $${c.price.toFixed(2)}`}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

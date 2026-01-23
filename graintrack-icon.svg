@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#3d6e22"/>
+      <stop offset="100%" style="stop-color:#2d5016"/>
+    </linearGradient>
+  </defs>
+  <rect fill="url(#bgGrad)" width="180" height="180" rx="40"/>
+  <!-- Wheat/Grain icon -->
+  <g transform="translate(90,95)" fill="#f4e157">
+    <!-- Center stalk -->
+    <rect x="-3" y="-45" width="6" height="75" rx="3"/>
+    <!-- Grain kernels -->
+    <ellipse cx="0" cy="-52" rx="11" ry="16"/>
+    <ellipse cx="-16" cy="-40" rx="9" ry="14" transform="rotate(-20)"/>
+    <ellipse cx="16" cy="-40" rx="9" ry="14" transform="rotate(20)"/>
+    <ellipse cx="-20" cy="-24" rx="8" ry="12" transform="rotate(-30)"/>
+    <ellipse cx="20" cy="-24" rx="8" ry="12" transform="rotate(30)"/>
+    <ellipse cx="-18" cy="-8" rx="7" ry="10" transform="rotate(-35)"/>
+    <ellipse cx="18" cy="-8" rx="7" ry="10" transform="rotate(35)"/>
+  </g>
+</svg>
