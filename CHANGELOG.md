@@ -1,5 +1,43 @@
 # GrainTrack Suite Changelog
 
+## [1.8.0] - 2026-01-23
+
+### Added - Contract Lifecycle Enhancements
+- **SPOT and FORWARD cash sales** (replaces generic CASH)
+  - FORWARD: Futures reference + Basis = Net price (no discounts yet)
+  - SPOT: Futures reference + Basis - Discounts - Checkoff - Storage = Net price
+  - Real-time net price calculation in form
+- **Position closing for futures/options**
+  - `closeFuturesPosition()` - Record exit date, exit price, calculate P&L
+  - `closeOptionsPosition()` - Record exit date, exit premium, calculate P&L
+  - `expireOption()` - Handle worthless/exercised options
+- **Realized P&L tracking**
+  - P&L from closed positions stored on each contract
+  - Realized P&L factors into blended average calculation
+  - Separate tracking for hedging gains/losses
+- **New contract fields**
+  - `futures_reference` - Futures price component of cash sales
+  - `discounts` - Quality discounts ($/bu)
+  - `checkoff` - Commodity checkoff fees ($/bu)
+  - `storage_charges` - Storage costs ($/bu)
+  - `exit_date`, `exit_price`, `exit_premium` - Position closing
+  - `realized_pnl` - Calculated gain/loss
+  - `linked_exit_id` - Links offsetting trades
+
+### Changed
+- Contract type buttons: FORWARD, SPOT, FUTURES, OPTIONS, HTA, BASIS
+- Add Sale form shows contextual help for each contract type
+- Summary calculations include realized P&L from closed positions
+- Filter dropdowns updated for new contract types
+
+### Database
+New columns on `contracts` table:
+- `futures_reference`, `discounts`, `checkoff`, `storage_charges`
+- `exit_date`, `exit_price`, `exit_premium`, `realized_pnl`, `linked_exit_id`
+- New statuses: CLOSED, EXPIRED
+
+---
+
 ## [1.7.3] - 2026-01-22
 
 ### Added - Export & Reporting (Phase 3)

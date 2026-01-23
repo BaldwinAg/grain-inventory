@@ -1,5 +1,5 @@
 <!--
-  GrainTrack Suite v1.7.3
+  GrainTrack Suite v1.8.0
   Grain marketing and inventory management
   https://github.com/BaldwinAg/grain-inventory
 -->
@@ -8,7 +8,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>GrainTrack Suite v1.7.3</title>
+  <title>GrainTrack Suite v1.8.0</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -1037,7 +1037,7 @@ async function getContractsSummary(cropYear, byPractice = false) {
 
     const existing = summary.get(key) || {
       commodity_id: contract.commodity_id,
-      // Firm delivery contracts only (CASH, HTA, BASIS)
+      // Firm delivery contracts only (FORWARD, SPOT, HTA, BASIS)
       contracted_bushels: 0,
       contracted_price_sum: 0,
       // Hedged = Contracted + FUTURES + SHORT CALLs
@@ -1048,8 +1048,12 @@ async function getContractsSummary(cropYear, byPractice = false) {
       premium_received: 0,  // Short calls - this is income
       // Bushels covered by long puts (protection)
       protected_bushels: 0,
+      // Realized P&L from closed positions
+      realized_pnl: 0,
       by_type: {
-        CASH: { count: 0, bushels: 0 },
+        FORWARD: { count: 0, bushels: 0 },
+        SPOT: { count: 0, bushels: 0 },
+        CASH: { count: 0, bushels: 0 }, // Keep for backwards compat
         FUTURES: { count: 0, bushels: 0 },
         OPTIONS: { count: 0, bushels: 0, long_put: 0, long_call: 0, short_put: 0, short_call: 0 },
         HTA: { count: 0, bushels: 0 },
@@ -1057,11 +1061,20 @@ async function getContractsSummary(cropYear, byPractice = false) {
       }
     };
 
+    // Ensure type exists in by_type (for old CASH contracts)
+    if (!existing.by_type[contract.contract_type]) {
+      existing.by_type[contract.contract_type] = { count: 0, bushels: 0 };
+    }
     existing.by_type[contract.contract_type].count += 1;
     existing.by_type[contract.contract_type].bushels += contract.bushels;
 
+    // Track realized P&L from closed positions
+    if (contract.realized_pnl && contract.status === 'CLOSED') {
+      existing.realized_pnl += contract.realized_pnl;
+    }
+
     // Handle different contract types
-    if (['CASH', 'HTA', 'BASIS'].includes(contract.contract_type)) {
+    if (['FORWARD', 'SPOT', 'CASH', 'HTA', 'BASIS'].includes(contract.contract_type)) {
       // Firm delivery contracts
       existing.contracted_bushels += contract.bushels;
       existing.hedged_bushels += contract.bushels;
@@ -1134,11 +1147,13 @@ async function getContractsSummary(cropYear, byPractice = false) {
       ? s.hedged_price_sum / s.hedged_bushels
       : null;
 
-    // Adjusted avg includes premium impact
+    // Adjusted avg includes premium impact and realized P&L
     // Premium paid (puts) is a cost spread across hedged bushels
     // Premium received (short calls) is income spread across hedged bushels
+    // Realized P&L from closed futures/options adds to effective price
+    const totalAdjustments = netPremium + s.realized_pnl;
     const hedgedAvgWithPremium = s.hedged_bushels > 0
-      ? (s.hedged_price_sum + netPremium) / s.hedged_bushels
+      ? (s.hedged_price_sum + totalAdjustments) / s.hedged_bushels
       : null;
 
     return {
@@ -1156,6 +1171,8 @@ async function getContractsSummary(cropYear, byPractice = false) {
       net_premium: netPremium,
       premium_paid: s.premium_paid,
       premium_received: s.premium_received,
+      // Realized P&L from closed positions
+      realized_pnl: s.realized_pnl,
       contracts_by_type: s.by_type
     };
   });
@@ -1174,8 +1191,12 @@ async function createContract(contract) {
       bushels_filled: 0,
       cash_price: contract.cash_price,
       futures_price: contract.futures_price,
+      futures_reference: contract.futures_reference || null,
       basis: contract.basis,
       expected_basis: contract.expected_basis,
+      discounts: contract.discounts || null,
+      checkoff: contract.checkoff || null,
+      storage_charges: contract.storage_charges || null,
       option_type: contract.option_type,
       strike_price: contract.strike_price,
       premium: contract.premium,
@@ -1251,6 +1272,99 @@ async function restoreContract(id) {
   await logAudit('contracts', id, 'RESTORE', null, record);
 
   return true;
+}
+
+// Close a futures position - record exit price and P&L
+async function closeFuturesPosition(id, exitDate, exitPrice) {
+  const { data: contract } = await supabase.from('contracts').select('*').eq('id', id).single();
+  if (!contract) return null;
+
+  // Calculate realized P&L
+  // For a short (hedge): profit when price goes down (entry - exit)
+  // For a long: profit when price goes up (exit - entry)
+  const entryPrice = contract.futures_price || 0;
+  const priceDiff = exitPrice - entryPrice;
+  // Assume short unless position_type is 'LONG'
+  const direction = contract.position_type === 'LONG' ? 1 : -1;
+  const realizedPnl = priceDiff * direction * contract.bushels;
+
+  const { data, error } = await supabase
+    .from('contracts')
+    .update({
+      exit_date: exitDate,
+      exit_price: exitPrice,
+      realized_pnl: realizedPnl,
+      status: 'CLOSED'
+    })
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (error) { console.error('Error closing futures position:', error); return null; }
+
+  await logAudit('contracts', id, 'UPDATE', contract, data);
+  return data;
+}
+
+// Close an options position - record exit premium and P&L
+async function closeOptionsPosition(id, exitDate, exitPremium) {
+  const { data: contract } = await supabase.from('contracts').select('*').eq('id', id).single();
+  if (!contract) return null;
+
+  // Calculate realized P&L for options
+  // Long: (exit premium - entry premium) * bushels
+  // Short: (entry premium - exit premium) * bushels
+  const entryPremium = contract.premium || 0;
+  const premiumDiff = contract.position_type === 'SHORT'
+    ? entryPremium - exitPremium
+    : exitPremium - entryPremium;
+  const realizedPnl = premiumDiff * contract.bushels;
+
+  const { data, error } = await supabase
+    .from('contracts')
+    .update({
+      exit_date: exitDate,
+      exit_premium: exitPremium,
+      realized_pnl: realizedPnl,
+      status: 'CLOSED'
+    })
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (error) { console.error('Error closing options position:', error); return null; }
+
+  await logAudit('contracts', id, 'UPDATE', contract, data);
+  return data;
+}
+
+// Expire an option (worthless or exercised)
+async function expireOption(id, expired_worthless = true) {
+  const { data: contract } = await supabase.from('contracts').select('*').eq('id', id).single();
+  if (!contract) return null;
+
+  // If expired worthless:
+  // Long: lose premium paid (negative P&L)
+  // Short: keep premium received (positive P&L, already counted)
+  const realizedPnl = expired_worthless
+    ? (contract.position_type === 'SHORT' ? contract.premium * contract.bushels : -contract.premium * contract.bushels)
+    : 0; // If exercised, handle separately
+
+  const { data, error } = await supabase
+    .from('contracts')
+    .update({
+      exit_date: new Date().toISOString().split('T')[0],
+      realized_pnl: realizedPnl,
+      status: 'EXPIRED'
+    })
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (error) { console.error('Error expiring option:', error); return null; }
+
+  await logAudit('contracts', id, 'UPDATE', contract, data);
+  return data;
 }
 
 // Insurance
@@ -2666,15 +2780,20 @@ function AddSalePage({ cropYear: initialCropYear, onSuccess, onYearChange }) {
   const cropYears = [currentYear - 1, currentYear, currentYear + 1, currentYear + 2];
   const [selectedCropYear, setSelectedCropYear] = useState(initialCropYear);
 
-  const [contractType, setContractType] = useState('CASH');
+  const [contractType, setContractType] = useState('FORWARD');
   const [commodityId, setCommodityId] = useState('');
   const [bushels, setBushels] = useState('');
   const [numContracts, setNumContracts] = useState(''); // For OPTIONS - number of contracts
   const [buyerId, setBuyerId] = useState('');
   const [cashPrice, setCashPrice] = useState('');
   const [futuresPrice, setFuturesPrice] = useState('');
+  const [futuresReference, setFuturesReference] = useState(''); // Futures component for cash sales
   const [expectedBasis, setExpectedBasis] = useState('');
   const [basis, setBasis] = useState('');
+  // Spot sale deductions
+  const [discounts, setDiscounts] = useState('');
+  const [checkoff, setCheckoff] = useState('');
+  const [storageCharges, setStorageCharges] = useState('');
   const [optionType, setOptionType] = useState('PUT');
   const [strikePrice, setStrikePrice] = useState('');
   const [premium, setPremium] = useState('');
@@ -2734,15 +2853,19 @@ function AddSalePage({ cropYear: initialCropYear, onSuccess, onYearChange }) {
   };
 
   const resetForm = () => {
-    setContractType('CASH');
+    setContractType('FORWARD');
     if (commodities.length > 0) setCommodityId(commodities[0].id);
     setBushels('');
     setNumContracts('');
     setBuyerId('');
     setCashPrice('');
     setFuturesPrice('');
+    setFuturesReference('');
     setExpectedBasis('');
     setBasis('');
+    setDiscounts('');
+    setCheckoff('');
+    setStorageCharges('');
     setOptionType('PUT');
     setStrikePrice('');
     setPremium('');
@@ -2847,16 +2970,31 @@ function AddSalePage({ cropYear: initialCropYear, onSuccess, onYearChange }) {
       strategyGroupId = existingGroupId || crypto.randomUUID();
     }
 
+    // Calculate net cash price for SPOT/FORWARD
+    let netCashPrice = null;
+    if (contractType === 'FORWARD' || contractType === 'SPOT') {
+      const fr = parseFloat(futuresReference) || 0;
+      const b = parseFloat(basis) || 0;
+      const d = parseFloat(discounts) || 0;
+      const c = parseFloat(checkoff) || 0;
+      const s = parseFloat(storageCharges) || 0;
+      netCashPrice = fr + b - d - c - s;
+    }
+
     const contract = {
       contract_type: contractType,
       crop_year: selectedCropYear,
       commodity_id: commodityId,
       bushels: finalBushels,
       buyer_id: buyerId || null,
-      cash_price: cashPrice ? parseFloat(cashPrice) : null,
+      cash_price: netCashPrice,
       futures_price: futuresPrice ? parseFloat(futuresPrice) : null,
+      futures_reference: futuresReference ? parseFloat(futuresReference) : null,
       expected_basis: expectedBasis ? parseFloat(expectedBasis) : null,
       basis: basis ? parseFloat(basis) : null,
+      discounts: discounts ? parseFloat(discounts) : null,
+      checkoff: checkoff ? parseFloat(checkoff) : null,
+      storage_charges: storageCharges ? parseFloat(storageCharges) : null,
       option_type: contractType === 'OPTIONS' ? optionType : null,
       strike_price: strikePrice ? parseFloat(strikePrice) : null,
       premium: premium ? parseFloat(premium) : null,
@@ -2932,8 +3070,8 @@ function AddSalePage({ cropYear: initialCropYear, onSuccess, onYearChange }) {
         {/* Contract Type */}
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">Contract Type</label>
-          <div className="grid grid-cols-5 gap-2">
-            {['CASH', 'FUTURES', 'OPTIONS', 'HTA', 'BASIS'].map(type => (
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+            {['FORWARD', 'SPOT', 'FUTURES', 'OPTIONS', 'HTA', 'BASIS'].map(type => (
               <button key={type} type="button" onClick={() => setContractType(type)}
                 className={`py-2 px-3 rounded-lg text-sm font-medium border ${
                   contractType === type ? 'bg-amber-500 text-white border-amber-500' : 'bg-white text-gray-700 border-gray-300'}`}>
@@ -2941,6 +3079,14 @@ function AddSalePage({ cropYear: initialCropYear, onSuccess, onYearChange }) {
               </button>
             ))}
           </div>
+          <p className="mt-1 text-xs text-gray-500">
+            {contractType === 'FORWARD' && 'Forward contract: Futures + Basis locked, deliver later'}
+            {contractType === 'SPOT' && 'Spot sale: Immediate delivery with discounts/storage'}
+            {contractType === 'FUTURES' && 'Futures hedge on the board'}
+            {contractType === 'OPTIONS' && 'Put or Call option position'}
+            {contractType === 'HTA' && 'Hedge-to-Arrive: Futures locked, basis set later'}
+            {contractType === 'BASIS' && 'Basis contract: Basis locked, futures set later'}
+          </p>
         </div>
 
         {/* Commodity */}
@@ -2971,7 +3117,7 @@ function AddSalePage({ cropYear: initialCropYear, onSuccess, onYearChange }) {
         )}
 
         {/* Buyer */}
-        {['CASH', 'HTA', 'BASIS'].includes(contractType) && (
+        {['FORWARD', 'SPOT', 'HTA', 'BASIS'].includes(contractType) && (
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Buyer</label>
             <select value={buyerId} onChange={(e) => setBuyerId(e.target.value)}
@@ -2982,12 +3128,87 @@ function AddSalePage({ cropYear: initialCropYear, onSuccess, onYearChange }) {
           </div>
         )}
 
-        {/* Cash Price */}
-        {contractType === 'CASH' && (
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Cash Price ($/bu)</label>
-            <input type="number" step="0.01" value={cashPrice} onChange={(e) => setCashPrice(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" />
+        {/* FORWARD Contract: Futures Ref + Basis = Net */}
+        {contractType === 'FORWARD' && (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Futures Reference ($/bu)</label>
+                <input type="number" step="0.01" value={futuresReference} onChange={(e) => setFuturesReference(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Basis ($/bu)</label>
+                <input type="number" step="0.01" value={basis} onChange={(e) => setBasis(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" />
+              </div>
+            </div>
+            {(futuresReference && basis) && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-2 text-sm">
+                <span className="font-medium">Net Price: </span>
+                <span className="text-amber-700 font-bold">
+                  ${(parseFloat(futuresReference) + parseFloat(basis)).toFixed(2)}/bu
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* SPOT Sale: Futures Ref + Basis - Deductions = Net */}
+        {contractType === 'SPOT' && (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Futures Reference ($/bu)</label>
+                <input type="number" step="0.01" value={futuresReference} onChange={(e) => setFuturesReference(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Basis ($/bu)</label>
+                <input type="number" step="0.01" value={basis} onChange={(e) => setBasis(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" />
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Discounts ($/bu)</label>
+                <input type="number" step="0.01" value={discounts} onChange={(e) => setDiscounts(e.target.value)}
+                  placeholder="0.00"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Checkoff ($/bu)</label>
+                <input type="number" step="0.01" value={checkoff} onChange={(e) => setCheckoff(e.target.value)}
+                  placeholder="0.00"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Storage ($/bu)</label>
+                <input type="number" step="0.01" value={storageCharges} onChange={(e) => setStorageCharges(e.target.value)}
+                  placeholder="0.00"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" />
+              </div>
+            </div>
+            {(futuresReference && basis) && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-2 text-sm">
+                <span className="font-medium">Net Price: </span>
+                <span className="text-amber-700 font-bold">
+                  ${(
+                    parseFloat(futuresReference || 0) +
+                    parseFloat(basis || 0) -
+                    parseFloat(discounts || 0) -
+                    parseFloat(checkoff || 0) -
+                    parseFloat(storageCharges || 0)
+                  ).toFixed(2)}/bu
+                </span>
+                <span className="text-gray-500 ml-2">
+                  (${futuresReference} + ${basis}
+                  {discounts ? ` - $${discounts} disc` : ''}
+                  {checkoff ? ` - $${checkoff} ckoff` : ''}
+                  {storageCharges ? ` - $${storageCharges} stor` : ''})
+                </span>
+              </div>
+            )}
           </div>
         )}
 
@@ -3363,7 +3584,7 @@ function ContractsPage({ cropYear, onYearChange }) {
           <select value={filterType} onChange={(e) => setFilterType(e.target.value)}
             className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-500">
             <option value="">All Types</option>
-            {['CASH', 'FUTURES', 'OPTIONS', 'HTA', 'BASIS'].map(t => <option key={t} value={t}>{t}</option>)}
+            {['FORWARD', 'SPOT', 'FUTURES', 'OPTIONS', 'HTA', 'BASIS'].map(t => <option key={t} value={t}>{t}</option>)}
           </select>
           <select value={cropYear} onChange={(e) => onYearChange(parseInt(e.target.value))}
             className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium focus:ring-2 focus:ring-amber-500">
