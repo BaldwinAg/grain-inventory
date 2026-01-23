@@ -1,5 +1,26 @@
 # GrainTrack Suite Changelog
 
+## [1.9.1] - 2026-01-23
+
+### Changed - Market Signal Dashboard
+
+- **Replaced aggregate summary panes with per-commodity market signal cards**
+  - Each commodity shows: Price, Support 1 (S1), Resistance 1 (R1)
+  - Cards turn green with "SELL" badge when sell signals trigger
+  - Cards turn red with "BUY" badge when buy signals trigger
+  - Neutral (white) when no signals active
+
+- **Signal detection logic**
+  - Sell signals: RSI > 70, Stoch %K > 80, Stoch %D > 80, or bearish trend
+  - Buy signals: RSI < 30, Stoch %K < 20, Stoch %D < 20, or bullish trend
+  - Shows which indicators triggered the signal
+
+- **Technical data from Barchart**
+  - Added support_1 and resistance_1 to market data
+  - Real-time technical indicators displayed per commodity
+
+---
+
 ## [1.9.0] - 2026-01-23
 
 ### Added - Data Integrity & Feature Enhancements (Phase 5)
