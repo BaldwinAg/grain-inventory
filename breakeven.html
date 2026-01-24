@@ -170,24 +170,10 @@ async function getCommodities() {
 // Fields & Production (with landlord/tenant info)
 async function getFieldCropYears(cropYear) {
   const { data, error } = await db.from('field_crop_years').select('*, fields(id, name, acres, farm_id, tenant_share, landlord, farms(name, adams_grain_share)), commodities(id, name)').eq('crop_year', cropYear).is('deleted_at', null);
-
-  if (error) {
-    console.error('getFieldCropYears error:', error);
-    return [];
-  }
-
-  // Debug: log raw data to see tenant_share values
-  console.log('Raw field_crop_years data:', data?.slice(0, 3).map(f => ({
-    field_name: f.fields?.name,
-    tenant_share_raw: f.fields?.tenant_share,
-    landlord: f.fields?.landlord
-  })));
-
+  if (error) return [];
   return (data || []).map(f => {
-    // Parse tenant_share - ensure it's a number
-    const rawTenantShare = f.fields?.tenant_share;
-    const tenantShare = rawTenantShare != null ? Number(rawTenantShare) : 1;
-
+    // Parse tenant_share as number (Supabase may return as string)
+    const tenantShare = f.fields?.tenant_share != null ? Number(f.fields.tenant_share) : 1;
     return {
       ...f,
       field_id: f.fields?.id,
