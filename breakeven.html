@@ -626,6 +626,107 @@ function calculateCropPlanCost(plan) {
 }
 
 // ============================================================================
+// FIELD PLAN ASSIGNMENTS (Phase 4)
+// ============================================================================
+
+// Get field assignments with crop plan details
+async function getFieldPlanAssignments(cropYear) {
+  const { data, error } = await db.from('be_field_plan_assignments')
+    .select(`
+      *,
+      be_crop_plans(*),
+      field_crop_years(id, field_id, commodity_id, crop_year, planted_acres, expected_yield,
+        fields(id, name, acres, farm_id, tenant_share, landlord,
+          farms(name, adams_grain_share)),
+        commodities(id, name)
+      )
+    `)
+    .is('deleted_at', null);
+
+  if (error) return [];
+
+  // Filter by crop year from field_crop_years
+  return (data || []).filter(a =>
+    a.field_crop_years && a.field_crop_years.crop_year === cropYear
+  ).map(a => ({
+    ...a,
+    plan: a.be_crop_plans,
+    field_crop_year_id: a.field_crop_years?.id,
+    field_id: a.field_crop_years?.field_id,
+    field_name: a.field_crop_years?.fields?.name,
+    field_acres: a.field_crop_years?.fields?.acres,
+    farm_name: a.field_crop_years?.fields?.farms?.name,
+    adams_grain_share: a.field_crop_years?.fields?.farms?.adams_grain_share ?? 1,
+    commodity_id: a.field_crop_years?.commodity_id,
+    commodity_name: a.field_crop_years?.commodities?.name,
+    planted_acres: a.field_crop_years?.planted_acres,
+    expected_yield: a.field_crop_years?.expected_yield,
+    tenant_share: Number(a.field_crop_years?.fields?.tenant_share ?? 1),
+    landlord: a.field_crop_years?.fields?.landlord
+  }));
+}
+
+// Save field plan assignment
+async function saveFieldPlanAssignment(assignment) {
+  const data = {
+    field_crop_year_id: assignment.field_crop_year_id,
+    crop_plan_id: assignment.crop_plan_id,
+    seed_override_hybrid: assignment.seed_override_hybrid || null,
+    seed_override_brand: assignment.seed_override_brand || null,
+    seed_override_rate: assignment.seed_override_rate || null,
+    seed_override_price: assignment.seed_override_price || null,
+    status: assignment.status || 'PLANNED',
+    notes: assignment.notes || null,
+    updated_at: new Date().toISOString()
+  };
+
+  if (assignment.id) {
+    const { error } = await db.from('be_field_plan_assignments').update(data).eq('id', assignment.id);
+    if (error) throw error;
+    return { ...assignment, ...data };
+  } else {
+    const { data: newData, error } = await db.from('be_field_plan_assignments').insert([data]).select().single();
+    if (error) throw error;
+    return newData;
+  }
+}
+
+// Delete field plan assignment
+async function deleteFieldPlanAssignment(id) {
+  const { error } = await db.from('be_field_plan_assignments').update({ deleted_at: new Date().toISOString() }).eq('id', id);
+  if (error) throw error;
+}
+
+// Bulk assign crop plan to multiple fields
+async function bulkAssignCropPlan(fieldCropYearIds, cropPlanId) {
+  const results = [];
+  for (const fcyId of fieldCropYearIds) {
+    // Check if assignment already exists
+    const { data: existing } = await db.from('be_field_plan_assignments')
+      .select('id')
+      .eq('field_crop_year_id', fcyId)
+      .is('deleted_at', null)
+      .single();
+
+    if (existing) {
+      // Update existing
+      const { error } = await db.from('be_field_plan_assignments')
+        .update({ crop_plan_id: cropPlanId, updated_at: new Date().toISOString() })
+        .eq('id', existing.id);
+      if (error) throw error;
+      results.push({ fcyId, action: 'updated' });
+    } else {
+      // Insert new
+      const { error } = await db.from('be_field_plan_assignments')
+        .insert([{ field_crop_year_id: fcyId, crop_plan_id: cropPlanId }]);
+      if (error) throw error;
+      results.push({ fcyId, action: 'created' });
+    }
+  }
+  return results;
+}
+
+// ============================================================================
 // LEGACY HERBICIDE/FERTILIZER PLANS (keep for backward compatibility)
 // ============================================================================
 
@@ -2278,10 +2379,17 @@ function CropPlanEditor({ plan, cropYear, commodities, tankMixes, onClose, onSav
   const tabs = [
     { id: 'info', label: 'Info', icon: 'file-text' },
     { id: 'seed', label: 'Seed', icon: 'package' },
-    { id: 'custom', label: 'Custom Costs', icon: 'wrench' },
+    { id: 'custom', label: 'Field Operations', icon: 'tractor' },
     { id: 'fertilizer', label: 'Fertilizer', icon: 'flask-conical' },
     { id: 'chemicals', label: 'Chemicals', icon: 'spray-can' }
   ];
+
+  // Tab navigation helpers
+  const currentTabIndex = tabs.findIndex(t => t.id === activeTab);
+  const canGoBack = currentTabIndex > 0;
+  const canGoNext = currentTabIndex < tabs.length - 1;
+  const goBack = () => canGoBack && setActiveTab(tabs[currentTabIndex - 1].id);
+  const goNext = () => canGoNext && setActiveTab(tabs[currentTabIndex + 1].id);
 
   return (
     <div className="space-y-6">
@@ -2356,6 +2464,35 @@ function CropPlanEditor({ plan, cropYear, commodities, tankMixes, onClose, onSav
         {activeTab === 'chemicals' && (
           <ChemicalPassesEditor passes={chemPasses} onChange={setChemPasses} tankMixes={tankMixes} />
         )}
+
+        {/* Tab Navigation - Back/Next */}
+        <div className="flex justify-between items-center pt-6 mt-6 border-t">
+          <button onClick={goBack} disabled={!canGoBack}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg ${canGoBack ? 'text-gray-700 hover:bg-gray-100' : 'text-gray-300 cursor-not-allowed'}`}>
+            <Icon name="arrow-left" size={18} />
+            {canGoBack ? tabs[currentTabIndex - 1].label : 'Back'}
+          </button>
+          <div className="flex items-center gap-2">
+            {tabs.map((tab, idx) => (
+              <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+                className={`w-2.5 h-2.5 rounded-full transition-colors ${idx === currentTabIndex ? 'bg-blue-600' : 'bg-gray-300 hover:bg-gray-400'}`}
+                title={tab.label} />
+            ))}
+          </div>
+          {canGoNext ? (
+            <button onClick={goNext}
+              className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+              {tabs[currentTabIndex + 1].label}
+              <Icon name="arrow-right" size={18} />
+            </button>
+          ) : (
+            <button onClick={handleSave} disabled={saving}
+              className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50">
+              {saving ? <Icon name="loader" className="animate-spin" size={18} /> : <Icon name="check" size={18} />}
+              {saving ? 'Saving...' : 'Save & Finish'}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -2429,8 +2566,21 @@ function SeedEditor({ seed, onChange, commodityId, commodities }) {
 
 // Custom Costs Editor Component
 function CustomCostsEditor({ costs, onChange }) {
-  const addCost = () => {
-    onChange([...costs, { name: '', cost_type: 'PER_ACRE', amount: '', unit: '/acre', timing: '', notes: '' }]);
+  // Common field operations for quick-add
+  const quickAddOptions = [
+    { name: 'Harvest', cost_type: 'PER_ACRE', timing: 'Harvest', placeholder: 'Custom combining' },
+    { name: 'Planting', cost_type: 'PER_ACRE', timing: 'At-plant', placeholder: 'Custom planting' },
+    { name: 'Tillage', cost_type: 'PER_ACRE', timing: 'Pre-plant', placeholder: 'Disk, field cultivator' },
+    { name: 'Drying', cost_type: 'PER_BUSHEL', timing: 'Post-harvest', placeholder: '$/point/bu' },
+    { name: 'Hauling', cost_type: 'PER_BUSHEL', timing: 'Harvest', placeholder: 'Trucking' },
+    { name: 'Aerial Application', cost_type: 'PER_ACRE', timing: 'In-season', placeholder: 'Fungicide/insecticide' }
+  ];
+
+  const addCost = (template = null) => {
+    const newCost = template
+      ? { ...template, amount: '', unit: template.cost_type === 'PER_ACRE' ? '/acre' : '/bu', notes: '' }
+      : { name: '', cost_type: 'PER_ACRE', amount: '', unit: '/acre', timing: '', notes: '' };
+    onChange([...costs, newCost]);
   };
 
   const updateCost = (index, field, value) => {
@@ -2449,7 +2599,7 @@ function CustomCostsEditor({ costs, onChange }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <div className="text-sm text-gray-500">Custom costs: tillage, custom hire, drying, etc.</div>
+          <div className="text-sm text-gray-500">Field operations: harvest, planting, tillage, drying, custom hire, etc.</div>
         </div>
         <div className="text-right">
           <div className="text-sm text-gray-500">Per-acre total</div>
@@ -2457,10 +2607,21 @@ function CustomCostsEditor({ costs, onChange }) {
         </div>
       </div>
 
+      {/* Quick-add buttons */}
+      <div className="flex flex-wrap gap-2">
+        {quickAddOptions.map(opt => (
+          <button key={opt.name} onClick={() => addCost(opt)}
+            className="px-3 py-1.5 text-sm border rounded-full hover:bg-gray-100 text-gray-600">
+            + {opt.name}
+          </button>
+        ))}
+      </div>
+
       {costs.length === 0 ? (
         <div className="text-center py-8 text-gray-500">
-          <Icon name="wrench" size={32} className="mx-auto mb-2 text-gray-300" />
-          <p>No custom costs added</p>
+          <Icon name="tractor" size={32} className="mx-auto mb-2 text-gray-300" />
+          <p>No field operations added</p>
+          <p className="text-xs mt-1">Click a button above to add common operations</p>
         </div>
       ) : (
         <div className="space-y-3">
@@ -2506,8 +2667,8 @@ function CustomCostsEditor({ costs, onChange }) {
         </div>
       )}
 
-      <button onClick={addCost} className="flex items-center gap-2 px-3 py-2 border-2 border-dashed rounded-lg text-gray-500 hover:text-gray-700 hover:border-gray-400 w-full justify-center">
-        <Icon name="plus" size={16} /> Add Custom Cost
+      <button onClick={() => addCost()} className="flex items-center gap-2 px-3 py-2 border-2 border-dashed rounded-lg text-gray-500 hover:text-gray-700 hover:border-gray-400 w-full justify-center">
+        <Icon name="plus" size={16} /> Add Field Operation
       </button>
     </div>
   );
@@ -2743,15 +2904,15 @@ function ChemicalPassesEditor({ passes, onChange, tankMixes }) {
 }
 
 // ============================================================================
-// FIELD ASSIGNMENTS PAGE
+// FIELD ASSIGNMENTS PAGE (Redesigned for Comprehensive Crop Plans)
 // ============================================================================
 function FieldAssignmentsPage({ cropYear, onYearChange }) {
   const [fieldCropYears, setFieldCropYears] = useState([]);
-  const [fieldPlans, setFieldPlans] = useState([]);
-  const [fertPlans, setFertPlans] = useState([]);
-  const [herbPlans, setHerbPlans] = useState([]);
+  const [assignments, setAssignments] = useState([]);
+  const [cropPlans, setCropPlans] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
+  const [showBulkModal, setShowBulkModal] = useState(false);
   const [selectedField, setSelectedField] = useState(null);
   const [filterCommodity, setFilterCommodity] = useState('');
   const [commodities, setCommodities] = useState([]);
@@ -2761,30 +2922,37 @@ function FieldAssignmentsPage({ cropYear, onYearChange }) {
 
   const loadData = async () => {
     setLoading(true);
-    const [fcy, fp, fertP, herbP, c] = await Promise.all([
+    const [fcy, assign, plans, c] = await Promise.all([
       getFieldCropYears(cropYear),
-      getFieldCropPlans(cropYear),
-      getFertilizerPlans(),
-      getHerbicidePlans(),
+      getFieldPlanAssignments(cropYear),
+      getCropPlans(cropYear),
       getCommodities()
     ]);
     setFieldCropYears(fcy);
-    setFieldPlans(fp);
-    setFertPlans(fertP);
-    setHerbPlans(herbP);
+    setAssignments(assign);
+    setCropPlans(plans);
     setCommodities(c);
     setLoading(false);
   };
 
   useEffect(() => { loadData(); }, [cropYear]);
 
-  // Match field crop years with their plans
-  const fieldsWithPlans = fieldCropYears.map(fcy => {
-    const plan = fieldPlans.find(p => p.field_crop_year_id === fcy.id);
+  // Filter out fields where adams_grain_share = 0 (e.g., Dwight Farms - separate entity)
+  const myFields = fieldCropYears.filter(f => {
+    const share = f.effective_share ?? 1;
+    // Exclude fields where the user has no stake
+    return share > 0;
+  });
+
+  // Match fields with their crop plan assignments
+  const fieldsWithPlans = myFields.map(fcy => {
+    const assign = assignments.find(a => a.field_crop_year_id === fcy.id);
+    const plan = assign ? cropPlans.find(p => p.id === assign.crop_plan_id) : null;
     return {
       ...fcy,
+      assignment: assign || null,
       plan: plan || null,
-      hasPlan: !!plan
+      hasPlan: !!assign
     };
   });
 
@@ -2792,16 +2960,37 @@ function FieldAssignmentsPage({ cropYear, onYearChange }) {
     ? fieldsWithPlans.filter(f => f.commodity_id === filterCommodity)
     : fieldsWithPlans;
 
-  const uniqueCommodities = [...new Set(fieldCropYears.map(f => f.commodity_id))];
+  const uniqueCommodities = [...new Set(myFields.map(f => f.commodity_id))];
+  const unassignedFields = fieldsWithPlans.filter(f => !f.hasPlan);
+
+  // Calculate plan cost per acre considering overrides
+  const getPlanCost = (f) => {
+    if (!f.plan) return 0;
+    let cost = calculateCropPlanCost(f.plan);
+    // Apply seed override if present
+    if (f.assignment?.seed_override_price && f.assignment?.seed_override_rate && f.plan.seed?.seeds_per_bag) {
+      const planSeedCost = f.plan.seed?.price_per_bag && f.plan.seed?.default_seeding_rate
+        ? (f.plan.seed.default_seeding_rate / f.plan.seed.seeds_per_bag) * f.plan.seed.price_per_bag
+        : 0;
+      const overrideSeedCost = (f.assignment.seed_override_rate / f.plan.seed.seeds_per_bag) * f.assignment.seed_override_price;
+      cost = cost - planSeedCost + overrideSeedCost;
+    }
+    return cost;
+  };
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Field Assignments</h1>
-          <p className="text-sm text-gray-500">Assign crop plans to fields for {cropYear}</p>
+          <p className="text-sm text-gray-500">Assign comprehensive crop plans to fields for {cropYear}</p>
         </div>
         <div className="flex gap-3">
+          {unassignedFields.length > 0 && (
+            <button onClick={() => setShowBulkModal(true)} className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700">
+              <Icon name="layers" size={18} /> Bulk Assign ({unassignedFields.length})
+            </button>
+          )}
           <select value={filterCommodity} onChange={(e) => setFilterCommodity(e.target.value)} className="px-4 py-2 border rounded-lg">
             <option value="">All Commodities</option>
             {commodities.filter(c => uniqueCommodities.includes(c.id)).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -2812,14 +3001,28 @@ function FieldAssignmentsPage({ cropYear, onYearChange }) {
         </div>
       </div>
 
+      {/* Summary cards */}
+      <div className="grid grid-cols-3 gap-4">
+        <div className="bg-white rounded-xl p-4 shadow-sm border">
+          <div className="text-sm text-gray-500">Total Fields</div>
+          <div className="text-2xl font-bold">{myFields.length}</div>
+          <div className="text-xs text-gray-400 mt-1">{formatNumber(myFields.reduce((sum, f) => sum + (f.planted_acres || 0), 0))} acres</div>
+        </div>
+        <div className="bg-white rounded-xl p-4 shadow-sm border">
+          <div className="text-sm text-gray-500">Plans Assigned</div>
+          <div className="text-2xl font-bold text-green-600">{fieldsWithPlans.filter(f => f.hasPlan).length}</div>
+          <div className="text-xs text-gray-400 mt-1">{formatNumber(fieldsWithPlans.filter(f => f.hasPlan).reduce((sum, f) => sum + (f.planted_acres || 0), 0))} acres</div>
+        </div>
+        <div className="bg-white rounded-xl p-4 shadow-sm border">
+          <div className="text-sm text-gray-500">Needs Assignment</div>
+          <div className="text-2xl font-bold text-amber-600">{unassignedFields.length}</div>
+          <div className="text-xs text-gray-400 mt-1">{formatNumber(unassignedFields.reduce((sum, f) => sum + (f.planted_acres || 0), 0))} acres</div>
+        </div>
+      </div>
+
       <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
         <div className="p-4 border-b">
-          <div className="flex items-center justify-between">
-            <h2 className="font-semibold">Field Crop Plans</h2>
-            <div className="text-sm text-gray-500">
-              {fieldsWithPlans.filter(f => f.hasPlan).length} of {fieldsWithPlans.length} fields have plans assigned
-            </div>
-          </div>
+          <h2 className="font-semibold">Field Crop Plan Assignments</h2>
         </div>
         {loading ? (
           <div className="p-8 text-center"><Icon name="loader" className="animate-spin text-blue-600 mx-auto" size={32} /></div>
@@ -2830,81 +3033,354 @@ function FieldAssignmentsPage({ cropYear, onYearChange }) {
                 <th className="px-4 py-3 text-left">Field</th>
                 <th className="px-4 py-3 text-left">Crop</th>
                 <th className="px-4 py-3 text-right">Acres</th>
-                <th className="px-4 py-3 text-left">Landlord Split</th>
-                <th className="px-4 py-3 text-left">Fert Plan</th>
-                <th className="px-4 py-3 text-left">Herb Passes</th>
+                <th className="px-4 py-3 text-left">Your Share</th>
+                <th className="px-4 py-3 text-left">Crop Plan</th>
+                <th className="px-4 py-3 text-left">Seed Override</th>
+                <th className="px-4 py-3 text-right">Est. Cost</th>
                 <th className="px-4 py-3 text-center">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y">
               {filteredFields.length === 0 ? (
-                <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-500">No fields for {cropYear}. Add production in GrainTrack first.</td></tr>
-              ) : filteredFields.map(f => (
-                <tr key={f.id} className={`hover:bg-gray-50 ${!f.hasPlan ? 'bg-amber-50' : ''}`}>
-                  <td className="px-4 py-3">
-                    <div className="font-medium">{f.field_name}</div>
-                    <div className="text-xs text-gray-500">{f.farm_name}</div>
-                  </td>
-                  <td className="px-4 py-3">{f.commodity_name}</td>
-                  <td className="px-4 py-3 text-right">{formatNumber(f.planted_acres)}</td>
-                  <td className="px-4 py-3">
-                    {f.tenant_share != null && f.tenant_share < 1 ? (
-                      <span className="px-2 py-0.5 bg-purple-100 text-purple-800 rounded text-xs">
-                        {((1 - f.tenant_share) * 100).toFixed(0)}% to {f.landlord || 'Landlord'}
-                      </span>
-                    ) : (
-                      <span className="text-gray-400 text-xs">100% Tenant</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3">
-                    {f.plan?.fert_plan_name ? (
-                      <span className="px-2 py-0.5 bg-green-100 text-green-800 rounded text-xs">{f.plan.fert_plan_name}</span>
-                    ) : f.plan?.fertilizer_plan_override ? (
-                      <span className="text-gray-600">{formatCurrency(f.plan.fertilizer_plan_override)}/ac override</span>
-                    ) : (
-                      <span className="text-gray-400">Not set</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3">
-                    {f.plan?.herbicide_passes?.length > 0 ? (
-                      <div className="flex flex-wrap gap-1">
-                        {f.plan.herbicide_passes.map((p, i) => (
-                          <span key={i} className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded text-xs">{p.pass_name || p.be_herbicide_plans?.name}</span>
-                        ))}
-                      </div>
-                    ) : f.plan?.herbicide_cost_override ? (
-                      <span className="text-gray-600">{formatCurrency(f.plan.herbicide_cost_override)}/ac override</span>
-                    ) : (
-                      <span className="text-gray-400">Not set</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-center">
-                    <button onClick={() => { setSelectedField(f); setShowModal(true); }}
-                      className={`px-3 py-1 rounded text-sm ${f.hasPlan ? 'bg-gray-100 hover:bg-gray-200' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
-                      {f.hasPlan ? 'Edit' : 'Assign'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
+                <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-500">No fields for {cropYear}. Add production in GrainTrack first.</td></tr>
+              ) : filteredFields.map(f => {
+                const effectiveShare = f.effective_share ?? (f.tenant_share ?? 1);
+                const planCost = getPlanCost(f);
+                return (
+                  <tr key={f.id} className={`hover:bg-gray-50 ${!f.hasPlan ? 'bg-amber-50' : ''}`}>
+                    <td className="px-4 py-3">
+                      <div className="font-medium">{f.field_name}</div>
+                      <div className="text-xs text-gray-500">{f.farm_name}</div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="px-2 py-0.5 bg-gray-100 rounded text-xs">{f.commodity_name}</span>
+                    </td>
+                    <td className="px-4 py-3 text-right">{formatNumber(f.planted_acres)}</td>
+                    <td className="px-4 py-3">
+                      {effectiveShare < 1 ? (
+                        <span className={`px-2 py-0.5 rounded text-xs ${effectiveShare < 0.5 ? 'bg-orange-100 text-orange-800' : 'bg-purple-100 text-purple-800'}`}>
+                          {(effectiveShare * 100).toFixed(0)}%
+                        </span>
+                      ) : (
+                        <span className="text-gray-400 text-xs">100%</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      {f.plan ? (
+                        <span className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded text-xs">{f.plan.name}</span>
+                      ) : (
+                        <span className="text-amber-600 text-xs font-medium">No plan assigned</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      {f.assignment?.seed_override_hybrid ? (
+                        <span className="text-xs text-gray-600">{f.assignment.seed_override_hybrid}</span>
+                      ) : (
+                        <span className="text-gray-400 text-xs">-</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-right font-medium">
+                      {planCost > 0 ? formatCurrency(planCost) + '/ac' : '-'}
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <button onClick={() => { setSelectedField(f); setShowModal(true); }}
+                        className={`px-3 py-1 rounded text-sm ${f.hasPlan ? 'bg-gray-100 hover:bg-gray-200' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
+                        {f.hasPlan ? 'Edit' : 'Assign'}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
       </div>
 
       {showModal && selectedField && (
-        <FieldPlanModal
+        <FieldAssignmentModal
           fieldCropYear={selectedField}
-          existingPlan={selectedField.plan}
-          fertPlans={fertPlans}
-          herbPlans={herbPlans}
+          existingAssignment={selectedField.assignment}
+          cropPlans={cropPlans}
           onClose={() => setShowModal(false)}
           onSave={() => { setShowModal(false); loadData(); }}
+        />
+      )}
+
+      {showBulkModal && (
+        <BulkAssignModal
+          fields={unassignedFields}
+          cropPlans={cropPlans}
+          commodities={commodities}
+          onClose={() => setShowBulkModal(false)}
+          onSave={() => { setShowBulkModal(false); loadData(); }}
         />
       )}
     </div>
   );
 }
 
+// Field Assignment Modal - assign crop plan with seed overrides
+function FieldAssignmentModal({ fieldCropYear, existingAssignment, cropPlans, onClose, onSave }) {
+  const [form, setForm] = useState({
+    crop_plan_id: existingAssignment?.crop_plan_id || '',
+    seed_override_brand: existingAssignment?.seed_override_brand || '',
+    seed_override_hybrid: existingAssignment?.seed_override_hybrid || '',
+    seed_override_rate: existingAssignment?.seed_override_rate || '',
+    seed_override_price: existingAssignment?.seed_override_price || '',
+    status: existingAssignment?.status || 'PLANNED',
+    notes: existingAssignment?.notes || ''
+  });
+  const [saving, setSaving] = useState(false);
+  const { addToast } = useToast();
+
+  // Filter plans by commodity and practice
+  const compatiblePlans = cropPlans.filter(p =>
+    (!p.commodity_id || p.commodity_id === fieldCropYear.commodity_id)
+  );
+
+  const selectedPlan = cropPlans.find(p => p.id === form.crop_plan_id);
+  const planSeed = selectedPlan?.seed;
+
+  const handleSave = async () => {
+    if (!form.crop_plan_id) {
+      addToast('Please select a crop plan', { type: 'error' });
+      return;
+    }
+    setSaving(true);
+    try {
+      await saveFieldPlanAssignment({
+        id: existingAssignment?.id,
+        field_crop_year_id: fieldCropYear.id,
+        ...form
+      });
+      addToast('Assignment saved', { type: 'success' });
+      onSave();
+    } catch (e) {
+      addToast('Failed to save: ' + e.message, { type: 'error' });
+    }
+    setSaving(false);
+  };
+
+  const handleDelete = async () => {
+    if (!existingAssignment?.id) return;
+    setSaving(true);
+    try {
+      await deleteFieldPlanAssignment(existingAssignment.id);
+      addToast('Assignment removed', { type: 'success' });
+      onSave();
+    } catch (e) {
+      addToast('Failed to delete: ' + e.message, { type: 'error' });
+    }
+    setSaving(false);
+  };
+
+  return (
+    <Modal isOpen={true} onClose={onClose} title={`Assign Plan: ${fieldCropYear.field_name}`} size="lg">
+      <div className="space-y-6">
+        <div className="bg-gray-50 rounded-lg p-4">
+          <div className="grid grid-cols-4 gap-4 text-sm">
+            <div><span className="text-gray-500">Field:</span> <span className="font-medium">{fieldCropYear.field_name}</span></div>
+            <div><span className="text-gray-500">Farm:</span> <span className="font-medium">{fieldCropYear.farm_name}</span></div>
+            <div><span className="text-gray-500">Crop:</span> <span className="font-medium">{fieldCropYear.commodity_name}</span></div>
+            <div><span className="text-gray-500">Acres:</span> <span className="font-medium">{formatNumber(fieldCropYear.planted_acres)}</span></div>
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium mb-1">Crop Plan *</label>
+          <select value={form.crop_plan_id} onChange={(e) => setForm(f => ({ ...f, crop_plan_id: e.target.value }))} className="w-full px-3 py-2 border rounded-lg">
+            <option value="">Select a crop plan...</option>
+            {compatiblePlans.map(p => (
+              <option key={p.id} value={p.id}>
+                {p.name} - {formatCurrency(calculateCropPlanCost(p))}/ac
+              </option>
+            ))}
+          </select>
+          {compatiblePlans.length === 0 && (
+            <p className="text-sm text-amber-600 mt-1">No plans available for {fieldCropYear.commodity_name}. Create one in Crop Plans first.</p>
+          )}
+        </div>
+
+        {selectedPlan && (
+          <>
+            <div className="border rounded-lg p-4">
+              <h4 className="font-medium mb-3 flex items-center gap-2">
+                <Icon name="package" size={18} className="text-green-600" />
+                Seed Override
+                <span className="text-xs text-gray-500 font-normal ml-2">(Leave blank to use plan defaults)</span>
+              </h4>
+              {planSeed && (
+                <p className="text-sm text-gray-500 mb-3">
+                  Plan default: {planSeed.brand} {planSeed.hybrid} @ {formatNumber(planSeed.default_seeding_rate)} seeds/ac, {formatCurrency(planSeed.price_per_bag)}/bag
+                </p>
+              )}
+              <div className="grid grid-cols-4 gap-4">
+                <div>
+                  <label className="block text-xs font-medium mb-1">Brand</label>
+                  <input type="text" value={form.seed_override_brand} onChange={(e) => setForm(f => ({ ...f, seed_override_brand: e.target.value }))}
+                    className="w-full px-3 py-2 border rounded-lg" placeholder={planSeed?.brand || 'Brand'} />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium mb-1">Hybrid/Variety</label>
+                  <input type="text" value={form.seed_override_hybrid} onChange={(e) => setForm(f => ({ ...f, seed_override_hybrid: e.target.value }))}
+                    className="w-full px-3 py-2 border rounded-lg" placeholder={planSeed?.hybrid || 'Hybrid'} />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium mb-1">Rate (seeds/ac)</label>
+                  <input type="number" value={form.seed_override_rate} onChange={(e) => setForm(f => ({ ...f, seed_override_rate: e.target.value ? parseInt(e.target.value) : '' }))}
+                    className="w-full px-3 py-2 border rounded-lg" placeholder={planSeed?.default_seeding_rate || '34000'} />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium mb-1">Price/Bag ($)</label>
+                  <input type="number" step="0.01" value={form.seed_override_price} onChange={(e) => setForm(f => ({ ...f, seed_override_price: e.target.value ? parseFloat(e.target.value) : '' }))}
+                    className="w-full px-3 py-2 border rounded-lg" placeholder={planSeed?.price_per_bag || '350'} />
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">Status</label>
+                <select value={form.status} onChange={(e) => setForm(f => ({ ...f, status: e.target.value }))} className="w-full px-3 py-2 border rounded-lg">
+                  <option value="PLANNED">Planned</option>
+                  <option value="IN_PROGRESS">In Progress</option>
+                  <option value="COMPLETED">Completed</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Notes</label>
+                <input type="text" value={form.notes} onChange={(e) => setForm(f => ({ ...f, notes: e.target.value }))}
+                  className="w-full px-3 py-2 border rounded-lg" placeholder="Optional notes..." />
+              </div>
+            </div>
+          </>
+        )}
+
+        <div className="flex justify-between pt-4 border-t">
+          <div>
+            {existingAssignment && (
+              <button onClick={handleDelete} disabled={saving} className="px-4 py-2 text-red-600 hover:bg-red-50 rounded-lg">
+                Remove Assignment
+              </button>
+            )}
+          </div>
+          <div className="flex gap-3">
+            <button onClick={onClose} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
+            <button onClick={handleSave} disabled={saving || !form.crop_plan_id} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
+              {saving ? 'Saving...' : 'Save Assignment'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// Bulk Assignment Modal
+function BulkAssignModal({ fields, cropPlans, commodities, onClose, onSave }) {
+  const [filterCommodity, setFilterCommodity] = useState('');
+  const [selectedPlanId, setSelectedPlanId] = useState('');
+  const [selectedFields, setSelectedFields] = useState([]);
+  const [saving, setSaving] = useState(false);
+  const { addToast } = useToast();
+
+  const filteredFields = filterCommodity
+    ? fields.filter(f => f.commodity_id === filterCommodity)
+    : fields;
+
+  const compatiblePlans = filterCommodity
+    ? cropPlans.filter(p => !p.commodity_id || p.commodity_id === filterCommodity)
+    : cropPlans;
+
+  const toggleField = (id) => {
+    setSelectedFields(prev =>
+      prev.includes(id) ? prev.filter(f => f !== id) : [...prev, id]
+    );
+  };
+
+  const selectAll = () => {
+    setSelectedFields(filteredFields.map(f => f.id));
+  };
+
+  const handleAssign = async () => {
+    if (!selectedPlanId || selectedFields.length === 0) {
+      addToast('Select a plan and at least one field', { type: 'error' });
+      return;
+    }
+    setSaving(true);
+    try {
+      await bulkAssignCropPlan(selectedFields, selectedPlanId);
+      addToast(`Assigned plan to ${selectedFields.length} fields`, { type: 'success' });
+      onSave();
+    } catch (e) {
+      addToast('Failed: ' + e.message, { type: 'error' });
+    }
+    setSaving(false);
+  };
+
+  return (
+    <Modal isOpen={true} onClose={onClose} title="Bulk Assign Crop Plan" size="xl">
+      <div className="space-y-4">
+        <div className="flex gap-4">
+          <div className="flex-1">
+            <label className="block text-sm font-medium mb-1">Filter by Commodity</label>
+            <select value={filterCommodity} onChange={(e) => { setFilterCommodity(e.target.value); setSelectedFields([]); setSelectedPlanId(''); }}
+              className="w-full px-3 py-2 border rounded-lg">
+              <option value="">All Commodities</option>
+              {commodities.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
+          <div className="flex-1">
+            <label className="block text-sm font-medium mb-1">Crop Plan to Assign</label>
+            <select value={selectedPlanId} onChange={(e) => setSelectedPlanId(e.target.value)}
+              className="w-full px-3 py-2 border rounded-lg">
+              <option value="">Select a plan...</option>
+              {compatiblePlans.map(p => (
+                <option key={p.id} value={p.id}>{p.name} - {formatCurrency(calculateCropPlanCost(p))}/ac</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="border rounded-lg max-h-64 overflow-y-auto">
+          <div className="sticky top-0 bg-gray-50 px-4 py-2 border-b flex items-center justify-between">
+            <span className="text-sm font-medium">{filteredFields.length} fields available</span>
+            <button onClick={selectAll} className="text-sm text-blue-600 hover:underline">Select All</button>
+          </div>
+          <div className="divide-y">
+            {filteredFields.map(f => (
+              <label key={f.id} className="flex items-center gap-3 px-4 py-2 hover:bg-gray-50 cursor-pointer">
+                <input type="checkbox" checked={selectedFields.includes(f.id)} onChange={() => toggleField(f.id)}
+                  className="w-4 h-4 text-blue-600 rounded" />
+                <div className="flex-1">
+                  <span className="font-medium">{f.field_name}</span>
+                  <span className="text-gray-500 ml-2">{f.farm_name}</span>
+                </div>
+                <span className="text-sm text-gray-500">{f.commodity_name}</span>
+                <span className="text-sm text-gray-500">{formatNumber(f.planted_acres)} ac</span>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex justify-between pt-4 border-t">
+          <div className="text-sm text-gray-500">
+            {selectedFields.length} fields selected
+          </div>
+          <div className="flex gap-3">
+            <button onClick={onClose} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
+            <button onClick={handleAssign} disabled={saving || !selectedPlanId || selectedFields.length === 0}
+              className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50">
+              {saving ? 'Assigning...' : `Assign to ${selectedFields.length} Fields`}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// Legacy FieldPlanModal for backwards compatibility (remove after migration)
 function FieldPlanModal({ fieldCropYear, existingPlan, fertPlans, herbPlans, onClose, onSave }) {
   const [form, setForm] = useState({
     fertilizer_plan_id: existingPlan?.fertilizer_plan_id || '',

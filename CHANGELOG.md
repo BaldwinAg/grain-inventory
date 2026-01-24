@@ -10,35 +10,46 @@ All notable changes to the Farm Management Suite applications.
 
 Major redesign to make Breakeven the central cost planning application.
 
-**Phase 1: Bug Fixes & Overhead Enhancement**
-- Fix duplicate overhead category tabs
-- Add entry_mode (TOTAL vs PER_ACRE) to overhead expenses
-- Calculate totals from per-acre amounts
+**Phase 1: Bug Fixes & Overhead Enhancement** ✅ COMPLETE
+- Fixed duplicate overhead category tabs (client-side deduplication)
+- Added entry_mode (TOTAL vs PER_ACRE) to overhead expenses
+- Toggle UI in overhead modal for entry mode selection
+- Per-acre totals calculated automatically
 
-**Phase 2-3: Comprehensive Crop Plans**
-- New crop plan templates containing ALL costs:
-  - Seed (hybrid, seeds/bag, price, planting rate)
-  - Custom costs (tillage, custom hire, drying)
+**Phase 2-3: Comprehensive Crop Plans** ✅ COMPLETE
+- New comprehensive crop plan system with 5-tab editor:
+  - Info (name, commodity, practice type)
+  - Seed (brand, hybrid, seeds/bag, price, seeding rate)
+  - Field Operations (harvest, planting, tillage, drying, custom hire)
   - Fertilizer passes (multiple applications with products/rates)
   - Chemical passes (multiple applications with products/rates)
+- Next/Back navigation through tabs with progress dots
+- Quick-add buttons for common field operations
+- Clone plan feature
 - Link to Spray-Suite tank_mixes
+- Database: 7 new tables (be_crop_plans, be_crop_plan_seed, etc.)
 
-**Phase 4: Field Assignments**
-- Assign crop plans to individual fields
-- Override seed hybrid/rate per field
-- Bulk assignment feature
+**Phase 4: Field Assignments** ✅ COMPLETE
+- Redesigned field assignments page using comprehensive crop plans
+- Filter out non-owned fields (adams_grain_share = 0)
+- Show effective share (tenant_share × adams_grain_share)
+- Seed override capability per field (brand, hybrid, rate, price)
+- Bulk assignment modal for assigning plan to multiple fields
+- Status tracking (Planned, In Progress, Completed)
+- Summary cards showing assignment progress
+- Database: be_field_plan_assignments table
 
-**Phase 5: Misc Income**
+**Phase 5: Misc Income** (Pending)
 - Track government payments (ARC-CO, PLC, MFP)
 - Track conservation payments (CRP, EQIP, CSP)
 - Income offsets reduce breakeven price
 
-**Phase 6: Planned vs Actual**
+**Phase 6: Planned vs Actual** (Pending)
 - Track planned costs from crop plans
 - Pull actual costs from Spray-Suite and Fertilizer App
 - Variance analysis (planned - actual)
 
-**Phase 7-8: Dashboard & Reports**
+**Phase 7-8: Dashboard & Reports** (Pending)
 - Updated dashboard with planned/actual comparison
 - Variance alerts
 - Enhanced landlord reports with income offset
