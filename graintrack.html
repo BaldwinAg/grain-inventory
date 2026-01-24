@@ -1474,24 +1474,38 @@ async function getLatestMarketPrices() {
   // Try to get Barchart technicals (auto-updated from emails)
   const { data: barchartData, error: barchartError } = await db
     .from('barchart_technicals')
-    .select('symbol, name, latest_price, rsi_14d, stoch_14d_pct_d, stoch_9d_pct_k, trend_signal, support_1, resistance_1, data_timestamp');
-  
+    .select('symbol, name, latest_price, rsi_14d, stoch_14d_pct_d, stoch_9d_pct_k, trend_signal, support_1, resistance_1, expiration_date, data_timestamp')
+    .order('expiration_date', { ascending: true });
+
   // Process Barchart data - find the front month contract for each commodity
   if (barchartData && !barchartError) {
-    // Group by commodity prefix to find contracts
+    // Group by commodity prefix to find contracts (exclude options which have | in symbol)
     const byPrefix = {};
     for (const row of barchartData) {
+      if (row.symbol.includes('|')) continue; // Skip options
       const prefix = row.symbol.substring(0, 2);
       if (!byPrefix[prefix]) byPrefix[prefix] = [];
       byPrefix[prefix].push(row);
     }
-    
+
+    // Sort each group by expiration_date (nulls last), then by symbol as fallback
+    for (const prefix in byPrefix) {
+      byPrefix[prefix].sort((a, b) => {
+        if (a.expiration_date && b.expiration_date) {
+          return new Date(a.expiration_date) - new Date(b.expiration_date);
+        }
+        if (a.expiration_date) return -1;
+        if (b.expiration_date) return 1;
+        return a.symbol.localeCompare(b.symbol);
+      });
+    }
+
     // For each commodity, find matching Barchart data
     for (const commodity of commodities) {
       const prefix = BARCHART_COMMODITY_MAP[commodity.name];
       if (!prefix || !byPrefix[prefix]) continue;
-      
-      // Use the first contract (front month)
+
+      // Use the first contract (front month - sorted by expiration_date)
       const contracts = byPrefix[prefix];
       if (contracts.length > 0) {
         const front = contracts[0];
