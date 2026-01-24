@@ -285,17 +285,68 @@ async function getFertilizerCosts(cropYear) {
   return byField;
 }
 
-// Get Herbicide Costs from Spray-Suite
+// Get Herbicide Costs from Spray-Suite with split info
+// Returns { fieldId: { total, splitCost, nonSplitCost } }
 async function getHerbicideCosts(cropYear) {
   const startDate = `${cropYear - 1}-09-01`;
   const endDate = `${cropYear}-08-31`;
-  const { data: apps, error } = await db.from('applications').select('field_id, total_cost').gte('date', startDate).lte('date', endDate);
+
+  // Get applications with their products and split flags
+  const { data: apps, error } = await db
+    .from('applications')
+    .select('id, field_id, total_cost, application_products(product_id, total_cost, split_with_landlord)')
+    .gte('date', startDate)
+    .lte('date', endDate);
+
   if (error) return {};
+
+  const byField = {};
+  (apps || []).forEach(app => {
+    if (!byField[app.field_id]) {
+      byField[app.field_id] = { total: 0, splitCost: 0, nonSplitCost: 0 };
+    }
+
+    const products = app.application_products || [];
+    if (products.length > 0) {
+      // Sum by split flag from individual products
+      products.forEach(p => {
+        const cost = p.total_cost || 0;
+        byField[app.field_id].total += cost;
+        if (p.split_with_landlord) {
+          byField[app.field_id].splitCost += cost;
+        } else {
+          byField[app.field_id].nonSplitCost += cost;
+        }
+      });
+    } else {
+      // Fallback: no product detail, use application total (assume not split for burndowns)
+      byField[app.field_id].total += app.total_cost || 0;
+      byField[app.field_id].nonSplitCost += app.total_cost || 0;
+    }
+  });
+
+  return byField;
+}
+
+// Get Fertilizer Costs from Fertilizer App with split info
+// Fertilizer is ALWAYS split with landlord
+async function getFertilizerCostsDetailed(cropYear) {
+  const { data: apps, error } = await db
+    .from('fert_applications')
+    .select('field_id, total_cost, acres_applied')
+    .eq('crop_year', cropYear)
+    .is('deleted_at', null);
+
+  if (error) return {};
+
   const byField = {};
   (apps || []).forEach(a => {
-    if (!byField[a.field_id]) byField[a.field_id] = 0;
-    byField[a.field_id] += a.total_cost || 0;
+    if (!byField[a.field_id]) byField[a.field_id] = { total: 0, splitCost: 0 };
+    const cost = a.total_cost || 0;
+    byField[a.field_id].total += cost;
+    byField[a.field_id].splitCost += cost; // All fertilizer is split
   });
+
   return byField;
 }
 
@@ -1723,45 +1774,78 @@ function BreakevenPage({ cropYear, onYearChange }) {
         getOverheadExpenses(cropYear),
         getSeedCosts(cropYear),
         getLandRent(cropYear),
-        getFertilizerCosts(cropYear),
+        getFertilizerCostsDetailed(cropYear),
         getHerbicideCosts(cropYear)
       ]);
 
       const overheadAlloc = allocateOverhead(expenses, fcys);
       const seedMap = {};
       seeds.forEach(s => { seedMap[s.field_crop_year_id] = s.total_cost || calculateSeedCost({ ...s, planted_acres: s.planted_acres }); });
+
+      // Build rent map with rent type (CASH, SHARE, OWNED)
       const rentMap = {};
-      rents.forEach(r => { rentMap[r.field_id] = r.rent_per_acre || 0; });
+      rents.forEach(r => {
+        rentMap[r.field_id] = {
+          rentPerAcre: r.rent_per_acre || 0,
+          rentType: r.rent_type || 'OWNED'
+        };
+      });
 
       const results = fcys.map(fcy => {
         const overhead = overheadAlloc[fcy.id] || 0;
         const seed = seedMap[fcy.id] || 0;
-        const rentPerAcre = rentMap[fcy.field_id] || 0;
-        const rent = rentPerAcre * (fcy.planted_acres || 0);
-        const fertTotal = fertCosts[fcy.field_id] || 0;
-        const herbTotal = herbCosts[fcy.field_id] || 0;
+        const rentInfo = rentMap[fcy.field_id] || { rentPerAcre: 0, rentType: 'OWNED' };
+        const rent = rentInfo.rentPerAcre * (fcy.planted_acres || 0);
+        const rentType = rentInfo.rentType;
+        const isShareCrop = rentType === 'SHARE';
 
-        // Split calculations
+        // Get fertilizer costs (always split on share crop)
+        const fertData = fertCosts[fcy.field_id] || { total: 0, splitCost: 0 };
+        const fertTotal = fertData.total;
+
+        // Get herbicide costs with split breakdown
+        const herbData = herbCosts[fcy.field_id] || { total: 0, splitCost: 0, nonSplitCost: 0 };
+        const herbTotal = herbData.total;
+        const herbSplitCost = herbData.splitCost;      // Products marked split_with_landlord
+        const herbNonSplitCost = herbData.nonSplitCost; // Burndowns, etc. (100% tenant)
+
+        // Tenant share (from field)
         const tenantShare = fcy.tenant_share || 1;
         const landlordShare = 1 - tenantShare;
 
-        // Fertilizer: ALWAYS split at grain share %
-        const fertTenant = fertTotal * tenantShare;
-        const fertLandlord = fertTotal * landlordShare;
+        // Calculate tenant's portion based on rent type:
+        // - SHARE crop: split costs at tenant_share %, tenant pays their share
+        // - CASH/OWNED: 100% tenant pays all costs, gets all bushels
+        let fertTenant, fertLandlord, herbTenant, herbLandlord;
 
-        // Herbicide: Also split at grain share % (TODO: check split toggle in Spray-Suite)
-        const herbTenant = herbTotal * tenantShare;
-        const herbLandlord = herbTotal * landlordShare;
+        if (isShareCrop && landlordShare > 0) {
+          // SHARE CROP: Split flagged costs at tenant_share %
+          // Fertilizer: ALWAYS split
+          fertTenant = fertTotal * tenantShare;
+          fertLandlord = fertTotal * landlordShare;
 
-        // Overhead, seed, rent: 100% tenant costs
+          // Herbicide: Only split products with split_with_landlord=true
+          // Non-split products (burndowns) = 100% tenant
+          herbTenant = (herbSplitCost * tenantShare) + herbNonSplitCost;
+          herbLandlord = herbSplitCost * landlordShare;
+        } else {
+          // CASH RENT or OWNED: Tenant pays 100% of all costs
+          fertTenant = fertTotal;
+          fertLandlord = 0;
+          herbTenant = herbTotal;
+          herbLandlord = 0;
+        }
+
+        // Overhead, seed, rent: 100% tenant responsibility (never split)
         const totalAll = overhead + seed + rent + fertTotal + herbTotal;
         const totalTenant = overhead + seed + rent + fertTenant + herbTenant;
         const totalLandlord = fertLandlord + herbLandlord;
 
-        // Bushels also split by share
+        // Bushels: Share crop uses tenant share, Cash/Owned uses 100%
         const bushelsAll = fcy.actual_production || ((fcy.planted_acres || 0) * (fcy.estimated_yield || 0));
-        const bushelsTenant = bushelsAll * tenantShare;
+        const bushelsTenant = isShareCrop ? bushelsAll * tenantShare : bushelsAll;
 
+        // Breakeven: Total tenant costs / Tenant bushels
         const breakevenAll = bushelsAll > 0 ? totalAll / bushelsAll : null;
         const breakevenTenant = bushelsTenant > 0 ? totalTenant / bushelsTenant : null;
         const costPerAcreAll = fcy.planted_acres > 0 ? totalAll / fcy.planted_acres : 0;
@@ -1772,10 +1856,14 @@ function BreakevenPage({ cropYear, onYearChange }) {
           overhead,
           seed,
           rent,
+          rentType,
+          isShareCrop,
           fertTotal,
           fertTenant,
           fertLandlord,
           herbTotal,
+          herbSplitCost,
+          herbNonSplitCost,
           herbTenant,
           herbLandlord,
           totalAll,
@@ -1787,7 +1875,7 @@ function BreakevenPage({ cropYear, onYearChange }) {
           breakevenTenant,
           costPerAcreAll,
           costPerAcreTenant,
-          hasLandlord: landlordShare > 0
+          hasLandlord: isShareCrop && landlordShare > 0
         };
       });
 
@@ -1798,14 +1886,14 @@ function BreakevenPage({ cropYear, onYearChange }) {
   }, [cropYear]);
 
   const exportCSV = () => {
-    const headers = ['Field', 'Farm', 'Commodity', 'Acres', 'Landlord', 'Split %', 'Overhead', 'Seed', 'Rent', 'Fertilizer', 'Herbicide', 'Total Cost', 'Bushels', 'Breakeven'];
+    const headers = ['Field', 'Farm', 'Commodity', 'Acres', 'Rent Type', 'Landlord', 'Split %', 'Overhead', 'Seed', 'Rent', 'Fertilizer', 'Herbicide', 'Total Cost', 'Bushels', 'Breakeven'];
     const rows = data.map(d => {
       const fert = viewMode === 'tenant' ? d.fertTenant : d.fertTotal;
       const herb = viewMode === 'tenant' ? d.herbTenant : d.herbTotal;
       const total = viewMode === 'tenant' ? d.totalTenant : d.totalAll;
       const bushels = viewMode === 'tenant' ? d.bushelsTenant : d.bushelsAll;
       const breakeven = viewMode === 'tenant' ? d.breakevenTenant : d.breakevenAll;
-      return [d.field_name, d.farm_name, d.commodity_name, d.planted_acres, d.landlord || '', d.hasLandlord ? ((1 - d.tenant_share) * 100).toFixed(0) + '%' : '', d.overhead.toFixed(2), d.seed.toFixed(2), d.rent.toFixed(2), fert.toFixed(2), herb.toFixed(2), total.toFixed(2), bushels.toFixed(0), breakeven?.toFixed(4) || ''];
+      return [d.field_name, d.farm_name, d.commodity_name, d.planted_acres, d.rentType, d.landlord || '', d.hasLandlord ? ((1 - d.tenant_share) * 100).toFixed(0) + '%' : '', d.overhead.toFixed(2), d.seed.toFixed(2), d.rent.toFixed(2), fert.toFixed(2), herb.toFixed(2), total.toFixed(2), bushels.toFixed(0), breakeven?.toFixed(4) || ''];
     });
     const csv = [headers, ...rows].map(r => r.join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -1850,7 +1938,12 @@ function BreakevenPage({ cropYear, onYearChange }) {
 
       {viewMode === 'tenant' && hasAnyLandlord && (
         <div className="bg-purple-50 border border-purple-200 rounded-lg p-4 text-sm text-purple-800">
-          <strong>Tenant Share View:</strong> Shows YOUR costs only. Fertilizer and herbicide are split at the landlord's grain share %. Overhead, seed, and rent are 100% tenant responsibility.
+          <strong>Tenant Share View:</strong> Shows YOUR costs and YOUR bushels.
+          <ul className="mt-2 ml-4 list-disc space-y-1">
+            <li><strong>Share Crop:</strong> Fertilizer always split. Herbicide split only for products marked "split with landlord" (in-crop, at-planting residuals). Burndowns = 100% tenant.</li>
+            <li><strong>Cash Rent / Owned:</strong> 100% tenant pays all costs, receives all bushels.</li>
+            <li><strong>Overhead, Seed, Rent:</strong> Always 100% tenant responsibility.</li>
+          </ul>
         </div>
       )}
 
@@ -1882,12 +1975,18 @@ function BreakevenPage({ cropYear, onYearChange }) {
                 const costPerAcre = viewMode === 'tenant' ? d.costPerAcreTenant : d.costPerAcreAll;
                 const breakeven = viewMode === 'tenant' ? d.breakevenTenant : d.breakevenAll;
                 return (
-                  <tr key={d.id} className="hover:bg-gray-50">
+                  <tr key={d.id} className={`hover:bg-gray-50 ${d.isShareCrop ? 'bg-purple-50/30' : ''}`}>
                     <td className="px-4 py-3">
                       <div className="font-medium">{d.field_name}</div>
                       <div className="text-xs text-gray-500">{d.farm_name}</div>
-                      {d.hasLandlord && (
-                        <div className="text-xs text-purple-600">{d.landlord} ({((1 - d.tenant_share) * 100).toFixed(0)}%)</div>
+                      {d.isShareCrop && d.hasLandlord ? (
+                        <div className="text-xs text-purple-600">
+                          <span className="font-medium">SHARE</span> - {d.landlord} ({((1 - d.tenant_share) * 100).toFixed(0)}%)
+                        </div>
+                      ) : d.rentType === 'CASH' ? (
+                        <div className="text-xs text-green-600 font-medium">CASH RENT</div>
+                      ) : (
+                        <div className="text-xs text-gray-400">OWNED</div>
                       )}
                     </td>
                     <td className="px-4 py-3">{d.commodity_name}</td>
