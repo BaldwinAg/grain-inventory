@@ -287,18 +287,22 @@ async function getFertilizerCosts(cropYear) {
 
 // Get Herbicide Costs from Spray-Suite with split info
 // Returns { fieldId: { total, splitCost, nonSplitCost } }
+// The 'split' column on application_products is 'Y' or 'N' (set from tank_mix or manually)
 async function getHerbicideCosts(cropYear) {
   const startDate = `${cropYear - 1}-09-01`;
   const endDate = `${cropYear}-08-31`;
 
-  // Get applications with their products and split flags
+  // Get applications with their products - split is on application_products as 'Y'/'N'
   const { data: apps, error } = await db
     .from('applications')
-    .select('id, field_id, total_cost, application_products(product_id, total_cost, split_with_landlord)')
+    .select('id, field_id, total_cost, application_products(product_id, total_cost, split)')
     .gte('date', startDate)
     .lte('date', endDate);
 
-  if (error) return {};
+  if (error) {
+    console.error('Error fetching herbicide costs:', error);
+    return {};
+  }
 
   const byField = {};
   (apps || []).forEach(app => {
@@ -308,11 +312,12 @@ async function getHerbicideCosts(cropYear) {
 
     const products = app.application_products || [];
     if (products.length > 0) {
-      // Sum by split flag from individual products
+      // Sum by 'split' flag ('Y' = shared with landlord, 'N' = 100% tenant)
       products.forEach(p => {
         const cost = p.total_cost || 0;
+        const isSplit = p.split === 'Y';
         byField[app.field_id].total += cost;
-        if (p.split_with_landlord) {
+        if (isSplit) {
           byField[app.field_id].splitCost += cost;
         } else {
           byField[app.field_id].nonSplitCost += cost;
@@ -1797,39 +1802,46 @@ function BreakevenPage({ cropYear, onYearChange }) {
         const rentInfo = rentMap[fcy.field_id] || { rentPerAcre: 0, rentType: 'OWNED' };
         const rent = rentInfo.rentPerAcre * (fcy.planted_acres || 0);
         const rentType = rentInfo.rentType;
-        const isShareCrop = rentType === 'SHARE';
 
-        // Get fertilizer costs (always split on share crop)
+        // Tenant share comes from fields table (e.g., 0.5 = 50% tenant, 50% landlord)
+        const tenantShare = fcy.tenant_share || 1;
+        const landlordShare = 1 - tenantShare;
+
+        // Has landlord = tenant_share < 1 (regardless of rent_type record)
+        const hasLandlordSplit = landlordShare > 0;
+
+        // Rent type determines if it's share crop vs cash rent
+        // But if tenant_share < 1, there IS a landlord split
+        const isShareCrop = hasLandlordSplit && (rentType === 'SHARE' || rentType === 'OWNED');
+        // Note: If tenant_share < 1 but no be_land_rent record, treat as share crop
+
+        // Get fertilizer costs (always split when there's a landlord)
         const fertData = fertCosts[fcy.field_id] || { total: 0, splitCost: 0 };
         const fertTotal = fertData.total;
 
         // Get herbicide costs with split breakdown
         const herbData = herbCosts[fcy.field_id] || { total: 0, splitCost: 0, nonSplitCost: 0 };
         const herbTotal = herbData.total;
-        const herbSplitCost = herbData.splitCost;      // Products marked split_with_landlord
+        const herbSplitCost = herbData.splitCost;      // Products marked 'shared' on products table
         const herbNonSplitCost = herbData.nonSplitCost; // Burndowns, etc. (100% tenant)
 
-        // Tenant share (from field)
-        const tenantShare = fcy.tenant_share || 1;
-        const landlordShare = 1 - tenantShare;
-
-        // Calculate tenant's portion based on rent type:
-        // - SHARE crop: split costs at tenant_share %, tenant pays their share
-        // - CASH/OWNED: 100% tenant pays all costs, gets all bushels
+        // Calculate tenant's portion:
+        // - If landlord split exists: split costs at tenant_share %
+        // - CASH RENT with 100% tenant_share: no split
         let fertTenant, fertLandlord, herbTenant, herbLandlord;
 
-        if (isShareCrop && landlordShare > 0) {
-          // SHARE CROP: Split flagged costs at tenant_share %
-          // Fertilizer: ALWAYS split
+        if (hasLandlordSplit) {
+          // SHARE CROP or any field with tenant_share < 1
+          // Fertilizer: ALWAYS split at tenant_share
           fertTenant = fertTotal * tenantShare;
           fertLandlord = fertTotal * landlordShare;
 
-          // Herbicide: Only split products with split_with_landlord=true
-          // Non-split products (burndowns) = 100% tenant
+          // Herbicide: Only split products marked 'shared' on products table
+          // Non-shared products (burndowns) = 100% tenant
           herbTenant = (herbSplitCost * tenantShare) + herbNonSplitCost;
           herbLandlord = herbSplitCost * landlordShare;
         } else {
-          // CASH RENT or OWNED: Tenant pays 100% of all costs
+          // No landlord split (100% tenant_share) - tenant pays all
           fertTenant = fertTotal;
           fertLandlord = 0;
           herbTenant = herbTotal;
@@ -1841,9 +1853,9 @@ function BreakevenPage({ cropYear, onYearChange }) {
         const totalTenant = overhead + seed + rent + fertTenant + herbTenant;
         const totalLandlord = fertLandlord + herbLandlord;
 
-        // Bushels: Share crop uses tenant share, Cash/Owned uses 100%
+        // Bushels: If landlord split, use tenant share of bushels
         const bushelsAll = fcy.actual_production || ((fcy.planted_acres || 0) * (fcy.estimated_yield || 0));
-        const bushelsTenant = isShareCrop ? bushelsAll * tenantShare : bushelsAll;
+        const bushelsTenant = hasLandlordSplit ? bushelsAll * tenantShare : bushelsAll;
 
         // Breakeven: Total tenant costs / Tenant bushels
         const breakevenAll = bushelsAll > 0 ? totalAll / bushelsAll : null;
@@ -1857,7 +1869,7 @@ function BreakevenPage({ cropYear, onYearChange }) {
           seed,
           rent,
           rentType,
-          isShareCrop,
+          isShareCrop: hasLandlordSplit,
           fertTotal,
           fertTenant,
           fertLandlord,
@@ -1875,7 +1887,7 @@ function BreakevenPage({ cropYear, onYearChange }) {
           breakevenTenant,
           costPerAcreAll,
           costPerAcreTenant,
-          hasLandlord: isShareCrop && landlordShare > 0
+          hasLandlord: hasLandlordSplit
         };
       });
 
