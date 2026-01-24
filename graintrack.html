@@ -818,9 +818,13 @@ async function getProductionSummary(cropYear, byPractice = false) {
       key = `${row.commodity_id}|${practiceKey}`;
     }
 
+    // Marketable = actual if harvested, otherwise expected
+    const fieldMarketable = row.actual_marketable ?? row.expected_marketable;
+
     const existing = summary.get(key);
     if (existing) {
       existing.expected += row.expected_marketable;
+      existing.marketable += fieldMarketable;
       if (row.actual_marketable !== null) {
         existing.actual = (existing.actual || 0) + row.actual_marketable;
       }
@@ -831,7 +835,8 @@ async function getProductionSummary(cropYear, byPractice = false) {
         is_irrigated: byPractice ? row.is_irrigated : null,
         is_double_crop: byPractice ? row.is_double_crop : null,
         expected: row.expected_marketable,
-        actual: row.actual_marketable
+        actual: row.actual_marketable,
+        marketable: fieldMarketable
       });
     }
   }
@@ -842,7 +847,8 @@ async function getProductionSummary(cropYear, byPractice = false) {
     is_irrigated: s.is_irrigated,
     is_double_crop: s.is_double_crop,
     expected_production: s.expected,
-    actual_production: s.actual
+    actual_production: s.actual,
+    marketable_production: s.marketable  // actual on harvested fields + expected on unharvested
   }));
 }
 
@@ -2448,50 +2454,53 @@ async function getDashboardData(cropYear, detailMode = 'combined') {
 
         const expectedProduction = prod.expected_production || 0;
         const actualProduction = prod.actual_production || null;
-        
-        // Contracts are still at commodity level
-        const totalProductions = productions.reduce((sum, p) => sum + (p.expected_production || 0), 0);
-        const bushelsSold = totalProductions > 0 
-          ? Math.round((expectedProduction / totalProductions) * (contracts?.bushels_contracted || 0))
+        // Marketable = actual on harvested fields + expected on unharvested
+        const marketableProduction = prod.marketable_production || expectedProduction;
+
+        // Contracts are still at commodity level - allocate based on marketable share
+        const totalMarketable = productions.reduce((sum, p) => sum + (p.marketable_production || p.expected_production || 0), 0);
+        const bushelsSold = totalMarketable > 0
+          ? Math.round((marketableProduction / totalMarketable) * (contracts?.bushels_contracted || 0))
           : 0;
-        
+
         const coverageLevel = practiceInsurance?.coverage_level || 0.75;
         const insuranceProduction = expectedProduction * coverageLevel;
 
-        // Calculate percentages (no cap - allow >100% for over-contracting)
+        // Calculate percentages based on marketable production (no cap - allow >100% for over-contracting)
+        const percentMarketed = marketableProduction > 0 ? (bushelsSold / marketableProduction) * 100 : 0;
         const percentExpected = expectedProduction > 0 ? (bushelsSold / expectedProduction) * 100 : 0;
         const percentActual = actualProduction !== null && actualProduction > 0
           ? (bushelsSold / actualProduction) * 100 : null;
         const percentInsurance = insuranceProduction > 0
           ? (bushelsSold / insuranceProduction) * 100 : 0;
 
-        // Over-contracting detection
-        const overContracted = bushelsSold > expectedProduction;
-        const overContractedBushels = overContracted ? bushelsSold - expectedProduction : 0;
+        // Over-contracting detection (based on marketable, not expected)
+        const overContracted = bushelsSold > marketableProduction;
+        const overContractedBushels = overContracted ? bushelsSold - marketableProduction : 0;
 
         // Contracted = firm delivery only
         const weightedAvg = contracts?.weighted_avg_price || null;
         // Hedged = contracted + futures + short calls
-        const bushelsHedged = totalProductions > 0
-          ? Math.round((expectedProduction / totalProductions) * (contracts?.bushels_hedged || 0))
+        const bushelsHedged = totalMarketable > 0
+          ? Math.round((marketableProduction / totalMarketable) * (contracts?.bushels_hedged || 0))
           : 0;
         const hedgedAvg = contracts?.hedged_avg_with_premium || null;
-        const bushelsProtected = totalProductions > 0
-          ? Math.round((expectedProduction / totalProductions) * (contracts?.bushels_protected || 0))
+        const bushelsProtected = totalMarketable > 0
+          ? Math.round((marketableProduction / totalMarketable) * (contracts?.bushels_protected || 0))
           : 0;
 
         let blendedAvg = null;
-        if (expectedProduction > 0 && (weightedAvg || currentMarket)) {
-          const unsoldBu = Math.max(0, expectedProduction - bushelsSold);
-          blendedAvg = ((bushelsSold * (weightedAvg || 0)) + (unsoldBu * (currentMarket || 0))) / expectedProduction;
+        if (marketableProduction > 0 && (weightedAvg || currentMarket)) {
+          const unsoldBu = Math.max(0, marketableProduction - bushelsSold);
+          blendedAvg = ((bushelsSold * (weightedAvg || 0)) + (unsoldBu * (currentMarket || 0))) / marketableProduction;
         }
         let blendedAvgHedged = null;
-        if (expectedProduction > 0 && (hedgedAvg || currentMarket)) {
-          const unsoldBu = Math.max(0, expectedProduction - bushelsHedged);
-          blendedAvgHedged = ((bushelsHedged * (hedgedAvg || 0)) + (unsoldBu * (currentMarket || 0))) / expectedProduction;
+        if (marketableProduction > 0 && (hedgedAvg || currentMarket)) {
+          const unsoldBu = Math.max(0, marketableProduction - bushelsHedged);
+          blendedAvgHedged = ((bushelsHedged * (hedgedAvg || 0)) + (unsoldBu * (currentMarket || 0))) / marketableProduction;
         }
 
-        const percentHedged = expectedProduction > 0 ? (bushelsHedged / expectedProduction) * 100 : 0;
+        const percentHedged = marketableProduction > 0 ? (bushelsHedged / marketableProduction) * 100 : 0;
 
         commodityProgress.push({
           commodity_id: commodity.id,
@@ -2502,9 +2511,11 @@ async function getDashboardData(cropYear, detailMode = 'combined') {
           crop_year: cropYear,
           expected_production: expectedProduction,
           actual_production: actualProduction,
+          marketable_production: marketableProduction,  // actual on harvested + expected on unharvested
           insurance_production: insuranceProduction,
           // Contracted (firm delivery)
           bushels_contracted: bushelsSold,
+          percent_marketed: percentMarketed,  // primary % based on marketable
           percent_expected: percentExpected,
           percent_actual: percentActual,
           percent_insurance: percentInsurance,
@@ -2550,26 +2561,30 @@ async function getDashboardData(cropYear, detailMode = 'combined') {
       // Combined view - one row per commodity
       const production = productions.reduce((sum, p) => ({
         expected: (sum.expected || 0) + (p.expected_production || 0),
-        actual: p.actual_production !== null ? (sum.actual || 0) + p.actual_production : sum.actual
-      }), { expected: 0, actual: null });
+        actual: p.actual_production !== null ? (sum.actual || 0) + p.actual_production : sum.actual,
+        // Marketable = actual on harvested fields + expected on unharvested
+        marketable: (sum.marketable || 0) + (p.marketable_production || p.expected_production || 0)
+      }), { expected: 0, actual: null, marketable: 0 });
 
       const expectedProduction = production.expected || 0;
       const actualProduction = production.actual;
+      const marketableProduction = production.marketable || expectedProduction;
       const bushelsSold = contracts?.bushels_contracted || 0;
-      
+
       const coverageLevel = insurance?.coverage_level || 0.75;
       const insuranceProduction = expectedProduction * coverageLevel;
 
-      // Calculate percentages (no cap - allow >100% for over-contracting)
+      // Calculate percentages based on marketable production (no cap - allow >100% for over-contracting)
+      const percentMarketed = marketableProduction > 0 ? (bushelsSold / marketableProduction) * 100 : 0;
       const percentExpected = expectedProduction > 0 ? (bushelsSold / expectedProduction) * 100 : 0;
       const percentActual = actualProduction !== null && actualProduction > 0
         ? (bushelsSold / actualProduction) * 100 : null;
       const percentInsurance = insuranceProduction > 0
         ? (bushelsSold / insuranceProduction) * 100 : 0;
 
-      // Over-contracting detection
-      const overContracted = bushelsSold > expectedProduction;
-      const overContractedBushels = overContracted ? bushelsSold - expectedProduction : 0;
+      // Over-contracting detection (based on marketable, not expected)
+      const overContracted = bushelsSold > marketableProduction;
+      const overContractedBushels = overContracted ? bushelsSold - marketableProduction : 0;
 
       // Contracted = firm delivery only
       const weightedAvg = contracts?.weighted_avg_price || null;
@@ -2579,19 +2594,19 @@ async function getDashboardData(cropYear, detailMode = 'combined') {
       const bushelsProtected = contracts?.bushels_protected || 0;
 
       let blendedAvg = null;
-      if (expectedProduction > 0 && (weightedAvg || currentMarket)) {
-        const unsoldBu = Math.max(0, expectedProduction - bushelsSold);
-        blendedAvg = ((bushelsSold * (weightedAvg || 0)) + (unsoldBu * (currentMarket || 0))) / expectedProduction;
+      if (marketableProduction > 0 && (weightedAvg || currentMarket)) {
+        const unsoldBu = Math.max(0, marketableProduction - bushelsSold);
+        blendedAvg = ((bushelsSold * (weightedAvg || 0)) + (unsoldBu * (currentMarket || 0))) / marketableProduction;
       }
       let blendedAvgHedged = null;
-      if (expectedProduction > 0 && (hedgedAvg || currentMarket)) {
-        const unsoldBu = Math.max(0, expectedProduction - bushelsHedged);
-        blendedAvgHedged = ((bushelsHedged * (hedgedAvg || 0)) + (unsoldBu * (currentMarket || 0))) / expectedProduction;
+      if (marketableProduction > 0 && (hedgedAvg || currentMarket)) {
+        const unsoldBu = Math.max(0, marketableProduction - bushelsHedged);
+        blendedAvgHedged = ((bushelsHedged * (hedgedAvg || 0)) + (unsoldBu * (currentMarket || 0))) / marketableProduction;
       }
 
-      const percentHedged = expectedProduction > 0 ? (bushelsHedged / expectedProduction) * 100 : 0;
+      const percentHedged = marketableProduction > 0 ? (bushelsHedged / marketableProduction) * 100 : 0;
 
-      if (expectedProduction > 0 || bushelsSold > 0 || bushelsHedged > 0) {
+      if (marketableProduction > 0 || bushelsSold > 0 || bushelsHedged > 0) {
         commodityProgress.push({
           commodity_id: commodity.id,
           commodity_name: commodity.name,
@@ -2601,9 +2616,11 @@ async function getDashboardData(cropYear, detailMode = 'combined') {
           crop_year: cropYear,
           expected_production: expectedProduction,
           actual_production: actualProduction,
+          marketable_production: marketableProduction,  // actual on harvested + expected on unharvested
           insurance_production: insuranceProduction,
           // Contracted (firm delivery)
           bushels_contracted: bushelsSold,
+          percent_marketed: percentMarketed,  // primary % based on marketable
           percent_expected: percentExpected,
           percent_actual: percentActual,
           percent_insurance: percentInsurance,
@@ -2649,14 +2666,16 @@ async function getDashboardData(cropYear, detailMode = 'combined') {
   }
 
   const totalExpected = commodityProgress.reduce((sum, c) => sum + c.expected_production, 0);
+  const totalMarketable = commodityProgress.reduce((sum, c) => sum + (c.marketable_production || c.expected_production), 0);
   const totalContracted = commodityProgress.reduce((sum, c) => sum + c.bushels_contracted, 0);
-  const totalPercent = totalExpected > 0 ? (totalContracted / totalExpected) * 100 : 0;
+  const totalPercent = totalMarketable > 0 ? (totalContracted / totalMarketable) * 100 : 0;
   const hasOverContracted = commodityProgress.some(c => c.over_contracted);
 
   return {
     crop_year: cropYear,
     commodities: commodityProgress,
     total_expected: totalExpected,
+    total_marketable: totalMarketable,  // actual on harvested + expected on unharvested
     total_contracted: totalContracted,
     total_percent: totalPercent,
     has_over_contracted: hasOverContracted,
@@ -2745,9 +2764,10 @@ function DashboardPage({ cropYear, onYearChange }) {
 
   const getProgressPercent = (c) => {
     switch (viewMode) {
-      case 'actual': return c.percent_actual ?? c.percent_expected;
+      case 'actual': return c.percent_actual ?? c.percent_marketed ?? c.percent_expected;
       case 'insurance': return c.percent_insurance;
-      default: return c.percent_expected;
+      case 'expected': return c.percent_expected;
+      default: return c.percent_marketed ?? c.percent_expected;  // marketable = actual on harvested + expected on unharvested
     }
   };
 
@@ -2977,7 +2997,7 @@ function DashboardPage({ cropYear, onYearChange }) {
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-3">
                   <span className={`text-lg font-bold ${c.over_contracted ? 'text-red-600' : colors.text}`}>{c.display_name}</span>
-                  <span className="text-sm text-gray-500">{formatNumber(displayBushels)} / {formatNumber(c.expected_production)} bu</span>
+                  <span className="text-sm text-gray-500">{formatNumber(displayBushels)} / {formatNumber(c.marketable_production || c.expected_production)} bu</span>
                   {c.over_contracted && (
                     <span className="text-xs px-2 py-0.5 bg-red-100 text-red-700 rounded-full font-semibold">
                       Over by {formatNumber(c.over_contracted_bushels)} bu
