@@ -60,17 +60,39 @@ Major redesign to make Breakeven the central cost planning application.
   - Fixed base overhead categories insertion
   - Migration includes all required categories
 
-**Phase 6: Misc Income** (Pending)
+**Phase 6: Seed Products Catalog** ✅ COMPLETE
+- **New Seed Products Page**
+  - Catalog of seed products with brand, hybrid, maturity, traits
+  - Pricing and default seeding rates per product
+  - Practice type tagging (Irrigated, Dryland, or Any)
+  - Filter by crop and brand
+  - "Add Another" feature for quick data entry
+  - Database: `be_seed_products` table
+- **Crop Plans Integration**
+  - Select seed from product catalog in Crop Plan editor
+  - Auto-fill brand, hybrid, price, rate from product
+  - Still supports manual entry for flexibility
+- **Renamed "Field Assignments" → "Field Applications"**
+  - Better reflects the purpose (applying plans to fields)
+- **Removed Old Seed Costs Page**
+  - Replaced with Seed Products catalog
+  - Seed now managed at plan level, not field level
+- **Database RLS Fixes**
+  - Comprehensive RLS policy migration for all breakeven tables
+  - Fixed 403 errors for authenticated users
+- **Future: Seed Calculator Standalone App** (noted in ROADMAP)
+
+**Phase 7: Misc Income** (Pending)
 - Track government payments (ARC-CO, PLC, MFP)
 - Track conservation payments (CRP, EQIP, CSP)
 - Income offsets reduce breakeven price
 
-**Phase 7: Planned vs Actual** (Pending)
+**Phase 8: Planned vs Actual** (Pending)
 - Track planned costs from crop plans
 - Pull actual costs from Spray-Suite and Fertilizer App
 - Variance analysis (planned - actual)
 
-**Phase 8: Dashboard & Reports** (Pending)
+**Phase 9: Dashboard & Reports** (Pending)
 - Updated dashboard with planned/actual comparison
 - Variance alerts
 - Enhanced landlord reports with income offset

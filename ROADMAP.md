@@ -256,4 +256,21 @@ ALTER TABLE contracts ADD COLUMN organization_id UUID REFERENCES organizations(i
 
 ---
 
-*Last updated: 2026-01-23*
+## Future Standalone Apps
+
+### Seed Calculator
+- [ ] Spin off the seed cost calculator as a standalone public tool (like fertcalc.html)
+- [ ] Input: seeding rate, seeds/bag, price/bag, acres
+- [ ] Output: bags needed, cost per acre, total cost
+- [ ] Commodity presets (corn 80K, beans 140K)
+- [ ] No authentication required
+- [ ] Mobile-friendly
+
+### Rent Calculator
+- [ ] Cash rent vs share crop comparison tool
+- [ ] Input expected yield, commodity price, rent rate
+- [ ] Compare net returns under different scenarios
+
+---
+
+*Last updated: 2026-01-24*

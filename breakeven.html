@@ -276,6 +276,50 @@ async function deleteSeedCost(id) {
   if (error) throw error;
 }
 
+// Seed Products (Catalog)
+async function getSeedProducts() {
+  const { data, error } = await db.from('be_seed_products').select('*, commodities(name)').eq('active', true).is('deleted_at', null).order('brand').order('hybrid');
+  if (error) {
+    console.error('Error loading seed products:', error);
+    return [];
+  }
+  return (data || []).map(p => ({
+    ...p,
+    commodity_name: p.commodities?.name
+  }));
+}
+
+async function saveSeedProduct(product) {
+  const productData = {
+    commodity_id: product.commodity_id,
+    brand: product.brand,
+    hybrid: product.hybrid,
+    relative_maturity: product.relative_maturity,
+    traits: product.traits,
+    seeds_per_bag: product.seeds_per_bag,
+    price_per_bag: product.price_per_bag,
+    default_seeding_rate: product.default_seeding_rate,
+    practice_type: product.practice_type,
+    notes: product.notes,
+    active: true
+  };
+
+  if (product.id) {
+    const { error } = await db.from('be_seed_products').update(productData).eq('id', product.id);
+    if (error) throw error;
+    return { ...product, ...productData };
+  } else {
+    const { data, error } = await db.from('be_seed_products').insert([productData]).select().single();
+    if (error) throw error;
+    return data;
+  }
+}
+
+async function deleteSeedProduct(id) {
+  const { error } = await db.from('be_seed_products').update({ deleted_at: new Date().toISOString(), active: false }).eq('id', id);
+  if (error) throw error;
+}
+
 // Land Rent
 async function getLandRent(cropYear) {
   const { data, error } = await db.from('be_land_rent').select('*, fields(name, acres, farms(name))').eq('crop_year', cropYear).is('deleted_at', null);
@@ -1152,10 +1196,10 @@ function calculateSeedCost(seed) {
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: 'layout-dashboard' },
   { id: 'crop-plans', label: 'Crop Plans', icon: 'layers' },
-  { id: 'field-assignments', label: 'Field Assignments', icon: 'map-pin' },
+  { id: 'seed-products', label: 'Seed Products', icon: 'package' },
+  { id: 'field-applications', label: 'Field Applications', icon: 'map-pin' },
   { id: 'overhead', label: 'Overhead', icon: 'building' },
   { id: 'income', label: 'Misc Income', icon: 'dollar-sign' },
-  { id: 'inputs', label: 'Seed Costs', icon: 'package' },
   { id: 'land-rent', label: 'Land Rent', icon: 'home' },
   { id: 'breakeven', label: 'Breakeven', icon: 'calculator' },
   { id: 'analysis', label: 'Analysis', icon: 'bar-chart-3' },
@@ -2064,33 +2108,33 @@ function OverheadModal({ expense, cropYear, categories, commodities, fields = []
 }
 
 // ============================================================================
-// INPUTS PAGE (Seed & Land Rent)
+// SEED PRODUCTS PAGE (Catalog of seed varieties with pricing)
 // ============================================================================
-function InputsPage({ cropYear, onYearChange }) {
-  const [seeds, setSeeds] = useState([]);
-  const [fieldCropYears, setFieldCropYears] = useState([]);
+function SeedProductsPage() {
+  const [products, setProducts] = useState([]);
+  const [commodities, setCommodities] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [showSeedModal, setShowSeedModal] = useState(false);
-  const [editingSeed, setEditingSeed] = useState(null);
+  const [showModal, setShowModal] = useState(false);
+  const [editingProduct, setEditingProduct] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [filterCommodity, setFilterCommodity] = useState('');
+  const [filterBrand, setFilterBrand] = useState('');
   const { addToast } = useToast();
-  const currentYear = new Date().getFullYear();
-  const cropYears = [currentYear - 1, currentYear, currentYear + 1];
 
   const loadData = async () => {
     setLoading(true);
-    const [s, fcy] = await Promise.all([getSeedCosts(cropYear), getFieldCropYears(cropYear)]);
-    setSeeds(s);
-    setFieldCropYears(fcy);
+    const [p, c] = await Promise.all([getSeedProducts(), getCommodities()]);
+    setProducts(p);
+    setCommodities(c);
     setLoading(false);
   };
 
-  useEffect(() => { loadData(); }, [cropYear]);
+  useEffect(() => { loadData(); }, []);
 
-  const handleDeleteSeed = async () => {
+  const handleDelete = async () => {
     try {
-      await deleteSeedCost(deleteConfirm.id);
-      addToast('Seed cost deleted', { type: 'success' });
+      await deleteSeedProduct(deleteConfirm.id);
+      addToast('Seed product deleted', { type: 'success' });
       setDeleteConfirm(null);
       loadData();
     } catch (e) {
@@ -2098,220 +2142,309 @@ function InputsPage({ cropYear, onYearChange }) {
     }
   };
 
+  // Get unique brands for filter
+  const uniqueBrands = [...new Set(products.map(p => p.brand))].sort();
+
+  // Filter products
+  const filteredProducts = products.filter(p => {
+    if (filterCommodity && p.commodity_id !== filterCommodity) return false;
+    if (filterBrand && p.brand !== filterBrand) return false;
+    return true;
+  });
+
+  // Group by commodity
+  const groupedProducts = {};
+  filteredProducts.forEach(p => {
+    const key = p.commodity_name || 'Other';
+    if (!groupedProducts[key]) groupedProducts[key] = [];
+    groupedProducts[key].push(p);
+  });
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Seed Costs</h1>
-          <p className="text-sm text-gray-500">Seed variety and cost per field for {cropYear}</p>
+          <h1 className="text-2xl font-bold text-gray-900">Seed Products</h1>
+          <p className="text-sm text-gray-500">Catalog of seed varieties with pricing for crop plans</p>
         </div>
         <div className="flex gap-3">
-          <select value={cropYear} onChange={(e) => onYearChange(parseInt(e.target.value))} className="px-4 py-2 border rounded-lg">
-            {cropYears.map(y => <option key={y} value={y}>{y}</option>)}
+          <select value={filterBrand} onChange={(e) => setFilterBrand(e.target.value)} className="px-4 py-2 border rounded-lg">
+            <option value="">All Brands</option>
+            {uniqueBrands.map(b => <option key={b} value={b}>{b}</option>)}
           </select>
+          <select value={filterCommodity} onChange={(e) => setFilterCommodity(e.target.value)} className="px-4 py-2 border rounded-lg">
+            <option value="">All Crops</option>
+            {commodities.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          <button onClick={() => { setEditingProduct(null); setShowModal(true); }} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+            <Icon name="plus" size={18} /> Add Product
+          </button>
         </div>
       </div>
 
-      <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
-          <div className="p-4 border-b flex items-center justify-between">
-            <h2 className="font-semibold">Seed Costs</h2>
-            <button onClick={() => { setEditingSeed(null); setShowSeedModal(true); }} className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">
-              <Icon name="plus" size={16} /> Add Seed Cost
-            </button>
-          </div>
-          {loading ? (
-            <div className="p-8 text-center"><Icon name="loader" className="animate-spin text-blue-600 mx-auto" size={32} /></div>
-          ) : (
+      {/* Summary cards */}
+      <div className="grid grid-cols-4 gap-4">
+        <div className="bg-white rounded-xl p-4 shadow-sm border">
+          <div className="text-sm text-gray-500">Total Products</div>
+          <div className="text-2xl font-bold">{products.length}</div>
+        </div>
+        <div className="bg-white rounded-xl p-4 shadow-sm border">
+          <div className="text-sm text-gray-500">Corn Varieties</div>
+          <div className="text-2xl font-bold text-yellow-600">{products.filter(p => p.commodity_name === 'Corn').length}</div>
+        </div>
+        <div className="bg-white rounded-xl p-4 shadow-sm border">
+          <div className="text-sm text-gray-500">Soybean Varieties</div>
+          <div className="text-2xl font-bold text-green-600">{products.filter(p => p.commodity_name === 'Soybeans').length}</div>
+        </div>
+        <div className="bg-white rounded-xl p-4 shadow-sm border">
+          <div className="text-sm text-gray-500">Brands</div>
+          <div className="text-2xl font-bold text-blue-600">{uniqueBrands.length}</div>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="p-8 text-center"><Icon name="loader" className="animate-spin text-blue-600 mx-auto" size={32} /></div>
+      ) : filteredProducts.length === 0 ? (
+        <div className="bg-white rounded-xl shadow-sm border p-8 text-center">
+          <Icon name="package" size={48} className="mx-auto text-gray-300 mb-4" />
+          <h3 className="text-lg font-medium text-gray-900 mb-2">No Seed Products</h3>
+          <p className="text-gray-500 mb-4">Add seed products to use in crop plans and field applications.</p>
+          <button onClick={() => { setEditingProduct(null); setShowModal(true); }} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+            Add Your First Product
+          </button>
+        </div>
+      ) : (
+        Object.entries(groupedProducts).map(([commodity, prods]) => (
+          <div key={commodity} className="bg-white rounded-xl shadow-sm border overflow-hidden">
+            <div className="p-4 border-b bg-gray-50">
+              <h2 className="font-semibold text-lg">{commodity}</h2>
+              <p className="text-sm text-gray-500">{prods.length} product{prods.length !== 1 ? 's' : ''}</p>
+            </div>
             <table className="w-full text-sm">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-4 py-3 text-left">Field</th>
-                  <th className="px-4 py-3 text-left">Variety</th>
-                  <th className="px-4 py-3 text-right">Acres</th>
-                  <th className="px-4 py-3 text-right">Rate</th>
-                  <th className="px-4 py-3 text-right">Bags</th>
-                  <th className="px-4 py-3 text-right">$/Bag</th>
-                  <th className="px-4 py-3 text-right">$/Acre</th>
-                  <th className="px-4 py-3 text-right font-semibold">Total</th>
+                  <th className="px-4 py-3 text-left">Brand</th>
+                  <th className="px-4 py-3 text-left">Hybrid</th>
+                  <th className="px-4 py-3 text-left">Maturity</th>
+                  <th className="px-4 py-3 text-left">Traits</th>
+                  <th className="px-4 py-3 text-right">Seeds/Bag</th>
+                  <th className="px-4 py-3 text-right">Price/Bag</th>
+                  <th className="px-4 py-3 text-right">Default Rate</th>
+                  <th className="px-4 py-3 text-center">Practice</th>
                   <th className="px-4 py-3 text-center">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {seeds.length === 0 ? (
-                  <tr><td colSpan={9} className="px-4 py-8 text-center text-gray-500">No seed costs entered</td></tr>
-                ) : seeds.map(s => {
-                  const totalCost = s.total_cost || calculateSeedCost({ ...s, planted_acres: s.planted_acres });
-                  const bagsNeeded = s.seeding_rate && s.seeds_per_bag && s.planted_acres
-                    ? (s.seeding_rate * s.planted_acres) / s.seeds_per_bag : 0;
-                  const costPerAcre = totalCost && s.planted_acres ? totalCost / s.planted_acres : 0;
-                  return (
-                    <tr key={s.id} className="hover:bg-gray-50">
-                      <td className="px-4 py-3">
-                        <div className="font-medium">{s.field_name}</div>
-                        <div className="text-xs text-gray-500">{s.commodity_name}</div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div>{s.variety || '-'}</div>
-                        {s.brand && <div className="text-xs text-gray-500">{s.brand}</div>}
-                      </td>
-                      <td className="px-4 py-3 text-right">{formatNumber(s.planted_acres)}</td>
-                      <td className="px-4 py-3 text-right text-gray-600">{formatNumber(s.seeding_rate)}/ac</td>
-                      <td className="px-4 py-3 text-right text-gray-600">{bagsNeeded.toFixed(1)}</td>
-                      <td className="px-4 py-3 text-right text-gray-600">{formatCurrency(s.price_per_bag)}</td>
-                      <td className="px-4 py-3 text-right text-gray-600">{formatCurrency(costPerAcre)}</td>
-                      <td className="px-4 py-3 text-right font-semibold">{formatCurrency(totalCost)}</td>
-                      <td className="px-4 py-3 text-center">
-                        <button onClick={() => { setEditingSeed(s); setShowSeedModal(true); }} className="p-1 hover:bg-gray-100 rounded"><Icon name="pencil" size={16} /></button>
-                        <button onClick={() => setDeleteConfirm({ ...s, type: 'seed' })} className="p-1 hover:bg-red-100 rounded text-red-600"><Icon name="trash-2" size={16} /></button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-              {seeds.length > 0 && (
-                <tfoot className="bg-gray-100">
-                  <tr className="font-semibold">
-                    <td className="px-4 py-3">TOTAL</td>
-                    <td></td>
-                    <td className="px-4 py-3 text-right">{formatNumber(seeds.reduce((s, seed) => s + (seed.planted_acres || 0), 0))}</td>
-                    <td></td>
-                    <td className="px-4 py-3 text-right">{seeds.reduce((s, seed) => s + ((seed.seeding_rate && seed.seeds_per_bag && seed.planted_acres) ? (seed.seeding_rate * seed.planted_acres) / seed.seeds_per_bag : 0), 0).toFixed(1)}</td>
-                    <td></td>
-                    <td></td>
-                    <td className="px-4 py-3 text-right">{formatCurrency(seeds.reduce((s, seed) => s + (seed.total_cost || calculateSeedCost({ ...seed, planted_acres: seed.planted_acres })), 0))}</td>
-                    <td></td>
+                {prods.map(p => (
+                  <tr key={p.id} className="hover:bg-gray-50">
+                    <td className="px-4 py-3 font-medium">{p.brand}</td>
+                    <td className="px-4 py-3">
+                      <div className="font-medium text-blue-600">{p.hybrid}</div>
+                    </td>
+                    <td className="px-4 py-3 text-gray-600">{p.relative_maturity || '-'}</td>
+                    <td className="px-4 py-3">
+                      {p.traits ? (
+                        <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">{p.traits}</span>
+                      ) : '-'}
+                    </td>
+                    <td className="px-4 py-3 text-right">{formatNumber(p.seeds_per_bag)}</td>
+                    <td className="px-4 py-3 text-right font-medium">{formatCurrency(p.price_per_bag)}</td>
+                    <td className="px-4 py-3 text-right text-gray-600">{formatNumber(p.default_seeding_rate)}/ac</td>
+                    <td className="px-4 py-3 text-center">
+                      {p.practice_type ? (
+                        <span className={`text-xs px-2 py-0.5 rounded ${p.practice_type === 'IR' ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'}`}>
+                          {p.practice_type === 'IR' ? 'Irrigated' : 'Dryland'}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-gray-400">Any</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <button onClick={() => { setEditingProduct(p); setShowModal(true); }} className="p-1 hover:bg-gray-100 rounded"><Icon name="pencil" size={16} /></button>
+                      <button onClick={() => setDeleteConfirm(p)} className="p-1 hover:bg-red-100 rounded text-red-600"><Icon name="trash-2" size={16} /></button>
+                    </td>
                   </tr>
-                </tfoot>
-              )}
+                ))}
+              </tbody>
             </table>
-          )}
-        </div>
+          </div>
+        ))
+      )}
 
-      {showSeedModal && <SeedModal seed={editingSeed} fieldCropYears={fieldCropYears} onClose={() => setShowSeedModal(false)} onSave={() => { setShowSeedModal(false); loadData(); }} />}
-      <ConfirmModal isOpen={!!deleteConfirm} title="Delete Seed Cost" message="Are you sure?" onConfirm={handleDeleteSeed} onCancel={() => setDeleteConfirm(null)} />
+      {showModal && <SeedProductModal product={editingProduct} commodities={commodities} onClose={() => setShowModal(false)} onSave={(keepOpen) => { if (!keepOpen) setShowModal(false); loadData(); }} />}
+      <ConfirmModal isOpen={!!deleteConfirm} title="Delete Seed Product" message={`Delete ${deleteConfirm?.brand} ${deleteConfirm?.hybrid}?`} onConfirm={handleDelete} onCancel={() => setDeleteConfirm(null)} />
     </div>
   );
 }
 
-function SeedModal({ seed, fieldCropYears, onClose, onSave }) {
+function SeedProductModal({ product, commodities, onClose, onSave }) {
   // Default seeds/bag by commodity
   const seedDefaults = {
-    'Corn': { seeds_per_bag: 80000, seeding_rate: 32000 },
-    'Soybeans': { seeds_per_bag: 140000, seeding_rate: 140000 },
-    'Wheat': { seeds_per_bag: 600000, seeding_rate: 1200000 },
-    'Milo': { seeds_per_bag: 80000, seeding_rate: 32000 }
+    'Corn': { seeds_per_bag: 80000, default_seeding_rate: 34000 },
+    'Soybeans': { seeds_per_bag: 140000, default_seeding_rate: 140000 },
+    'Wheat': { seeds_per_bag: 600000, default_seeding_rate: 1200000 },
+    'Milo': { seeds_per_bag: 80000, default_seeding_rate: 32000 }
   };
 
-  const [form, setForm] = useState({ field_crop_year_id: '', variety: '', brand: '', price_per_bag: '', seeds_per_bag: 80000, seeding_rate: 32000, total_cost: '' });
+  const [form, setForm] = useState({
+    commodity_id: product?.commodity_id || '',
+    brand: product?.brand || '',
+    hybrid: product?.hybrid || '',
+    relative_maturity: product?.relative_maturity || '',
+    traits: product?.traits || '',
+    seeds_per_bag: product?.seeds_per_bag || 80000,
+    price_per_bag: product?.price_per_bag || '',
+    default_seeding_rate: product?.default_seeding_rate || 34000,
+    practice_type: product?.practice_type || '',
+    notes: product?.notes || ''
+  });
   const [saving, setSaving] = useState(false);
+  const [addAnother, setAddAnother] = useState(false);
   const { addToast } = useToast();
 
+  // Auto-set defaults when commodity changes
+  const selectedCommodity = commodities.find(c => c.id === form.commodity_id);
   useEffect(() => {
-    if (seed) setForm({ ...seed });
-  }, [seed]);
-
-  const selectedFcy = fieldCropYears.find(f => f.id === form.field_crop_year_id);
-
-  // Auto-set defaults when field is selected based on commodity
-  useEffect(() => {
-    if (selectedFcy && !seed) {
-      const defaults = seedDefaults[selectedFcy.commodity_name] || { seeds_per_bag: 80000, seeding_rate: 32000 };
-      setForm(f => ({ ...f, seeds_per_bag: defaults.seeds_per_bag, seeding_rate: defaults.seeding_rate }));
+    if (selectedCommodity && !product) {
+      const defaults = seedDefaults[selectedCommodity.name] || { seeds_per_bag: 80000, default_seeding_rate: 34000 };
+      setForm(f => ({ ...f, seeds_per_bag: defaults.seeds_per_bag, default_seeding_rate: defaults.default_seeding_rate }));
     }
-  }, [selectedFcy?.commodity_name]);
-
-  const totalSeeds = form.seeding_rate && selectedFcy?.planted_acres ? form.seeding_rate * selectedFcy.planted_acres : 0;
-  const bagsNeeded = form.seeds_per_bag && totalSeeds ? totalSeeds / form.seeds_per_bag : 0;
-  const calculatedCost = form.price_per_bag && bagsNeeded ? bagsNeeded * parseFloat(form.price_per_bag) : 0;
-  const costPerAcre = calculatedCost && selectedFcy?.planted_acres ? calculatedCost / selectedFcy.planted_acres : 0;
+  }, [selectedCommodity?.name]);
 
   const handleSave = async () => {
-    if (!form.field_crop_year_id) {
-      addToast('Please select a field', { type: 'error' });
+    if (!form.commodity_id || !form.brand || !form.hybrid) {
+      addToast('Please fill required fields (Crop, Brand, Hybrid)', { type: 'error' });
       return;
     }
     setSaving(true);
     try {
-      await saveSeedCost({ ...form, total_cost: form.total_cost || calculatedCost, id: seed?.id });
-      addToast('Seed cost saved', { type: 'success' });
-      onSave();
+      await saveSeedProduct({ ...form, id: product?.id });
+      addToast('Seed product saved', { type: 'success' });
+
+      if (addAnother && !product) {
+        // Reset form for next entry, keep commodity and brand
+        setForm(f => ({
+          commodity_id: f.commodity_id,
+          brand: f.brand,
+          hybrid: '',
+          relative_maturity: '',
+          traits: f.traits, // Keep traits as they're often similar
+          seeds_per_bag: f.seeds_per_bag,
+          price_per_bag: f.price_per_bag,
+          default_seeding_rate: f.default_seeding_rate,
+          practice_type: f.practice_type,
+          notes: ''
+        }));
+        onSave(true); // Signal refresh but keep modal open
+      } else {
+        onSave(false);
+      }
     } catch (e) {
       addToast('Failed to save: ' + e.message, { type: 'error' });
     }
     setSaving(false);
   };
 
+  // Calculate cost per acre for reference
+  const costPerAcre = form.price_per_bag && form.seeds_per_bag && form.default_seeding_rate
+    ? (form.default_seeding_rate / form.seeds_per_bag) * parseFloat(form.price_per_bag)
+    : 0;
+
   return (
-    <Modal isOpen={true} onClose={onClose} title={seed ? 'Edit Seed Cost' : 'Add Seed Cost'}>
+    <Modal isOpen={true} onClose={onClose} title={product ? 'Edit Seed Product' : 'Add Seed Product'}>
       <div className="space-y-4">
         <div>
-          <label className="block text-sm font-medium mb-1">Field *</label>
-          <select value={form.field_crop_year_id} onChange={(e) => setForm(f => ({ ...f, field_crop_year_id: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" disabled={!!seed}>
-            <option value="">Select Field</option>
-            {fieldCropYears.map(f => <option key={f.id} value={f.id}>{f.field_name} - {f.commodity_name} ({formatNumber(f.planted_acres)} ac)</option>)}
+          <label className="block text-sm font-medium mb-1">Crop *</label>
+          <select value={form.commodity_id} onChange={(e) => setForm(f => ({ ...f, commodity_id: e.target.value }))} className="w-full px-3 py-2 border rounded-lg">
+            <option value="">Select Crop</option>
+            {commodities.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </div>
+
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium mb-1">Brand</label>
-            <input type="text" value={form.brand} onChange={(e) => setForm(f => ({ ...f, brand: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" placeholder="Pioneer, Dekalb..." />
+            <label className="block text-sm font-medium mb-1">Brand *</label>
+            <input type="text" value={form.brand} onChange={(e) => setForm(f => ({ ...f, brand: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" placeholder="Pioneer, Dekalb, Asgrow..." />
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1">Variety</label>
-            <input type="text" value={form.variety} onChange={(e) => setForm(f => ({ ...f, variety: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" placeholder="P1185AM..." />
+            <label className="block text-sm font-medium mb-1">Hybrid *</label>
+            <input type="text" value={form.hybrid} onChange={(e) => setForm(f => ({ ...f, hybrid: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" placeholder="P1185AM, DKC64-35..." />
           </div>
         </div>
-        <div className="grid grid-cols-3 gap-4">
+
+        <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium mb-1">Price/Bag</label>
-            <input type="number" step="0.01" value={form.price_per_bag} onChange={(e) => setForm(f => ({ ...f, price_per_bag: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" />
+            <label className="block text-sm font-medium mb-1">Relative Maturity</label>
+            <input type="text" value={form.relative_maturity} onChange={(e) => setForm(f => ({ ...f, relative_maturity: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" placeholder="111 day, 3.6..." />
           </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Traits</label>
+            <input type="text" value={form.traits} onChange={(e) => setForm(f => ({ ...f, traits: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" placeholder="SmartStax Pro, Enlist E3..." />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-3 gap-4">
           <div>
             <label className="block text-sm font-medium mb-1">Seeds/Bag</label>
             <input type="number" value={form.seeds_per_bag} onChange={(e) => setForm(f => ({ ...f, seeds_per_bag: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" />
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1">Seeding Rate</label>
-            <input type="number" value={form.seeding_rate} onChange={(e) => setForm(f => ({ ...f, seeding_rate: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" />
+            <label className="block text-sm font-medium mb-1">Price/Bag</label>
+            <div className="relative">
+              <span className="absolute left-3 top-2 text-gray-500">$</span>
+              <input type="number" step="0.01" value={form.price_per_bag} onChange={(e) => setForm(f => ({ ...f, price_per_bag: e.target.value }))} className="w-full pl-7 pr-3 py-2 border rounded-lg" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Default Rate</label>
+            <input type="number" value={form.default_seeding_rate} onChange={(e) => setForm(f => ({ ...f, default_seeding_rate: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" placeholder="seeds/acre" />
           </div>
         </div>
-        <div className="bg-blue-50 rounded-lg p-4 space-y-2">
-          <div className="text-sm font-medium text-blue-800 mb-2">Seed Calculation</div>
-          {selectedFcy?.planted_acres ? (
-            <>
-              <div className="grid grid-cols-2 gap-2 text-sm">
-                <span className="text-gray-600">Acres:</span>
-                <span className="text-right font-medium">{formatNumber(selectedFcy.planted_acres)}</span>
-                <span className="text-gray-600">Seeds/Acre:</span>
-                <span className="text-right font-medium">{formatNumber(form.seeding_rate || 0)}</span>
-                <span className="text-gray-600">Total Seeds:</span>
-                <span className="text-right font-medium">{formatNumber(totalSeeds)}</span>
-                <span className="text-gray-600">Seeds/Bag:</span>
-                <span className="text-right font-medium">{formatNumber(form.seeds_per_bag || 0)}</span>
-                <span className="text-gray-600 font-semibold">Bags Needed:</span>
-                <span className="text-right font-bold text-blue-700">{bagsNeeded.toFixed(2)}</span>
-              </div>
-              <div className="border-t pt-2 mt-2 flex justify-between text-sm">
-                <span className="text-gray-600">@ {formatCurrency(form.price_per_bag || 0)}/bag:</span>
-                <span className="font-bold text-lg">{formatCurrency(calculatedCost)}</span>
-              </div>
-              <div className="flex justify-between text-sm text-gray-500">
-                <span>Cost per acre:</span>
-                <span>{formatCurrency(costPerAcre)}/ac</span>
-              </div>
-            </>
-          ) : (
-            <p className="text-sm text-gray-500">Select a field to see calculations</p>
+
+        <div>
+          <label className="block text-sm font-medium mb-1">Practice Type</label>
+          <div className="grid grid-cols-3 gap-2">
+            <button type="button" onClick={() => setForm(f => ({ ...f, practice_type: '' }))}
+              className={`p-2 rounded-lg border-2 text-sm ${!form.practice_type ? 'border-blue-500 bg-blue-50' : 'border-gray-200'}`}>
+              Any
+            </button>
+            <button type="button" onClick={() => setForm(f => ({ ...f, practice_type: 'IR' }))}
+              className={`p-2 rounded-lg border-2 text-sm ${form.practice_type === 'IR' ? 'border-blue-500 bg-blue-50' : 'border-gray-200'}`}>
+              Irrigated
+            </button>
+            <button type="button" onClick={() => setForm(f => ({ ...f, practice_type: 'DL' }))}
+              className={`p-2 rounded-lg border-2 text-sm ${form.practice_type === 'DL' ? 'border-blue-500 bg-blue-50' : 'border-gray-200'}`}>
+              Dryland
+            </button>
+          </div>
+        </div>
+
+        {costPerAcre > 0 && (
+          <div className="bg-blue-50 rounded-lg p-3 flex justify-between items-center">
+            <span className="text-sm text-blue-800">Estimated cost per acre:</span>
+            <span className="font-bold text-blue-900">{formatCurrency(costPerAcre)}/ac</span>
+          </div>
+        )}
+
+        <div>
+          <label className="block text-sm font-medium mb-1">Notes</label>
+          <textarea value={form.notes || ''} onChange={(e) => setForm(f => ({ ...f, notes: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" rows={2} placeholder="Optional notes..." />
+        </div>
+
+        <div className="flex items-center justify-between pt-4 border-t">
+          {!product && (
+            <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+              <input type="checkbox" checked={addAnother} onChange={(e) => setAddAnother(e.target.checked)} className="w-4 h-4 rounded border-gray-300 text-blue-600" />
+              Add another product
+            </label>
           )}
-          <div className="mt-3 pt-3 border-t">
-            <label className="block text-sm font-medium mb-1">Override Total Cost (optional)</label>
-            <input type="number" step="0.01" value={form.total_cost} onChange={(e) => setForm(f => ({ ...f, total_cost: e.target.value }))} className="w-full px-3 py-2 border rounded-lg bg-white" placeholder="Leave blank to use calculated" />
-            <p className="text-xs text-gray-500 mt-1">Use this if you have an actual invoice amount different from calculated</p>
+          {product && <div></div>}
+          <div className="flex gap-3">
+            <button onClick={onClose} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
+            <button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
+              {saving ? 'Saving...' : addAnother && !product ? 'Save & Add Another' : 'Save'}
+            </button>
           </div>
-        </div>
-        <div className="flex justify-end gap-3 pt-4 border-t">
-          <button onClick={onClose} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
-          <button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">{saving ? 'Saving...' : 'Save'}</button>
         </div>
       </div>
     </Modal>
@@ -3994,7 +4127,13 @@ function CropPlansPage({ cropYear, onYearChange }) {
 function CropPlanEditor({ plan, cropYear, commodities, tankMixes, onClose, onSave }) {
   const [activeTab, setActiveTab] = useState('info');
   const [saving, setSaving] = useState(false);
+  const [seedProducts, setSeedProducts] = useState([]);
   const { addToast } = useToast();
+
+  // Load seed products
+  useEffect(() => {
+    getSeedProducts().then(setSeedProducts);
+  }, []);
 
   // Form state
   const [info, setInfo] = useState({
@@ -4005,7 +4144,7 @@ function CropPlanEditor({ plan, cropYear, commodities, tankMixes, onClose, onSav
   });
 
   const [seed, setSeed] = useState(plan?.seed || {
-    brand: '', hybrid: '', seeds_per_bag: 80000, price_per_bag: '', default_seeding_rate: '', treatment: '', notes: ''
+    seed_product_id: '', brand: '', hybrid: '', seeds_per_bag: 80000, price_per_bag: '', default_seeding_rate: '', treatment: '', notes: ''
   });
 
   const [customCosts, setCustomCosts] = useState(plan?.custom_costs || []);
@@ -4140,7 +4279,7 @@ function CropPlanEditor({ plan, cropYear, commodities, tankMixes, onClose, onSav
         )}
 
         {activeTab === 'seed' && (
-          <SeedEditor seed={seed} onChange={setSeed} commodityId={info.commodity_id} commodities={commodities} />
+          <SeedEditor seed={seed} onChange={setSeed} commodityId={info.commodity_id} practiceType={info.practice_type} commodities={commodities} seedProducts={seedProducts} />
         )}
 
         {activeTab === 'custom' && (
@@ -4189,24 +4328,82 @@ function CropPlanEditor({ plan, cropYear, commodities, tankMixes, onClose, onSav
 }
 
 // Seed Editor Component
-function SeedEditor({ seed, onChange, commodityId, commodities }) {
+function SeedEditor({ seed, onChange, commodityId, practiceType, commodities, seedProducts = [] }) {
   const commodity = commodities.find(c => c.id === commodityId);
   const isCorn = commodity?.name?.toLowerCase().includes('corn');
   const isBeans = commodity?.name?.toLowerCase().includes('soy') || commodity?.name?.toLowerCase().includes('bean');
+
+  // Filter products by commodity and practice type
+  const availableProducts = seedProducts.filter(p => {
+    if (commodityId && p.commodity_id !== commodityId) return false;
+    if (practiceType && p.practice_type && p.practice_type !== practiceType) return false;
+    return true;
+  });
+
+  // Handle product selection
+  const handleProductSelect = (productId) => {
+    if (!productId) {
+      // Clear to manual entry
+      onChange({ ...seed, seed_product_id: '', brand: '', hybrid: '', seeds_per_bag: isCorn ? 80000 : isBeans ? 140000 : 80000, price_per_bag: '', default_seeding_rate: '' });
+      return;
+    }
+    const product = seedProducts.find(p => p.id === productId);
+    if (product) {
+      onChange({
+        ...seed,
+        seed_product_id: productId,
+        brand: product.brand,
+        hybrid: product.hybrid,
+        seeds_per_bag: product.seeds_per_bag,
+        price_per_bag: product.price_per_bag,
+        default_seeding_rate: product.default_seeding_rate
+      });
+    }
+  };
 
   const bagsNeeded = seed.default_seeding_rate && seed.seeds_per_bag ? seed.default_seeding_rate / seed.seeds_per_bag : 0;
   const costPerAcre = bagsNeeded * (seed.price_per_bag || 0);
 
   return (
     <div className="space-y-4 max-w-2xl">
+      {/* Product Selection */}
+      {availableProducts.length > 0 && (
+        <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+          <label className="block text-sm font-medium text-green-800 mb-2">Select from Seed Products</label>
+          <select
+            value={seed.seed_product_id || ''}
+            onChange={(e) => handleProductSelect(e.target.value)}
+            className="w-full px-3 py-2 border rounded-lg bg-white"
+          >
+            <option value="">-- Manual Entry --</option>
+            {availableProducts.map(p => (
+              <option key={p.id} value={p.id}>
+                {p.brand} {p.hybrid} - {formatCurrency(p.price_per_bag)}/bag ({formatNumber(p.default_seeding_rate)} seeds/ac)
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-green-600 mt-1">
+            {availableProducts.length} product{availableProducts.length !== 1 ? 's' : ''} available for {commodity?.name || 'this crop'}
+            {practiceType && ` (${practiceType === 'IR' ? 'Irrigated' : 'Dryland'})`}
+          </p>
+        </div>
+      )}
+
+      {availableProducts.length === 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
+          <Icon name="info" size={16} className="inline mr-2" />
+          No seed products found for this crop. Add products in the Seed Products page or enter details manually below.
+        </div>
+      )}
+
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="block text-sm font-medium mb-1">Brand</label>
-          <input type="text" value={seed.brand || ''} onChange={(e) => onChange({ ...seed, brand: e.target.value })} className="w-full px-3 py-2 border rounded-lg" placeholder="Pioneer, Dekalb, Asgrow..." />
+          <input type="text" value={seed.brand || ''} onChange={(e) => onChange({ ...seed, brand: e.target.value, seed_product_id: '' })} className="w-full px-3 py-2 border rounded-lg" placeholder="Pioneer, Dekalb, Asgrow..." />
         </div>
         <div>
           <label className="block text-sm font-medium mb-1">Hybrid/Variety</label>
-          <input type="text" value={seed.hybrid || ''} onChange={(e) => onChange({ ...seed, hybrid: e.target.value })} className="w-full px-3 py-2 border rounded-lg" placeholder="P1185AM, DKC64-35..." />
+          <input type="text" value={seed.hybrid || ''} onChange={(e) => onChange({ ...seed, hybrid: e.target.value, seed_product_id: '' })} className="w-full px-3 py-2 border rounded-lg" placeholder="P1185AM, DKC64-35..." />
         </div>
       </div>
 
@@ -4665,9 +4862,9 @@ function ChemicalPassesEditor({ passes, onChange, tankMixes }) {
 }
 
 // ============================================================================
-// FIELD ASSIGNMENTS PAGE (Redesigned for Comprehensive Crop Plans)
+// FIELD APPLICATIONS PAGE (Assign Crop Plans to Fields)
 // ============================================================================
-function FieldAssignmentsPage({ cropYear, onYearChange }) {
+function FieldApplicationsPage({ cropYear, onYearChange }) {
   const [fieldCropYears, setFieldCropYears] = useState([]);
   const [assignments, setAssignments] = useState([]);
   const [cropPlans, setCropPlans] = useState([]);
@@ -4743,8 +4940,8 @@ function FieldAssignmentsPage({ cropYear, onYearChange }) {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Field Assignments</h1>
-          <p className="text-sm text-gray-500">Assign comprehensive crop plans to fields for {cropYear}</p>
+          <h1 className="text-2xl font-bold text-gray-900">Field Applications</h1>
+          <p className="text-sm text-gray-500">Apply crop plans and seed products to fields for {cropYear}</p>
         </div>
         <div className="flex gap-3">
           {unassignedFields.length > 0 && (
@@ -6026,10 +6223,10 @@ function App() {
       case 'dashboard': return <DashboardPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
       case 'overhead': return <OverheadPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
       case 'income': return <MiscIncomePage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
-      case 'inputs': return <InputsPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
+      case 'seed-products': return <SeedProductsPage />;
       case 'land-rent': return <LandRentPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
       case 'crop-plans': return <CropPlansPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
-      case 'field-assignments': return <FieldAssignmentsPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
+      case 'field-applications': return <FieldApplicationsPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
       case 'breakeven': return <BreakevenPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
       case 'analysis': return <AnalysisPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
       case 'reports': return <ReportsPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
