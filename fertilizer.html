@@ -1,0 +1,2388 @@
+<!--
+  Fertilizer App v1.0.0
+  Fertilizer applications, prepaid inventory, and COOP split report integration
+  Part of the Farm Management Suite
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fertilizer App v1.0.0</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; }
+    @media print {
+      .lg\\:w-64, .lg\\:hidden, button:not(.print-show), select, .fixed { visibility: hidden; height: 0; overflow: hidden; }
+      body { background: white !important; }
+      .lg\\:pl-64 { padding-left: 0 !important; }
+    }
+  </style>
+</head>
+<body class="bg-gray-50">
+  <div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback } = React;
+
+// ============================================================================
+// SUPABASE CLIENT
+// ============================================================================
+const SUPABASE_URL = 'https://xehapaasizntuzqzvwej.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhlaGFwYWFzaXpudHV6cXp2d2VqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjgzMTkwOTksImV4cCI6MjA4Mzg5NTA5OX0.JTtRaVRfZ4DNddTdT2BsKgCNabErgsCB0rBCHlK0mbA';
+const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+async function testConnection() {
+  try {
+    const { error } = await db.from('fert_products').select('id').limit(1);
+    return !error;
+  } catch { return false; }
+}
+
+// ============================================================================
+// ICONS
+// ============================================================================
+const ICON_FALLBACKS = {
+  'pencil': '✏️', 'trash-2': '🗑️', 'eye': '👁️', 'plus': '+', 'check': '✔', 'x': '✕',
+  'refresh-cw': '↻', 'download': '⬇️', 'file-text': '📄', 'home': '🏠', 'settings': '⚙️',
+  'layout-dashboard': '📊', 'plus-circle': '⊕', 'menu': '☰', 'chevron-down': '▼',
+  'alert-circle': '⚠️', 'search': '🔍', 'save': '💾', 'upload': '⬆️', 'link': '🔗',
+  'map-pin': '📍', 'clipboard-list': '📋', 'package': '📦', 'truck': '🚚',
+  'calculator': '🧮', 'flask-conical': '🧪', 'wheat': '🌾', 'spray-can': '💨',
+  'calendar': '📅', 'dollar-sign': '$', 'user': '👤', 'log-out': '→', 'loader': '⟳',
+  'file-up': '📤', 'filter': '🔍', 'layers': '📚', 'target': '🎯', 'bar-chart-3': '📊'
+};
+
+function Icon({ name, size = 20, className = '' }) {
+  const ref = React.useRef(null);
+  useEffect(() => {
+    if (ref.current) {
+      try {
+        if (window.lucide?.icons?.[name]) {
+          ref.current.innerHTML = lucide.icons[name].toSvg({ width: size, height: size });
+        } else {
+          ref.current.innerHTML = ICON_FALLBACKS[name] || '*';
+        }
+      } catch { ref.current.innerHTML = ICON_FALLBACKS[name] || '*'; }
+    }
+  }, [name, size]);
+  return <span ref={ref} className={`inline-flex items-center justify-center ${className}`} style={{ minWidth: size, minHeight: size }} />;
+}
+
+// ============================================================================
+// TOAST SYSTEM
+// ============================================================================
+const ToastContext = React.createContext(null);
+
+function ToastProvider({ children }) {
+  const [toasts, setToasts] = useState([]);
+  const addToast = useCallback((message, options = {}) => {
+    const id = Date.now();
+    setToasts(prev => [...prev, { id, message, type: options.type || 'info', duration: options.duration || 4000 }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), options.duration || 4000);
+    return id;
+  }, []);
+  const removeToast = useCallback((id) => setToasts(prev => prev.filter(t => t.id !== id)), []);
+  return (
+    <ToastContext.Provider value={{ addToast, removeToast }}>
+      {children}
+      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
+        {toasts.map(toast => (
+          <div key={toast.id} className={`${toast.type === 'success' ? 'bg-green-600' : toast.type === 'error' ? 'bg-red-600' : 'bg-gray-800'} text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-3 min-w-72`}>
+            <span className="flex-1">{toast.message}</span>
+            <button onClick={() => removeToast(toast.id)} className="hover:opacity-75"><Icon name="x" size={16} /></button>
+          </div>
+        ))}
+      </div>
+    </ToastContext.Provider>
+  );
+}
+
+function useToast() {
+  const context = React.useContext(ToastContext);
+  if (!context) throw new Error('useToast must be used within ToastProvider');
+  return context;
+}
+
+// ============================================================================
+// MODAL
+// ============================================================================
+function Modal({ isOpen, onClose, title, children, size = 'md' }) {
+  if (!isOpen) return null;
+  const sizeClass = size === 'lg' ? 'max-w-3xl' : size === 'xl' ? 'max-w-5xl' : 'max-w-lg';
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="fixed inset-0 bg-black bg-opacity-50" onClick={onClose} />
+      <div className={`relative bg-white rounded-lg shadow-xl w-full ${sizeClass} max-h-[90vh] overflow-y-auto`}>
+        <div className="flex items-center justify-between p-4 border-b">
+          <h3 className="text-lg font-semibold text-gray-900">{title}</h3>
+          <button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-lg"><Icon name="x" size={20} /></button>
+        </div>
+        <div className="p-4">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmModal({ isOpen, title, message, onConfirm, onCancel, variant = 'danger' }) {
+  if (!isOpen) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="fixed inset-0 bg-black bg-opacity-50" onClick={onCancel} />
+      <div className="relative bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+        <h3 className="text-lg font-semibold text-gray-900 mb-2">{title}</h3>
+        <p className="text-gray-600 mb-6">{message}</p>
+        <div className="flex justify-end gap-3">
+          <button onClick={onCancel} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
+          <button onClick={onConfirm} className={`px-4 py-2 text-white rounded-lg ${variant === 'danger' ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'}`}>Confirm</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// UTILITIES
+// ============================================================================
+const formatDate = (d) => d ? new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+const formatCurrency = (v) => v != null ? '$' + Number(v).toFixed(2) : '';
+const formatNumber = (v, dec = 0) => v != null ? Number(v).toLocaleString('en-US', { maximumFractionDigits: dec }) : '';
+
+async function generateApplicationId() {
+  const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
+  const { count } = await db.from('fert_applications').select('*', { count: 'exact', head: true }).like('application_id', `FERT-${today}%`);
+  return `FERT-${today}-${String((count || 0) + 1).padStart(3, '0')}`;
+}
+
+// ============================================================================
+// DATA SERVICES
+// ============================================================================
+
+// Products
+async function getProducts(includeInactive = false) {
+  let query = db.from('fert_products').select('*').is('deleted_at', null).order('name');
+  if (!includeInactive) query = query.eq('active', true);
+  const { data, error } = await query;
+  return error ? [] : data || [];
+}
+
+async function saveProduct(product) {
+  if (product.id) {
+    const { data, error } = await db.from('fert_products').update(product).eq('id', product.id).select().single();
+    if (error) throw error;
+    return data;
+  } else {
+    const { data, error } = await db.from('fert_products').insert([product]).select().single();
+    if (error) throw error;
+    return data;
+  }
+}
+
+async function deleteProduct(id) {
+  const { error } = await db.from('fert_products').update({ deleted_at: new Date().toISOString() }).eq('id', id);
+  if (error) throw error;
+}
+
+// Prepaid Inventory
+async function getPrepaid(cropYear) {
+  const { data, error } = await db.from('fert_prepaid').select('*, fert_products(name, form, unit)').eq('crop_year', cropYear).is('deleted_at', null).order('purchase_date', { ascending: false });
+  return error ? [] : data || [];
+}
+
+async function savePrepaid(prepaid) {
+  if (prepaid.id) {
+    const { data, error } = await db.from('fert_prepaid').update(prepaid).eq('id', prepaid.id).select().single();
+    if (error) throw error;
+    return data;
+  } else {
+    const { data, error } = await db.from('fert_prepaid').insert([{ ...prepaid, quantity_remaining: prepaid.quantity }]).select().single();
+    if (error) throw error;
+    return data;
+  }
+}
+
+async function deletePrepaid(id) {
+  const { error } = await db.from('fert_prepaid').update({ deleted_at: new Date().toISOString() }).eq('id', id);
+  if (error) throw error;
+}
+
+// Plans
+async function getPlans(includeInactive = false) {
+  let query = db.from('fert_plans').select('*, fert_plan_products(*, fert_products(name, unit)), commodities(name)').is('deleted_at', null);
+  if (!includeInactive) query = query.eq('active', true);
+  const { data, error } = await query.order('name');
+  return error ? [] : data || [];
+}
+
+async function savePlan(plan, products) {
+  if (plan.id) {
+    const { error } = await db.from('fert_plans').update({ name: plan.name, commodity_id: plan.commodity_id, description: plan.description, active: plan.active }).eq('id', plan.id);
+    if (error) throw error;
+    await db.from('fert_plan_products').delete().eq('plan_id', plan.id);
+    if (products.length > 0) {
+      const { error: prodErr } = await db.from('fert_plan_products').insert(products.map((p, i) => ({ plan_id: plan.id, product_id: p.product_id, rate: p.rate, rate_unit: p.rate_unit, timing: p.timing, sort_order: i })));
+      if (prodErr) throw prodErr;
+    }
+    return plan;
+  } else {
+    const { data, error } = await db.from('fert_plans').insert([{ name: plan.name, commodity_id: plan.commodity_id, description: plan.description, active: true }]).select().single();
+    if (error) throw error;
+    if (products.length > 0) {
+      const { error: prodErr } = await db.from('fert_plan_products').insert(products.map((p, i) => ({ plan_id: data.id, product_id: p.product_id, rate: p.rate, rate_unit: p.rate_unit, timing: p.timing, sort_order: i })));
+      if (prodErr) throw prodErr;
+    }
+    return data;
+  }
+}
+
+async function deletePlan(id) {
+  const { error } = await db.from('fert_plans').update({ deleted_at: new Date().toISOString() }).eq('id', id);
+  if (error) throw error;
+}
+
+// Applications
+async function getApplications(cropYear, fieldId = null) {
+  let query = db.from('fert_applications').select(`*, fields(name, acres, farms(name)), fert_plans(name), applicators(name), fert_application_products(*, fert_products(name, unit))`).eq('crop_year', cropYear).is('deleted_at', null).order('application_date', { ascending: false });
+  if (fieldId) query = query.eq('field_id', fieldId);
+  const { data, error } = await query;
+  return error ? [] : data || [];
+}
+
+async function saveApplication(app, products) {
+  const appId = app.application_id || await generateApplicationId();
+  const totalCost = products.reduce((sum, p) => sum + (p.total_cost || 0), 0);
+
+  if (app.id) {
+    const { error } = await db.from('fert_applications').update({ ...app, application_id: appId, total_cost: totalCost }).eq('id', app.id);
+    if (error) throw error;
+    await db.from('fert_application_products').delete().eq('application_id', app.id);
+    if (products.length > 0) {
+      const { error: prodErr } = await db.from('fert_application_products').insert(products.map(p => ({ application_id: app.id, product_id: p.product_id, rate: p.rate, rate_unit: p.rate_unit, quantity_used: p.quantity_used, unit_cost: p.unit_cost, total_cost: p.total_cost, prepaid_id: p.prepaid_id })));
+      if (prodErr) throw prodErr;
+    }
+    return app;
+  } else {
+    const { data, error } = await db.from('fert_applications').insert([{ ...app, application_id: appId, total_cost: totalCost }]).select().single();
+    if (error) throw error;
+    if (products.length > 0) {
+      const { error: prodErr } = await db.from('fert_application_products').insert(products.map(p => ({ application_id: data.id, product_id: p.product_id, rate: p.rate, rate_unit: p.rate_unit, quantity_used: p.quantity_used, unit_cost: p.unit_cost, total_cost: p.total_cost, prepaid_id: p.prepaid_id })));
+      if (prodErr) throw prodErr;
+    }
+    return data;
+  }
+}
+
+async function deleteApplication(id) {
+  const { error } = await db.from('fert_applications').update({ deleted_at: new Date().toISOString() }).eq('id', id);
+  if (error) throw error;
+}
+
+// Fields & Farms
+async function getFarms() {
+  const { data, error } = await db.from('farms').select('*').eq('active', true).order('name');
+  return error ? [] : data || [];
+}
+
+async function getFields(farmId = null) {
+  let query = db.from('fields').select('*, farms(name, id), tenant_share, landlord').eq('active', true);
+  if (farmId) query = query.eq('farm_id', farmId);
+  const { data, error } = await query.order('name');
+  return error ? [] : (data || []).map(f => ({ ...f, farm_name: f.farms?.name || 'Unknown', farm_id: f.farms?.id || f.farm_id }));
+}
+
+async function getCommodities() {
+  const { data, error } = await db.from('commodities').select('*').eq('active', true).order('sort_order');
+  return error ? [] : data || [];
+}
+
+async function getApplicators() {
+  const { data, error } = await db.from('applicators').select('*').eq('active', true).order('name');
+  return error ? [] : data || [];
+}
+
+async function getFieldCropYears(cropYear) {
+  const { data, error } = await db.from('field_crop_years').select('*, fields(name, acres, farms(name)), commodities(name)').eq('crop_year', cropYear).is('deleted_at', null);
+  return error ? [] : (data || []).map(f => ({ ...f, field_name: f.fields?.name, farm_name: f.fields?.farms?.name, commodity_name: f.commodities?.name }));
+}
+
+// Split Reports
+async function getSplitImports(cropYear) {
+  const { data, error } = await db.from('fert_split_imports').select('*').eq('crop_year', cropYear).order('import_date', { ascending: false });
+  return error ? [] : data || [];
+}
+
+async function getSplitCosts(importId) {
+  const { data, error } = await db.from('fert_split_costs').select('*, fields(name)').eq('import_id', importId);
+  return error ? [] : data || [];
+}
+
+async function saveSplitImport(importData, costs) {
+  const { data, error } = await db.from('fert_split_imports').insert([importData]).select().single();
+  if (error) throw error;
+  if (costs.length > 0) {
+    const { error: costErr } = await db.from('fert_split_costs').insert(costs.map(c => ({ ...c, import_id: data.id })));
+    if (costErr) throw costErr;
+  }
+  return data;
+}
+
+async function matchSplitCost(id, fieldId) {
+  const { error } = await db.from('fert_split_costs').update({ field_id: fieldId, matched: true }).eq('id', id);
+  if (error) throw error;
+}
+
+// ============================================================================
+// NAVIGATION
+// ============================================================================
+const navItems = [
+  { id: 'dashboard', label: 'Dashboard', icon: 'layout-dashboard' },
+  { id: 'applications', label: 'Applications', icon: 'clipboard-list' },
+  { id: 'calculator', label: 'Calculator', icon: 'flask-conical' },
+  { id: 'prepaid', label: 'Prepaid', icon: 'package' },
+  { id: 'plans', label: 'Plans', icon: 'layers' },
+  { id: 'total-needs', label: 'Total Needs', icon: 'calculator' },
+  { id: 'reports', label: 'Reports', icon: 'bar-chart-3' },
+  { id: 'settings', label: 'Settings', icon: 'settings' }
+];
+
+// App Links for Hotlinks
+const appLinks = [
+  { name: 'GrainTrack', url: 'graintrack.html', icon: 'wheat', desc: 'Marketing & Inventory' },
+  { name: 'Spray-Suite', url: 'spray-suite/apps/chemical_app_manager_v3_7_3.html', icon: 'spray-can', desc: 'Chemical Applications' },
+  { name: 'Breakeven', url: 'breakeven.html', icon: 'target', desc: 'Cost Calculator' }
+];
+
+// ============================================================================
+// DASHBOARD PAGE
+// ============================================================================
+function DashboardPage({ cropYear, onYearChange }) {
+  const [data, setData] = useState({ applications: [], prepaid: [], totalApplied: 0, totalCost: 0, prepaidRemaining: 0 });
+  const [loading, setLoading] = useState(true);
+  const currentYear = new Date().getFullYear();
+  const cropYears = [currentYear - 1, currentYear, currentYear + 1];
+
+  useEffect(() => {
+    async function load() {
+      setLoading(true);
+      const [apps, prep] = await Promise.all([getApplications(cropYear), getPrepaid(cropYear)]);
+      const totalApplied = apps.reduce((sum, a) => sum + (a.acres_applied || 0), 0);
+      const totalCost = apps.reduce((sum, a) => sum + (a.total_cost || 0), 0);
+      const prepaidRemaining = prep.reduce((sum, p) => sum + ((p.quantity_remaining || 0) * (p.price_per_unit || 0)), 0);
+      setData({ applications: apps.slice(0, 10), prepaid: prep, totalApplied, totalCost, prepaidRemaining });
+      setLoading(false);
+    }
+    load();
+  }, [cropYear]);
+
+  if (loading) return <div className="flex items-center justify-center h-64"><Icon name="loader" className="animate-spin text-green-600" size={32} /></div>;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Fertilizer Dashboard</h1>
+          <p className="text-sm text-gray-500">Season overview and recent activity</p>
+        </div>
+        <select value={cropYear} onChange={(e) => onYearChange(parseInt(e.target.value))} className="px-4 py-2 border rounded-lg">
+          {cropYears.map(y => <option key={y} value={y}>{y} Crop Year</option>)}
+        </select>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="bg-white rounded-xl shadow-sm border p-6">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="p-2 bg-green-100 rounded-lg"><Icon name="clipboard-list" size={24} className="text-green-600" /></div>
+            <span className="text-sm text-gray-500">Acres Applied</span>
+          </div>
+          <div className="text-3xl font-bold text-gray-900">{formatNumber(data.totalApplied)}</div>
+        </div>
+        <div className="bg-white rounded-xl shadow-sm border p-6">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="p-2 bg-blue-100 rounded-lg"><Icon name="dollar-sign" size={24} className="text-blue-600" /></div>
+            <span className="text-sm text-gray-500">Total Cost</span>
+          </div>
+          <div className="text-3xl font-bold text-gray-900">{formatCurrency(data.totalCost)}</div>
+        </div>
+        <div className="bg-white rounded-xl shadow-sm border p-6">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="p-2 bg-amber-100 rounded-lg"><Icon name="package" size={24} className="text-amber-600" /></div>
+            <span className="text-sm text-gray-500">Prepaid Value</span>
+          </div>
+          <div className="text-3xl font-bold text-gray-900">{formatCurrency(data.prepaidRemaining)}</div>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border">
+        <div className="p-4 border-b"><h2 className="font-semibold">Recent Applications</h2></div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left">Date</th>
+                <th className="px-4 py-3 text-left">Field</th>
+                <th className="px-4 py-3 text-right">Acres</th>
+                <th className="px-4 py-3 text-left">Plan</th>
+                <th className="px-4 py-3 text-right">Cost</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {data.applications.length === 0 ? (
+                <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-500">No applications yet</td></tr>
+              ) : data.applications.map(app => (
+                <tr key={app.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3">{formatDate(app.application_date)}</td>
+                  <td className="px-4 py-3">{app.fields?.name}</td>
+                  <td className="px-4 py-3 text-right">{formatNumber(app.acres_applied)}</td>
+                  <td className="px-4 py-3">{app.fert_plans?.name || '-'}</td>
+                  <td className="px-4 py-3 text-right">{formatCurrency(app.total_cost)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// APPLICATIONS PAGE
+// ============================================================================
+function ApplicationsPage({ cropYear, onYearChange }) {
+  const [applications, setApplications] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showModal, setShowModal] = useState(false);
+  const [editingApp, setEditingApp] = useState(null);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const { addToast } = useToast();
+  const currentYear = new Date().getFullYear();
+  const cropYears = [currentYear - 1, currentYear, currentYear + 1];
+
+  const loadData = async () => {
+    setLoading(true);
+    const data = await getApplications(cropYear);
+    setApplications(data);
+    setLoading(false);
+  };
+
+  useEffect(() => { loadData(); }, [cropYear]);
+
+  const handleDelete = async () => {
+    try {
+      await deleteApplication(deleteConfirm.id);
+      addToast('Application deleted', { type: 'success' });
+      setDeleteConfirm(null);
+      loadData();
+    } catch (e) {
+      addToast('Failed to delete: ' + e.message, { type: 'error' });
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Applications</h1>
+          <p className="text-sm text-gray-500">Track fertilizer applications</p>
+        </div>
+        <div className="flex gap-3">
+          <select value={cropYear} onChange={(e) => onYearChange(parseInt(e.target.value))} className="px-4 py-2 border rounded-lg">
+            {cropYears.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+          <button onClick={() => { setEditingApp(null); setShowModal(true); }} className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700">
+            <Icon name="plus" size={18} /> Add Application
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
+        {loading ? (
+          <div className="p-8 text-center"><Icon name="loader" className="animate-spin text-green-600 mx-auto" size={32} /></div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left">ID</th>
+                <th className="px-4 py-3 text-left">Date</th>
+                <th className="px-4 py-3 text-left">Field</th>
+                <th className="px-4 py-3 text-right">Acres</th>
+                <th className="px-4 py-3 text-left">Plan</th>
+                <th className="px-4 py-3 text-left">Products</th>
+                <th className="px-4 py-3 text-right">Cost</th>
+                <th className="px-4 py-3 text-center">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {applications.length === 0 ? (
+                <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-500">No applications found</td></tr>
+              ) : applications.map(app => (
+                <tr key={app.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3 font-mono text-xs">{app.application_id}</td>
+                  <td className="px-4 py-3">{formatDate(app.application_date)}</td>
+                  <td className="px-4 py-3">{app.fields?.name}<br/><span className="text-xs text-gray-500">{app.fields?.farms?.name}</span></td>
+                  <td className="px-4 py-3 text-right">{formatNumber(app.acres_applied)}</td>
+                  <td className="px-4 py-3">{app.fert_plans?.name || '-'}</td>
+                  <td className="px-4 py-3 text-xs">{app.fert_application_products?.map(p => p.fert_products?.name).join(', ') || '-'}</td>
+                  <td className="px-4 py-3 text-right font-medium">{formatCurrency(app.total_cost)}</td>
+                  <td className="px-4 py-3 text-center">
+                    <button onClick={() => { setEditingApp(app); setShowModal(true); }} className="p-1 hover:bg-gray-100 rounded"><Icon name="pencil" size={16} /></button>
+                    <button onClick={() => setDeleteConfirm(app)} className="p-1 hover:bg-red-100 rounded text-red-600"><Icon name="trash-2" size={16} /></button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {showModal && <ApplicationModal app={editingApp} cropYear={cropYear} onClose={() => setShowModal(false)} onSave={() => { setShowModal(false); loadData(); }} />}
+      <ConfirmModal isOpen={!!deleteConfirm} title="Delete Application" message="Are you sure you want to delete this application?" onConfirm={handleDelete} onCancel={() => setDeleteConfirm(null)} />
+    </div>
+  );
+}
+
+function ApplicationModal({ app, cropYear, onClose, onSave }) {
+  const [farms, setFarms] = useState([]);
+  const [allFields, setAllFields] = useState([]);
+  const [filteredFields, setFilteredFields] = useState([]);
+  const [selectedFarmId, setSelectedFarmId] = useState('');
+  const [plans, setPlans] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [applicators, setApplicators] = useState([]);
+  const [form, setForm] = useState({ field_id: '', application_date: new Date().toISOString().split('T')[0], applicator_id: '', plan_id: '', acres_applied: '', notes: '', crop_year: cropYear });
+  const [appProducts, setAppProducts] = useState([]);
+  const [saving, setSaving] = useState(false);
+  const { addToast } = useToast();
+
+  useEffect(() => {
+    async function load() {
+      const [fa, f, pl, pr, ap] = await Promise.all([getFarms(), getFields(), getPlans(), getProducts(), getApplicators()]);
+      setFarms(fa);
+      setAllFields(f);
+      setFilteredFields(f);
+      setPlans(pl);
+      setProducts(pr);
+      setApplicators(ap);
+      if (app) {
+        setForm({ ...app, application_date: app.application_date?.split('T')[0] || '' });
+        setAppProducts(app.fert_application_products?.map(p => ({ product_id: p.product_id, rate: p.rate, rate_unit: p.rate_unit, quantity_used: p.quantity_used, unit_cost: p.unit_cost, total_cost: p.total_cost })) || []);
+        // Set farm from existing field
+        const field = f.find(fd => fd.id === app.field_id);
+        if (field) setSelectedFarmId(field.farm_id);
+      }
+    }
+    load();
+  }, [app]);
+
+  // Filter fields when farm changes
+  useEffect(() => {
+    if (selectedFarmId) {
+      setFilteredFields(allFields.filter(f => f.farm_id === selectedFarmId));
+    } else {
+      setFilteredFields(allFields);
+    }
+  }, [selectedFarmId, allFields]);
+
+  const handleFarmChange = (farmId) => {
+    setSelectedFarmId(farmId);
+    setForm(f => ({ ...f, field_id: '' })); // Reset field when farm changes
+  };
+
+  const handlePlanChange = (planId) => {
+    setForm(f => ({ ...f, plan_id: planId }));
+    const plan = plans.find(p => p.id === planId);
+    if (plan?.fert_plan_products) {
+      setAppProducts(plan.fert_plan_products.map(pp => ({
+        product_id: pp.product_id,
+        rate: pp.rate,
+        rate_unit: pp.rate_unit,
+        quantity_used: 0,
+        unit_cost: pp.fert_products?.default_price || 0,
+        total_cost: 0
+      })));
+    }
+  };
+
+  const updateProductQty = (idx, acres) => {
+    setAppProducts(prev => prev.map((p, i) => {
+      if (i !== idx) return p;
+      const qty = p.rate * acres;
+      return { ...p, quantity_used: qty, total_cost: qty * (p.unit_cost || 0) };
+    }));
+  };
+
+  const handleAcresChange = (acres) => {
+    setForm(f => ({ ...f, acres_applied: acres }));
+    appProducts.forEach((_, idx) => updateProductQty(idx, parseFloat(acres) || 0));
+  };
+
+  const addProduct = () => setAppProducts(prev => [...prev, { product_id: '', rate: '', rate_unit: 'lb/ac', quantity_used: 0, unit_cost: 0, total_cost: 0 }]);
+
+  const removeProduct = (idx) => setAppProducts(prev => prev.filter((_, i) => i !== idx));
+
+  const handleSave = async () => {
+    if (!form.field_id || !form.application_date) {
+      addToast('Please fill required fields', { type: 'error' });
+      return;
+    }
+    setSaving(true);
+    try {
+      await saveApplication(form, appProducts);
+      addToast('Application saved', { type: 'success' });
+      onSave();
+    } catch (e) {
+      addToast('Failed to save: ' + e.message, { type: 'error' });
+    }
+    setSaving(false);
+  };
+
+  return (
+    <Modal isOpen={true} onClose={onClose} title={app ? 'Edit Application' : 'New Application'} size="lg">
+      <div className="space-y-4">
+        <div className="grid grid-cols-3 gap-4">
+          <div>
+            <label className="block text-sm font-medium mb-1">Farm</label>
+            <select value={selectedFarmId} onChange={(e) => handleFarmChange(e.target.value)} className="w-full px-3 py-2 border rounded-lg">
+              <option value="">All Farms</option>
+              {farms.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Field *</label>
+            <select value={form.field_id} onChange={(e) => setForm(f => ({ ...f, field_id: e.target.value }))} className="w-full px-3 py-2 border rounded-lg">
+              <option value="">Select Field</option>
+              {filteredFields.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Date *</label>
+            <input type="date" value={form.application_date} onChange={(e) => setForm(f => ({ ...f, application_date: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" />
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-4">
+          <div>
+            <label className="block text-sm font-medium mb-1">Applicator</label>
+            <select value={form.applicator_id || ''} onChange={(e) => setForm(f => ({ ...f, applicator_id: e.target.value || null }))} className="w-full px-3 py-2 border rounded-lg">
+              <option value="">Select</option>
+              {applicators.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Plan</label>
+            <select value={form.plan_id || ''} onChange={(e) => handlePlanChange(e.target.value)} className="w-full px-3 py-2 border rounded-lg">
+              <option value="">Select Plan</option>
+              {plans.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Acres Applied *</label>
+            <input type="number" value={form.acres_applied} onChange={(e) => handleAcresChange(e.target.value)} className="w-full px-3 py-2 border rounded-lg" />
+          </div>
+        </div>
+
+        <div className="border rounded-lg p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h4 className="font-medium">Products</h4>
+            <button onClick={addProduct} className="text-sm text-green-600 hover:underline">+ Add Product</button>
+          </div>
+          {appProducts.map((p, idx) => (
+            <div key={idx} className="grid grid-cols-6 gap-2 mb-2 items-end">
+              <div className="col-span-2">
+                <select value={p.product_id} onChange={(e) => setAppProducts(prev => prev.map((pp, i) => i === idx ? { ...pp, product_id: e.target.value } : pp))} className="w-full px-2 py-1 border rounded text-sm">
+                  <option value="">Product</option>
+                  {products.map(pr => <option key={pr.id} value={pr.id}>{pr.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <input type="number" placeholder="Rate" value={p.rate} onChange={(e) => { setAppProducts(prev => prev.map((pp, i) => i === idx ? { ...pp, rate: e.target.value } : pp)); updateProductQty(idx, parseFloat(form.acres_applied) || 0); }} className="w-full px-2 py-1 border rounded text-sm" />
+              </div>
+              <div>
+                <select value={p.rate_unit} onChange={(e) => setAppProducts(prev => prev.map((pp, i) => i === idx ? { ...pp, rate_unit: e.target.value } : pp))} className="w-full px-2 py-1 border rounded text-sm">
+                  <option value="lb/ac">lb/ac</option>
+                  <option value="gal/ac">gal/ac</option>
+                  <option value="ton/ac">ton/ac</option>
+                </select>
+              </div>
+              <div className="text-sm text-right">{formatNumber(p.quantity_used, 1)} / {formatCurrency(p.total_cost)}</div>
+              <div><button onClick={() => removeProduct(idx)} className="p-1 text-red-500 hover:bg-red-50 rounded"><Icon name="x" size={16} /></button></div>
+            </div>
+          ))}
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium mb-1">Notes</label>
+          <textarea value={form.notes || ''} onChange={(e) => setForm(f => ({ ...f, notes: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" rows={2} />
+        </div>
+
+        <div className="flex justify-end gap-3 pt-4 border-t">
+          <button onClick={onClose} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
+          <button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50">
+            {saving ? 'Saving...' : 'Save Application'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ============================================================================
+// PREPAID PAGE
+// ============================================================================
+function PrepaidPage({ cropYear, onYearChange }) {
+  const [prepaid, setPrepaid] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showModal, setShowModal] = useState(false);
+  const [editingItem, setEditingItem] = useState(null);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const { addToast } = useToast();
+  const currentYear = new Date().getFullYear();
+  const cropYears = [currentYear - 1, currentYear, currentYear + 1, currentYear + 2];
+
+  const loadData = async () => {
+    setLoading(true);
+    const data = await getPrepaid(cropYear);
+    setPrepaid(data);
+    setLoading(false);
+  };
+
+  useEffect(() => { loadData(); }, [cropYear]);
+
+  const handleDelete = async () => {
+    try {
+      await deletePrepaid(deleteConfirm.id);
+      addToast('Prepaid deleted', { type: 'success' });
+      setDeleteConfirm(null);
+      loadData();
+    } catch (e) {
+      addToast('Failed to delete: ' + e.message, { type: 'error' });
+    }
+  };
+
+  const totalValue = prepaid.reduce((sum, p) => sum + (p.quantity_remaining * p.price_per_unit), 0);
+  const totalOriginal = prepaid.reduce((sum, p) => sum + (p.quantity * p.price_per_unit), 0);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Prepaid Inventory</h1>
+          <p className="text-sm text-gray-500">Fertilizer bought ahead for {cropYear}</p>
+        </div>
+        <div className="flex gap-3">
+          <select value={cropYear} onChange={(e) => onYearChange(parseInt(e.target.value))} className="px-4 py-2 border rounded-lg">
+            {cropYears.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+          <button onClick={() => { setEditingItem(null); setShowModal(true); }} className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700">
+            <Icon name="plus" size={18} /> Add Prepaid
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div className="bg-white rounded-xl shadow-sm border p-6">
+          <div className="text-sm text-gray-500 mb-1">Remaining Value</div>
+          <div className="text-2xl font-bold text-green-600">{formatCurrency(totalValue)}</div>
+        </div>
+        <div className="bg-white rounded-xl shadow-sm border p-6">
+          <div className="text-sm text-gray-500 mb-1">Original Value</div>
+          <div className="text-2xl font-bold text-gray-900">{formatCurrency(totalOriginal)}</div>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
+        {loading ? (
+          <div className="p-8 text-center"><Icon name="loader" className="animate-spin text-green-600 mx-auto" size={32} /></div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left">Product</th>
+                <th className="px-4 py-3 text-left">Supplier</th>
+                <th className="px-4 py-3 text-right">Original Qty</th>
+                <th className="px-4 py-3 text-right">Remaining</th>
+                <th className="px-4 py-3 text-right">Price/Unit</th>
+                <th className="px-4 py-3 text-right">Value</th>
+                <th className="px-4 py-3 text-center">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {prepaid.length === 0 ? (
+                <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-500">No prepaid inventory</td></tr>
+              ) : prepaid.map(p => (
+                <tr key={p.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3 font-medium">{p.fert_products?.name}<br/><span className="text-xs text-gray-500">{p.fert_products?.form}</span></td>
+                  <td className="px-4 py-3">{p.supplier || '-'}<br/><span className="text-xs text-gray-500">{formatDate(p.purchase_date)}</span></td>
+                  <td className="px-4 py-3 text-right">{formatNumber(p.quantity)} {p.fert_products?.unit}</td>
+                  <td className="px-4 py-3 text-right">{formatNumber(p.quantity_remaining)} {p.fert_products?.unit}</td>
+                  <td className="px-4 py-3 text-right">{formatCurrency(p.price_per_unit)}</td>
+                  <td className="px-4 py-3 text-right font-medium">{formatCurrency(p.quantity_remaining * p.price_per_unit)}</td>
+                  <td className="px-4 py-3 text-center">
+                    <button onClick={() => { setEditingItem(p); setShowModal(true); }} className="p-1 hover:bg-gray-100 rounded"><Icon name="pencil" size={16} /></button>
+                    <button onClick={() => setDeleteConfirm(p)} className="p-1 hover:bg-red-100 rounded text-red-600"><Icon name="trash-2" size={16} /></button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {showModal && <PrepaidModal item={editingItem} cropYear={cropYear} onClose={() => setShowModal(false)} onSave={() => { setShowModal(false); loadData(); }} />}
+      <ConfirmModal isOpen={!!deleteConfirm} title="Delete Prepaid" message="Are you sure?" onConfirm={handleDelete} onCancel={() => setDeleteConfirm(null)} />
+    </div>
+  );
+}
+
+function PrepaidModal({ item, cropYear, onClose, onSave }) {
+  const [products, setProducts] = useState([]);
+  const [form, setForm] = useState({ product_id: '', crop_year: cropYear, quantity: '', price_per_unit: '', purchase_date: '', supplier: '', invoice_number: '', notes: '' });
+  const [saving, setSaving] = useState(false);
+  const { addToast } = useToast();
+
+  useEffect(() => {
+    getProducts().then(setProducts);
+    if (item) setForm({ ...item, purchase_date: item.purchase_date?.split('T')[0] || '' });
+  }, [item]);
+
+  const handleSave = async () => {
+    if (!form.product_id || !form.quantity || !form.price_per_unit) {
+      addToast('Please fill required fields', { type: 'error' });
+      return;
+    }
+    setSaving(true);
+    try {
+      await savePrepaid({ ...form, quantity: parseFloat(form.quantity), price_per_unit: parseFloat(form.price_per_unit) });
+      addToast('Prepaid saved', { type: 'success' });
+      onSave();
+    } catch (e) {
+      addToast('Failed to save: ' + e.message, { type: 'error' });
+    }
+    setSaving(false);
+  };
+
+  return (
+    <Modal isOpen={true} onClose={onClose} title={item ? 'Edit Prepaid' : 'Add Prepaid'}>
+      <div className="space-y-4">
+        <div>
+          <label className="block text-sm font-medium mb-1">Product *</label>
+          <select value={form.product_id} onChange={(e) => setForm(f => ({ ...f, product_id: e.target.value }))} className="w-full px-3 py-2 border rounded-lg">
+            <option value="">Select Product</option>
+            {products.map(p => <option key={p.id} value={p.id}>{p.name} ({p.unit})</option>)}
+          </select>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium mb-1">Quantity *</label>
+            <input type="number" value={form.quantity} onChange={(e) => setForm(f => ({ ...f, quantity: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Price/Unit *</label>
+            <input type="number" step="0.01" value={form.price_per_unit} onChange={(e) => setForm(f => ({ ...f, price_per_unit: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" />
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium mb-1">Purchase Date</label>
+            <input type="date" value={form.purchase_date} onChange={(e) => setForm(f => ({ ...f, purchase_date: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Supplier</label>
+            <input type="text" value={form.supplier} onChange={(e) => setForm(f => ({ ...f, supplier: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" />
+          </div>
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Invoice #</label>
+          <input type="text" value={form.invoice_number} onChange={(e) => setForm(f => ({ ...f, invoice_number: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" />
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Notes</label>
+          <textarea value={form.notes || ''} onChange={(e) => setForm(f => ({ ...f, notes: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" rows={2} />
+        </div>
+        <div className="flex justify-end gap-3 pt-4 border-t">
+          <button onClick={onClose} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
+          <button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50">{saving ? 'Saving...' : 'Save'}</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ============================================================================
+// PLANS PAGE
+// ============================================================================
+function PlansPage() {
+  const [plans, setPlans] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showModal, setShowModal] = useState(false);
+  const [editingPlan, setEditingPlan] = useState(null);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const { addToast } = useToast();
+
+  const loadData = async () => {
+    setLoading(true);
+    const data = await getPlans(true);
+    setPlans(data);
+    setLoading(false);
+  };
+
+  useEffect(() => { loadData(); }, []);
+
+  const handleDelete = async () => {
+    try {
+      await deletePlan(deleteConfirm.id);
+      addToast('Plan deleted', { type: 'success' });
+      setDeleteConfirm(null);
+      loadData();
+    } catch (e) {
+      addToast('Failed to delete: ' + e.message, { type: 'error' });
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Fertilizer Plans</h1>
+          <p className="text-sm text-gray-500">Templates for fertilizer applications</p>
+        </div>
+        <button onClick={() => { setEditingPlan(null); setShowModal(true); }} className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700">
+          <Icon name="plus" size={18} /> New Plan
+        </button>
+      </div>
+
+      <div className="grid gap-4">
+        {loading ? (
+          <div className="p-8 text-center"><Icon name="loader" className="animate-spin text-green-600 mx-auto" size={32} /></div>
+        ) : plans.length === 0 ? (
+          <div className="bg-white rounded-xl shadow-sm border p-8 text-center text-gray-500">No plans created yet</div>
+        ) : plans.map(plan => (
+          <div key={plan.id} className={`bg-white rounded-xl shadow-sm border p-4 ${!plan.active ? 'opacity-60' : ''}`}>
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="font-semibold text-lg">{plan.name}</h3>
+                <p className="text-sm text-gray-500">{plan.commodities?.name || 'Any Crop'} {plan.description && `- ${plan.description}`}</p>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => { setEditingPlan(plan); setShowModal(true); }} className="p-2 hover:bg-gray-100 rounded"><Icon name="pencil" size={18} /></button>
+                <button onClick={() => setDeleteConfirm(plan)} className="p-2 hover:bg-red-100 rounded text-red-600"><Icon name="trash-2" size={18} /></button>
+              </div>
+            </div>
+            <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2">
+              {plan.fert_plan_products?.map(pp => (
+                <div key={pp.id} className="bg-gray-50 rounded px-3 py-2 text-sm">
+                  <div className="font-medium">{pp.fert_products?.name}</div>
+                  <div className="text-gray-500">{pp.rate} {pp.rate_unit}</div>
+                  {pp.timing && <div className="text-xs text-gray-400">{pp.timing}</div>}
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {showModal && <PlanModal plan={editingPlan} onClose={() => setShowModal(false)} onSave={() => { setShowModal(false); loadData(); }} />}
+      <ConfirmModal isOpen={!!deleteConfirm} title="Delete Plan" message="Are you sure?" onConfirm={handleDelete} onCancel={() => setDeleteConfirm(null)} />
+    </div>
+  );
+}
+
+function PlanModal({ plan, onClose, onSave }) {
+  const [products, setProducts] = useState([]);
+  const [commodities, setCommodities] = useState([]);
+  const [form, setForm] = useState({ name: '', commodity_id: '', description: '', active: true });
+  const [planProducts, setPlanProducts] = useState([]);
+  const [saving, setSaving] = useState(false);
+  const { addToast } = useToast();
+
+  useEffect(() => {
+    Promise.all([getProducts(), getCommodities()]).then(([pr, co]) => {
+      setProducts(pr);
+      setCommodities(co);
+    });
+    if (plan) {
+      setForm({ name: plan.name, commodity_id: plan.commodity_id || '', description: plan.description || '', active: plan.active });
+      setPlanProducts(plan.fert_plan_products?.map(pp => ({ product_id: pp.product_id, rate: pp.rate, rate_unit: pp.rate_unit, timing: pp.timing || '' })) || []);
+    }
+  }, [plan]);
+
+  const addProduct = () => setPlanProducts(prev => [...prev, { product_id: '', rate: '', rate_unit: 'lb/ac', timing: '' }]);
+  const removeProduct = (idx) => setPlanProducts(prev => prev.filter((_, i) => i !== idx));
+
+  const handleSave = async () => {
+    if (!form.name) {
+      addToast('Please enter plan name', { type: 'error' });
+      return;
+    }
+    setSaving(true);
+    try {
+      await savePlan({ ...form, id: plan?.id }, planProducts.filter(p => p.product_id));
+      addToast('Plan saved', { type: 'success' });
+      onSave();
+    } catch (e) {
+      addToast('Failed to save: ' + e.message, { type: 'error' });
+    }
+    setSaving(false);
+  };
+
+  return (
+    <Modal isOpen={true} onClose={onClose} title={plan ? 'Edit Plan' : 'New Plan'} size="lg">
+      <div className="space-y-4">
+        <div>
+          <label className="block text-sm font-medium mb-1">Plan Name *</label>
+          <input type="text" value={form.name} onChange={(e) => setForm(f => ({ ...f, name: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" placeholder="e.g., NH3 Corn Pre-Plant" />
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium mb-1">Commodity</label>
+            <select value={form.commodity_id} onChange={(e) => setForm(f => ({ ...f, commodity_id: e.target.value || null }))} className="w-full px-3 py-2 border rounded-lg">
+              <option value="">Any Crop</option>
+              {commodities.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Description</label>
+            <input type="text" value={form.description} onChange={(e) => setForm(f => ({ ...f, description: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" />
+          </div>
+        </div>
+
+        <div className="border rounded-lg p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h4 className="font-medium">Products</h4>
+            <button onClick={addProduct} className="text-sm text-green-600 hover:underline">+ Add Product</button>
+          </div>
+          {planProducts.map((p, idx) => (
+            <div key={idx} className="grid grid-cols-5 gap-2 mb-2 items-end">
+              <div className="col-span-2">
+                <select value={p.product_id} onChange={(e) => setPlanProducts(prev => prev.map((pp, i) => i === idx ? { ...pp, product_id: e.target.value } : pp))} className="w-full px-2 py-1 border rounded text-sm">
+                  <option value="">Select Product</option>
+                  {products.map(pr => <option key={pr.id} value={pr.id}>{pr.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <input type="number" placeholder="Rate" value={p.rate} onChange={(e) => setPlanProducts(prev => prev.map((pp, i) => i === idx ? { ...pp, rate: e.target.value } : pp))} className="w-full px-2 py-1 border rounded text-sm" />
+              </div>
+              <div>
+                <select value={p.rate_unit} onChange={(e) => setPlanProducts(prev => prev.map((pp, i) => i === idx ? { ...pp, rate_unit: e.target.value } : pp))} className="w-full px-2 py-1 border rounded text-sm">
+                  <option value="lb/ac">lb/ac</option>
+                  <option value="gal/ac">gal/ac</option>
+                  <option value="ton/ac">ton/ac</option>
+                </select>
+              </div>
+              <div className="flex gap-1">
+                <input type="text" placeholder="Timing" value={p.timing} onChange={(e) => setPlanProducts(prev => prev.map((pp, i) => i === idx ? { ...pp, timing: e.target.value } : pp))} className="w-full px-2 py-1 border rounded text-sm" />
+                <button onClick={() => removeProduct(idx)} className="p-1 text-red-500 hover:bg-red-50 rounded"><Icon name="x" size={16} /></button>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex justify-end gap-3 pt-4 border-t">
+          <button onClick={onClose} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
+          <button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50">{saving ? 'Saving...' : 'Save Plan'}</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ============================================================================
+// TOTAL NEEDS PAGE
+// ============================================================================
+function TotalNeedsPage({ cropYear, onYearChange }) {
+  const [fieldCropYears, setFieldCropYears] = useState([]);
+  const [plans, setPlans] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [selectedFields, setSelectedFields] = useState({});
+  const [loading, setLoading] = useState(true);
+  const currentYear = new Date().getFullYear();
+  const cropYears = [currentYear, currentYear + 1];
+
+  useEffect(() => {
+    async function load() {
+      setLoading(true);
+      const [fcy, pl, pr] = await Promise.all([getFieldCropYears(cropYear), getPlans(), getProducts()]);
+      setFieldCropYears(fcy);
+      setPlans(pl);
+      setProducts(pr);
+      setLoading(false);
+    }
+    load();
+  }, [cropYear]);
+
+  const calculateTotals = () => {
+    const totals = {};
+    Object.entries(selectedFields).forEach(([fcyId, planId]) => {
+      if (!planId) return;
+      const fcy = fieldCropYears.find(f => f.id === fcyId);
+      const plan = plans.find(p => p.id === planId);
+      if (!fcy || !plan) return;
+      plan.fert_plan_products?.forEach(pp => {
+        const key = pp.product_id;
+        const qty = pp.rate * (fcy.planted_acres || fcy.fields?.acres || 0);
+        if (!totals[key]) totals[key] = { product_id: key, name: pp.fert_products?.name, unit: pp.rate_unit?.split('/')[0] || 'lb', quantity: 0 };
+        totals[key].quantity += qty;
+      });
+    });
+    return Object.values(totals);
+  };
+
+  const totals = calculateTotals();
+
+  const generatePDF = () => {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    doc.setFontSize(18);
+    doc.text('Fertilizer Order - Total Needs', 14, 20);
+    doc.setFontSize(12);
+    doc.text(`${cropYear} Crop Year`, 14, 28);
+    doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 35);
+
+    const tableData = totals.map(t => [t.name, formatNumber(t.quantity, 0), t.unit]);
+    doc.autoTable({
+      startY: 45,
+      head: [['Product', 'Quantity', 'Unit']],
+      body: tableData,
+      styles: { fontSize: 10 },
+      headStyles: { fillColor: [45, 80, 22] }
+    });
+
+    doc.save(`fertilizer-needs-${cropYear}.pdf`);
+  };
+
+  if (loading) return <div className="flex items-center justify-center h-64"><Icon name="loader" className="animate-spin text-green-600" size={32} /></div>;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Total Needs Calculator</h1>
+          <p className="text-sm text-gray-500">Calculate total fertilizer needed for COOP ordering</p>
+        </div>
+        <div className="flex gap-3">
+          <select value={cropYear} onChange={(e) => onYearChange(parseInt(e.target.value))} className="px-4 py-2 border rounded-lg">
+            {cropYears.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+          <button onClick={generatePDF} disabled={totals.length === 0} className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50">
+            <Icon name="download" size={18} /> Export PDF
+          </button>
+        </div>
+      </div>
+
+      <div className="grid lg:grid-cols-2 gap-6">
+        <div className="bg-white rounded-xl shadow-sm border">
+          <div className="p-4 border-b"><h2 className="font-semibold">Assign Plans to Fields</h2></div>
+          <div className="p-4 space-y-3 max-h-96 overflow-y-auto">
+            {fieldCropYears.length === 0 ? (
+              <p className="text-gray-500 text-center py-4">No fields for {cropYear}</p>
+            ) : fieldCropYears.map(fcy => (
+              <div key={fcy.id} className="flex items-center gap-3 p-2 bg-gray-50 rounded">
+                <div className="flex-1">
+                  <div className="font-medium">{fcy.field_name}</div>
+                  <div className="text-xs text-gray-500">{fcy.commodity_name} - {formatNumber(fcy.planted_acres || fcy.fields?.acres)} ac</div>
+                </div>
+                <select value={selectedFields[fcy.id] || ''} onChange={(e) => setSelectedFields(prev => ({ ...prev, [fcy.id]: e.target.value }))} className="px-2 py-1 border rounded text-sm w-40">
+                  <option value="">No Plan</option>
+                  {plans.filter(p => !p.commodity_id || p.commodity_id === fcy.commodity_id).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="bg-white rounded-xl shadow-sm border">
+          <div className="p-4 border-b"><h2 className="font-semibold">Total Product Needs</h2></div>
+          <div className="p-4">
+            {totals.length === 0 ? (
+              <p className="text-gray-500 text-center py-4">Assign plans to fields to calculate totals</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-3 py-2 text-left">Product</th>
+                    <th className="px-3 py-2 text-right">Quantity</th>
+                    <th className="px-3 py-2 text-left">Unit</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {totals.map(t => (
+                    <tr key={t.product_id}>
+                      <td className="px-3 py-2 font-medium">{t.name}</td>
+                      <td className="px-3 py-2 text-right">{formatNumber(t.quantity, 0)}</td>
+                      <td className="px-3 py-2">{t.unit}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// REPORTS PAGE
+// ============================================================================
+function ReportsPage({ cropYear, onYearChange }) {
+  const [applications, setApplications] = useState([]);
+  const [farms, setFarms] = useState([]);
+  const [fields, setFields] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState('applications'); // 'applications', 'tenant', 'landlord', 'adjustments'
+  const { addToast } = useToast();
+  const currentYear = new Date().getFullYear();
+  const cropYears = [currentYear - 1, currentYear, currentYear + 1];
+
+  // Filters
+  const [filters, setFilters] = useState({
+    dateFrom: '',
+    dateTo: '',
+    farmId: '',
+    fieldId: '',
+    productId: '',
+    landlord: '',
+    tenantShare: '' // 'tenant' (100%), 'landlord' (split), 'all'
+  });
+
+  // Adjustment percentage for reconciling estimated vs actual
+  const [adjustmentPercent, setAdjustmentPercent] = useState(0);
+  const [actualPulled, setActualPulled] = useState({});
+
+  const loadData = async () => {
+    setLoading(true);
+    const [apps, fa, f, pr] = await Promise.all([getApplications(cropYear), getFarms(), getFields(), getProducts()]);
+    setApplications(apps);
+    setFarms(fa);
+    setFields(f);
+    setProducts(pr);
+    setLoading(false);
+  };
+
+  useEffect(() => { loadData(); }, [cropYear]);
+
+  // Get unique landlords from fields
+  const landlords = [...new Set(fields.filter(f => f.landlord).map(f => f.landlord))].sort();
+
+  // Filter applications
+  const filteredApps = applications.filter(app => {
+    if (filters.dateFrom && app.application_date < filters.dateFrom) return false;
+    if (filters.dateTo && app.application_date > filters.dateTo) return false;
+    if (filters.farmId && app.fields?.farms?.id !== filters.farmId) return false;
+    if (filters.fieldId && app.field_id !== filters.fieldId) return false;
+    if (filters.productId && !app.fert_application_products?.some(p => p.product_id === filters.productId)) return false;
+    if (filters.landlord && app.fields?.landlord !== filters.landlord) return false;
+    if (filters.tenantShare === 'tenant' && app.fields?.tenant_share !== 1) return false;
+    if (filters.tenantShare === 'landlord' && app.fields?.tenant_share === 1) return false;
+    return true;
+  });
+
+  // Calculate totals
+  const totalAcres = filteredApps.reduce((sum, a) => sum + (a.acres_applied || 0), 0);
+  const totalCost = filteredApps.reduce((sum, a) => sum + (a.total_cost || 0), 0);
+
+  // Calculate estimated vs actual for adjustment
+  const calculateAdjustment = () => {
+    const estimatedByProduct = {};
+    filteredApps.forEach(app => {
+      app.fert_application_products?.forEach(p => {
+        const key = p.product_id;
+        if (!estimatedByProduct[key]) estimatedByProduct[key] = { name: p.fert_products?.name, unit: p.fert_products?.unit, estimated: 0 };
+        estimatedByProduct[key].estimated += p.quantity_used || 0;
+      });
+    });
+    return estimatedByProduct;
+  };
+
+  const estimatedTotals = calculateAdjustment();
+
+  // Auto-calculate adjustment % from actual vs estimated
+  const autoCalculateAdjustment = () => {
+    let totalEstimated = 0;
+    let totalActual = 0;
+    Object.entries(estimatedTotals).forEach(([productId, data]) => {
+      totalEstimated += data.estimated;
+      totalActual += parseFloat(actualPulled[productId]) || 0;
+    });
+    if (totalEstimated > 0 && totalActual > 0) {
+      const adj = ((totalActual - totalEstimated) / totalEstimated) * 100;
+      setAdjustmentPercent(adj.toFixed(2));
+      addToast(`Adjustment calculated: ${adj.toFixed(2)}%`, { type: 'success' });
+    }
+  };
+
+  // Group by tenant/landlord for reports
+  const groupByLandlord = () => {
+    const groups = {};
+    filteredApps.forEach(app => {
+      const landlord = app.fields?.landlord || 'Owned';
+      const tenantShare = app.fields?.tenant_share || 1;
+      if (!groups[landlord]) groups[landlord] = { apps: [], totalCost: 0, landlordCost: 0, tenantCost: 0, acres: 0 };
+      groups[landlord].apps.push(app);
+      groups[landlord].acres += app.acres_applied || 0;
+      const cost = app.total_cost || 0;
+      groups[landlord].totalCost += cost;
+      groups[landlord].landlordCost += cost * (1 - tenantShare);
+      groups[landlord].tenantCost += cost * tenantShare;
+    });
+    return groups;
+  };
+
+  const landlordGroups = groupByLandlord();
+
+  // Apply adjustment to costs
+  const adjustedCost = (cost) => {
+    const adj = parseFloat(adjustmentPercent) || 0;
+    return cost * (1 + adj / 100);
+  };
+
+  const generatePDF = () => {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    doc.setFontSize(18);
+    doc.text(`Fertilizer Report - ${cropYear}`, 14, 20);
+    doc.setFontSize(12);
+    doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 28);
+    if (adjustmentPercent != 0) doc.text(`Adjustment: ${adjustmentPercent}%`, 14, 35);
+
+    if (activeTab === 'landlord') {
+      let y = 45;
+      Object.entries(landlordGroups).forEach(([landlord, data]) => {
+        doc.setFontSize(14);
+        doc.text(landlord, 14, y);
+        y += 7;
+        doc.setFontSize(10);
+        doc.text(`Acres: ${formatNumber(data.acres)} | Total: ${formatCurrency(adjustedCost(data.totalCost))} | Landlord Share: ${formatCurrency(adjustedCost(data.landlordCost))}`, 14, y);
+        y += 10;
+      });
+    } else {
+      const tableData = filteredApps.map(a => [
+        formatDate(a.application_date),
+        a.fields?.name || '',
+        a.fields?.farms?.name || '',
+        formatNumber(a.acres_applied),
+        formatCurrency(adjustedCost(a.total_cost))
+      ]);
+      doc.autoTable({
+        startY: 45,
+        head: [['Date', 'Field', 'Farm', 'Acres', 'Cost']],
+        body: tableData,
+        styles: { fontSize: 9 },
+        headStyles: { fillColor: [45, 80, 22] }
+      });
+    }
+
+    doc.save(`fertilizer-report-${cropYear}.pdf`);
+  };
+
+  if (loading) return <div className="flex items-center justify-center h-64"><Icon name="loader" className="animate-spin text-green-600" size={32} /></div>;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Reports</h1>
+          <p className="text-sm text-gray-500">Application reports with filtering and adjustments</p>
+        </div>
+        <div className="flex gap-3">
+          <select value={cropYear} onChange={(e) => onYearChange(parseInt(e.target.value))} className="px-4 py-2 border rounded-lg">
+            {cropYears.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+          <button onClick={generatePDF} className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700">
+            <Icon name="download" size={18} /> Export PDF
+          </button>
+        </div>
+      </div>
+
+      {/* Filters */}
+      <div className="bg-white rounded-xl shadow-sm border p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <Icon name="filter" size={18} className="text-gray-500" />
+          <h3 className="font-medium">Filters</h3>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">From Date</label>
+            <input type="date" value={filters.dateFrom} onChange={(e) => setFilters(f => ({ ...f, dateFrom: e.target.value }))} className="w-full px-2 py-1.5 border rounded text-sm" />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">To Date</label>
+            <input type="date" value={filters.dateTo} onChange={(e) => setFilters(f => ({ ...f, dateTo: e.target.value }))} className="w-full px-2 py-1.5 border rounded text-sm" />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Farm</label>
+            <select value={filters.farmId} onChange={(e) => setFilters(f => ({ ...f, farmId: e.target.value, fieldId: '' }))} className="w-full px-2 py-1.5 border rounded text-sm">
+              <option value="">All Farms</option>
+              {farms.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Field</label>
+            <select value={filters.fieldId} onChange={(e) => setFilters(f => ({ ...f, fieldId: e.target.value }))} className="w-full px-2 py-1.5 border rounded text-sm">
+              <option value="">All Fields</option>
+              {fields.filter(f => !filters.farmId || f.farm_id === filters.farmId).map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Product</label>
+            <select value={filters.productId} onChange={(e) => setFilters(f => ({ ...f, productId: e.target.value }))} className="w-full px-2 py-1.5 border rounded text-sm">
+              <option value="">All Products</option>
+              {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Landlord</label>
+            <select value={filters.landlord} onChange={(e) => setFilters(f => ({ ...f, landlord: e.target.value }))} className="w-full px-2 py-1.5 border rounded text-sm">
+              <option value="">All</option>
+              {landlords.map(l => <option key={l} value={l}>{l}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Tenant/Split</label>
+            <select value={filters.tenantShare} onChange={(e) => setFilters(f => ({ ...f, tenantShare: e.target.value }))} className="w-full px-2 py-1.5 border rounded text-sm">
+              <option value="">All</option>
+              <option value="tenant">Tenant Only (100%)</option>
+              <option value="landlord">Split with Landlord</option>
+            </select>
+          </div>
+        </div>
+        <div className="mt-3 flex items-center gap-4">
+          <button onClick={() => setFilters({ dateFrom: '', dateTo: '', farmId: '', fieldId: '', productId: '', landlord: '', tenantShare: '' })} className="text-sm text-gray-500 hover:text-gray-700">Clear Filters</button>
+          <span className="text-sm text-gray-500">|</span>
+          <span className="text-sm text-gray-600">{filteredApps.length} applications, {formatNumber(totalAcres)} acres, {formatCurrency(adjustedCost(totalCost))} total</span>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex gap-2 border-b">
+        <button onClick={() => setActiveTab('applications')} className={`px-4 py-2 font-medium ${activeTab === 'applications' ? 'text-green-600 border-b-2 border-green-600' : 'text-gray-500'}`}>Applications</button>
+        <button onClick={() => setActiveTab('landlord')} className={`px-4 py-2 font-medium ${activeTab === 'landlord' ? 'text-green-600 border-b-2 border-green-600' : 'text-gray-500'}`}>By Landlord</button>
+        <button onClick={() => setActiveTab('adjustments')} className={`px-4 py-2 font-medium ${activeTab === 'adjustments' ? 'text-green-600 border-b-2 border-green-600' : 'text-gray-500'}`}>Adjustments</button>
+      </div>
+
+      {/* Applications Tab */}
+      {activeTab === 'applications' && (
+        <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left">Date</th>
+                <th className="px-4 py-3 text-left">Field</th>
+                <th className="px-4 py-3 text-left">Farm</th>
+                <th className="px-4 py-3 text-left">Landlord</th>
+                <th className="px-4 py-3 text-right">Acres</th>
+                <th className="px-4 py-3 text-left">Products</th>
+                <th className="px-4 py-3 text-right">Cost</th>
+                {adjustmentPercent != 0 && <th className="px-4 py-3 text-right">Adjusted</th>}
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {filteredApps.length === 0 ? (
+                <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-500">No applications match filters</td></tr>
+              ) : filteredApps.map(app => (
+                <tr key={app.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3">{formatDate(app.application_date)}</td>
+                  <td className="px-4 py-3">{app.fields?.name}</td>
+                  <td className="px-4 py-3 text-xs">{app.fields?.farms?.name}</td>
+                  <td className="px-4 py-3 text-xs">{app.fields?.landlord || '-'}</td>
+                  <td className="px-4 py-3 text-right">{formatNumber(app.acres_applied)}</td>
+                  <td className="px-4 py-3 text-xs">{app.fert_application_products?.map(p => p.fert_products?.name).join(', ')}</td>
+                  <td className="px-4 py-3 text-right">{formatCurrency(app.total_cost)}</td>
+                  {adjustmentPercent != 0 && <td className="px-4 py-3 text-right font-medium text-green-600">{formatCurrency(adjustedCost(app.total_cost))}</td>}
+                </tr>
+              ))}
+            </tbody>
+            {filteredApps.length > 0 && (
+              <tfoot className="bg-gray-50 font-medium">
+                <tr>
+                  <td colSpan={4} className="px-4 py-3">Totals</td>
+                  <td className="px-4 py-3 text-right">{formatNumber(totalAcres)}</td>
+                  <td className="px-4 py-3"></td>
+                  <td className="px-4 py-3 text-right">{formatCurrency(totalCost)}</td>
+                  {adjustmentPercent != 0 && <td className="px-4 py-3 text-right text-green-600">{formatCurrency(adjustedCost(totalCost))}</td>}
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
+      )}
+
+      {/* By Landlord Tab */}
+      {activeTab === 'landlord' && (
+        <div className="space-y-4">
+          {Object.entries(landlordGroups).map(([landlord, data]) => (
+            <div key={landlord} className="bg-white rounded-xl shadow-sm border">
+              <div className="p-4 border-b flex items-center justify-between">
+                <div>
+                  <h3 className="font-semibold text-lg">{landlord}</h3>
+                  <p className="text-sm text-gray-500">{data.apps.length} applications, {formatNumber(data.acres)} acres</p>
+                </div>
+                <div className="text-right">
+                  <div className="text-lg font-bold">{formatCurrency(adjustedCost(data.totalCost))}</div>
+                  <div className="text-sm text-gray-500">
+                    Tenant: {formatCurrency(adjustedCost(data.tenantCost))} | Landlord: {formatCurrency(adjustedCost(data.landlordCost))}
+                  </div>
+                </div>
+              </div>
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-2 text-left">Date</th>
+                    <th className="px-4 py-2 text-left">Field</th>
+                    <th className="px-4 py-2 text-right">Acres</th>
+                    <th className="px-4 py-2 text-right">Split %</th>
+                    <th className="px-4 py-2 text-right">Total Cost</th>
+                    <th className="px-4 py-2 text-right">Landlord Share</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {data.apps.map(app => {
+                    const tenantShare = app.fields?.tenant_share || 1;
+                    const landlordShare = 1 - tenantShare;
+                    return (
+                      <tr key={app.id} className="hover:bg-gray-50">
+                        <td className="px-4 py-2">{formatDate(app.application_date)}</td>
+                        <td className="px-4 py-2">{app.fields?.name}</td>
+                        <td className="px-4 py-2 text-right">{formatNumber(app.acres_applied)}</td>
+                        <td className="px-4 py-2 text-right">{(landlordShare * 100).toFixed(0)}%</td>
+                        <td className="px-4 py-2 text-right">{formatCurrency(adjustedCost(app.total_cost))}</td>
+                        <td className="px-4 py-2 text-right">{formatCurrency(adjustedCost(app.total_cost * landlordShare))}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Adjustments Tab */}
+      {activeTab === 'adjustments' && (
+        <div className="space-y-6">
+          <div className="bg-white rounded-xl shadow-sm border p-6">
+            <h3 className="font-semibold mb-4">Adjustment Settings</h3>
+            <p className="text-sm text-gray-600 mb-4">Apply an adjustment percentage to reconcile estimated application amounts with actual product pulled. Positive values increase costs, negative values decrease them.</p>
+            <div className="flex items-center gap-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">Adjustment %</label>
+                <div className="flex items-center gap-2">
+                  <input type="number" step="0.1" value={adjustmentPercent} onChange={(e) => setAdjustmentPercent(e.target.value)} className="w-24 px-3 py-2 border rounded-lg" />
+                  <span className="text-gray-500">%</span>
+                </div>
+              </div>
+              <div className="text-sm text-gray-500 pt-6">
+                Original: {formatCurrency(totalCost)} → Adjusted: {formatCurrency(adjustedCost(totalCost))}
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-xl shadow-sm border">
+            <div className="p-4 border-b">
+              <div className="flex items-center justify-between">
+                <h3 className="font-semibold">Estimated vs Actual by Product</h3>
+                <button onClick={autoCalculateAdjustment} className="text-sm text-green-600 hover:underline">Auto-Calculate Adjustment</button>
+              </div>
+              <p className="text-sm text-gray-500 mt-1">Enter actual product pulled to auto-calculate the adjustment percentage</p>
+            </div>
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-3 text-left">Product</th>
+                  <th className="px-4 py-3 text-right">Estimated (Recorded)</th>
+                  <th className="px-4 py-3 text-right">Actual Pulled</th>
+                  <th className="px-4 py-3 text-right">Variance</th>
+                  <th className="px-4 py-3 text-right">Variance %</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {Object.entries(estimatedTotals).map(([productId, data]) => {
+                  const actual = parseFloat(actualPulled[productId]) || 0;
+                  const variance = actual - data.estimated;
+                  const variancePct = data.estimated > 0 ? (variance / data.estimated) * 100 : 0;
+                  return (
+                    <tr key={productId} className="hover:bg-gray-50">
+                      <td className="px-4 py-3 font-medium">{data.name}</td>
+                      <td className="px-4 py-3 text-right">{formatNumber(data.estimated, 1)} {data.unit}</td>
+                      <td className="px-4 py-3 text-right">
+                        <input type="number" value={actualPulled[productId] || ''} onChange={(e) => setActualPulled(prev => ({ ...prev, [productId]: e.target.value }))}
+                          className="w-24 px-2 py-1 border rounded text-right text-sm" placeholder="0" />
+                      </td>
+                      <td className={`px-4 py-3 text-right ${variance > 0 ? 'text-red-600' : variance < 0 ? 'text-green-600' : ''}`}>
+                        {actual > 0 ? formatNumber(variance, 1) : '-'}
+                      </td>
+                      <td className={`px-4 py-3 text-right ${variancePct > 0 ? 'text-red-600' : variancePct < 0 ? 'text-green-600' : ''}`}>
+                        {actual > 0 ? `${variancePct.toFixed(1)}%` : '-'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// CALCULATOR PAGE - Blend Calculator
+// ============================================================================
+function CalculatorPage() {
+  const [products, setProducts] = useState([]);
+  const [blendType, setBlendType] = useState('liquid');
+  const [targets, setTargets] = useState({ acres: '', n: '', p: '', k: '', s: '', zn: '' });
+  const [uanType, setUanType] = useState('28');
+  const [pSource, setPSource] = useState('MAP');
+  const [usePotash, setUsePotash] = useState(false);
+  const [result, setResult] = useState(null);
+  const [loadCapacity, setLoadCapacity] = useState('');
+  const [loadResult, setLoadResult] = useState(null);
+  const [activeTab, setActiveTab] = useState('calculate');
+  const [savedBlends, setSavedBlends] = useState([]);
+  const { addToast } = useToast();
+
+  // Product analysis data (lbs per gallon for liquid, % for dry)
+  const liquidAnalysis = {
+    '1034': { n: 1.165, p: 3.961, s: 0, zn: 0, weight: 11.65, name: '10-34-0' },
+    'ats': { n: 1.325, p: 0, s: 2.870, zn: 0, weight: 11.04, name: 'ATS (12-0-0-26S)' },
+    'zn': { n: 1.04, p: 0, s: 0, zn: 1.04, weight: 10.4, name: 'Chelated Zn (10-0-0-10Zn)' },
+    'uan28': { n: 2.988, p: 0, s: 0, zn: 0, weight: 10.67, name: '28% UAN' },
+    'uan32': { n: 3.539, p: 0, s: 0, zn: 0, weight: 11.06, name: '32% UAN' }
+  };
+
+  const dryAnalysis = {
+    'MAP': { n: 0.11, p: 0.52, k: 0, s: 0, zn: 0, name: 'MAP (11-52-0)' },
+    'DAP': { n: 0.18, p: 0.46, k: 0, s: 0, zn: 0, name: 'DAP (18-46-0)' },
+    'Mesz': { n: 0.12, p: 0.40, k: 0, s: 0.10, zn: 0.01, name: 'MES-Z (12-40-0-10S-1Zn)' },
+    'Urea': { n: 0.46, p: 0, k: 0, s: 0, zn: 0, name: 'Urea (46-0-0)' },
+    'Potash': { n: 0, p: 0, k: 0.60, s: 0, zn: 0, name: 'Potash (0-0-60)' }
+  };
+
+  // Default prices
+  const [prices, setPrices] = useState({
+    '1034': 1073, 'ats': 860, 'zn': 8.00, 'uan28': 563, 'uan32': 633,
+    'MAP': 675, 'DAP': 730, 'Mesz': 750, 'Urea': 425, 'Potash': 590
+  });
+
+  useEffect(() => {
+    getProducts().then(setProducts);
+    // Load saved blends and prices from localStorage
+    const saved = localStorage.getItem('fertAppBlends');
+    if (saved) setSavedBlends(JSON.parse(saved));
+    const savedPrices = localStorage.getItem('fertAppPrices');
+    if (savedPrices) setPrices(JSON.parse(savedPrices));
+  }, []);
+
+  const calculateBlend = () => {
+    const acres = parseFloat(targets.acres) || 0;
+    const targetN = parseFloat(targets.n) || 0;
+    const targetP = parseFloat(targets.p) || 0;
+    const targetS = parseFloat(targets.s) || 0;
+    const targetZn = parseFloat(targets.zn) || 0;
+    const targetK = parseFloat(targets.k) || 0;
+
+    if (acres <= 0 || targetN <= 0) {
+      addToast('Enter acres and nitrogen target', { type: 'error' });
+      return;
+    }
+
+    let blend;
+    if (blendType === 'liquid') {
+      // LIQUID BLEND - Solve order: P (10-34-0) -> S (ATS) -> Zn -> N (UAN)
+      const gal1034PerAcre = targetP > 0 ? targetP / liquidAnalysis['1034'].p : 0;
+      const nFrom1034 = gal1034PerAcre * liquidAnalysis['1034'].n;
+
+      const galATSPerAcre = targetS > 0 ? targetS / liquidAnalysis['ats'].s : 0;
+      const nFromATS = galATSPerAcre * liquidAnalysis['ats'].n;
+
+      const galZnPerAcre = targetZn > 0 ? targetZn / liquidAnalysis['zn'].zn : 0;
+      const nFromZn = galZnPerAcre * liquidAnalysis['zn'].n;
+
+      const nRemaining = Math.max(0, targetN - nFrom1034 - nFromATS - nFromZn);
+      const uanProduct = uanType === '28' ? 'uan28' : 'uan32';
+      const galUANPerAcre = nRemaining / liquidAnalysis[uanProduct].n;
+
+      const totalGalPerAcre = gal1034PerAcre + galATSPerAcre + galZnPerAcre + galUANPerAcre;
+      const totalGallons = totalGalPerAcre * acres;
+
+      // Calculate costs
+      const tons1034 = (gal1034PerAcre * acres * liquidAnalysis['1034'].weight) / 2000;
+      const tonsATS = (galATSPerAcre * acres * liquidAnalysis['ats'].weight) / 2000;
+      const tonsUAN = (galUANPerAcre * acres * liquidAnalysis[uanProduct].weight) / 2000;
+
+      const cost1034 = tons1034 * prices['1034'];
+      const costATS = tonsATS * prices['ats'];
+      const costZn = galZnPerAcre * acres * prices['zn'];
+      const costUAN = tonsUAN * prices[uanProduct];
+      const totalCost = cost1034 + costATS + costZn + costUAN;
+
+      blend = {
+        type: 'liquid',
+        acres,
+        products: [
+          { key: '1034', name: '10-34-0', perAcre: gal1034PerAcre, total: gal1034PerAcre * acres, cost: cost1034, unit: 'gal' },
+          { key: uanProduct, name: `${uanType}% UAN`, perAcre: galUANPerAcre, total: galUANPerAcre * acres, cost: costUAN, unit: 'gal' },
+          { key: 'ats', name: 'ATS', perAcre: galATSPerAcre, total: galATSPerAcre * acres, cost: costATS, unit: 'gal' },
+          { key: 'zn', name: 'Chelated Zn', perAcre: galZnPerAcre, total: galZnPerAcre * acres, cost: costZn, unit: 'gal' }
+        ].filter(p => p.perAcre > 0.01),
+        totalPerAcre: totalGalPerAcre,
+        totalAmount: totalGallons,
+        nutrients: { target: { n: targetN, p: targetP, s: targetS, zn: targetZn }, actual: { n: nFrom1034 + nFromATS + nFromZn + (galUANPerAcre * liquidAnalysis[uanProduct].n), p: targetP, s: targetS, zn: targetZn } },
+        cost: { total: totalCost, perAcre: totalCost / acres, perUnit: totalCost / totalGallons }
+      };
+    } else {
+      // DRY BLEND - Solve order: P (MAP/DAP/Mesz) -> K (Potash) -> N (Urea)
+      const pProduct = dryAnalysis[pSource];
+      const lbsPPerAcre = targetP > 0 ? targetP / pProduct.p : 0;
+      const nFromP = lbsPPerAcre * pProduct.n;
+      const sFromP = lbsPPerAcre * pProduct.s;
+      const znFromP = lbsPPerAcre * pProduct.zn;
+
+      const lbsPotashPerAcre = usePotash && targetK > 0 ? targetK / dryAnalysis['Potash'].k : 0;
+
+      const nRemaining = Math.max(0, targetN - nFromP);
+      const lbsUreaPerAcre = nRemaining / dryAnalysis['Urea'].n;
+
+      const totalLbsPerAcre = lbsPPerAcre + lbsPotashPerAcre + lbsUreaPerAcre;
+      const totalLbs = totalLbsPerAcre * acres;
+
+      const costP = (lbsPPerAcre * acres / 2000) * prices[pSource];
+      const costPotash = (lbsPotashPerAcre * acres / 2000) * prices['Potash'];
+      const costUrea = (lbsUreaPerAcre * acres / 2000) * prices['Urea'];
+      const totalCost = costP + costPotash + costUrea;
+
+      blend = {
+        type: 'dry',
+        acres,
+        products: [
+          { key: pSource, name: dryAnalysis[pSource].name, perAcre: lbsPPerAcre, total: lbsPPerAcre * acres, cost: costP, unit: 'lbs' },
+          { key: 'Urea', name: 'Urea (46-0-0)', perAcre: lbsUreaPerAcre, total: lbsUreaPerAcre * acres, cost: costUrea, unit: 'lbs' },
+          { key: 'Potash', name: 'Potash (0-0-60)', perAcre: lbsPotashPerAcre, total: lbsPotashPerAcre * acres, cost: costPotash, unit: 'lbs' }
+        ].filter(p => p.perAcre > 0.1),
+        totalPerAcre: totalLbsPerAcre,
+        totalAmount: totalLbs,
+        totalTons: totalLbs / 2000,
+        nutrients: { target: { n: targetN, p: targetP, k: targetK, s: targetS }, actual: { n: nFromP + (lbsUreaPerAcre * dryAnalysis['Urea'].n), p: targetP, k: usePotash ? targetK : 0, s: sFromP, zn: znFromP } },
+        cost: { total: totalCost, perAcre: totalCost / acres, perUnit: totalCost / totalLbs }
+      };
+    }
+
+    setResult(blend);
+    setLoadResult(null);
+    addToast('Blend calculated', { type: 'success' });
+  };
+
+  const calculateLoad = () => {
+    if (!result) return;
+    const capacity = parseFloat(loadCapacity);
+    if (!capacity || capacity <= 0) {
+      addToast('Enter load capacity', { type: 'error' });
+      return;
+    }
+
+    const loadAcres = capacity / result.totalPerAcre;
+    const loadProducts = result.products.map(p => ({
+      ...p,
+      loadAmount: p.perAcre * loadAcres
+    }));
+    const loadCost = result.cost.perAcre * loadAcres;
+
+    setLoadResult({
+      capacity,
+      acres: loadAcres,
+      products: loadProducts,
+      cost: loadCost,
+      loadsNeeded: Math.ceil(result.acres / loadAcres)
+    });
+  };
+
+  const saveBlend = () => {
+    if (!result) return;
+    const name = prompt('Enter blend name:', `${result.type === 'liquid' ? 'Liquid' : 'Dry'} ${result.nutrients.target.n}-${result.nutrients.target.p}`);
+    if (!name) return;
+
+    const newBlend = { name, timestamp: new Date().toISOString(), ...result, targets };
+    const updated = [...savedBlends, newBlend];
+    setSavedBlends(updated);
+    localStorage.setItem('fertAppBlends', JSON.stringify(updated));
+    addToast('Blend saved', { type: 'success' });
+  };
+
+  const loadBlend = (blend) => {
+    setBlendType(blend.type);
+    setTargets(blend.targets);
+    setActiveTab('calculate');
+    addToast('Blend loaded - click Calculate', { type: 'info' });
+  };
+
+  const deleteBlend = (index) => {
+    const updated = savedBlends.filter((_, i) => i !== index);
+    setSavedBlends(updated);
+    localStorage.setItem('fertAppBlends', JSON.stringify(updated));
+  };
+
+  const savePrices = () => {
+    localStorage.setItem('fertAppPrices', JSON.stringify(prices));
+    addToast('Prices saved', { type: 'success' });
+  };
+
+  const unit = blendType === 'liquid' ? 'gal' : 'lbs';
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Blend Calculator</h1>
+          <p className="text-sm text-gray-500">Calculate fertilizer blends - solve for P first, finish with N</p>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex gap-2 border-b">
+        <button onClick={() => setActiveTab('calculate')} className={`px-4 py-2 font-medium ${activeTab === 'calculate' ? 'text-green-600 border-b-2 border-green-600' : 'text-gray-500'}`}>Calculate</button>
+        <button onClick={() => setActiveTab('saved')} className={`px-4 py-2 font-medium ${activeTab === 'saved' ? 'text-green-600 border-b-2 border-green-600' : 'text-gray-500'}`}>Saved Blends</button>
+        <button onClick={() => setActiveTab('prices')} className={`px-4 py-2 font-medium ${activeTab === 'prices' ? 'text-green-600 border-b-2 border-green-600' : 'text-gray-500'}`}>Prices</button>
+      </div>
+
+      {/* Calculate Tab */}
+      {activeTab === 'calculate' && (
+        <div className="grid lg:grid-cols-2 gap-6">
+          {/* Input Form */}
+          <div className="bg-white rounded-xl shadow-sm border p-6 space-y-4">
+            <div>
+              <label className="block text-sm font-medium mb-2">Blend Type</label>
+              <div className="flex gap-2">
+                <button onClick={() => setBlendType('liquid')} className={`flex-1 py-2 rounded-lg font-medium ${blendType === 'liquid' ? 'bg-green-600 text-white' : 'bg-gray-100 text-gray-700'}`}>Liquid</button>
+                <button onClick={() => setBlendType('dry')} className={`flex-1 py-2 rounded-lg font-medium ${blendType === 'dry' ? 'bg-green-600 text-white' : 'bg-gray-100 text-gray-700'}`}>Dry</button>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-1">Field Acres</label>
+              <input type="number" value={targets.acres} onChange={(e) => setTargets(t => ({ ...t, acres: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" placeholder="100" />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">Target N (lbs/ac)</label>
+                <input type="number" value={targets.n} onChange={(e) => setTargets(t => ({ ...t, n: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" placeholder="100" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Target P₂O₅ (lbs/ac)</label>
+                <input type="number" value={targets.p} onChange={(e) => setTargets(t => ({ ...t, p: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" placeholder="40" />
+              </div>
+            </div>
+
+            {blendType === 'dry' && (
+              <div>
+                <label className="block text-sm font-medium mb-1">Target K₂O (lbs/ac)</label>
+                <input type="number" value={targets.k} onChange={(e) => setTargets(t => ({ ...t, k: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" placeholder="0" />
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">Target S (lbs/ac)</label>
+                <input type="number" value={targets.s} onChange={(e) => setTargets(t => ({ ...t, s: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" placeholder="10" />
+              </div>
+              {blendType === 'liquid' && (
+                <div>
+                  <label className="block text-sm font-medium mb-1">Target Zn (lbs/ac)</label>
+                  <input type="number" value={targets.zn} onChange={(e) => setTargets(t => ({ ...t, zn: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" placeholder="0.5" />
+                </div>
+              )}
+            </div>
+
+            {blendType === 'liquid' ? (
+              <div>
+                <label className="block text-sm font-medium mb-2">UAN Type</label>
+                <div className="flex gap-2">
+                  <button onClick={() => setUanType('28')} className={`flex-1 py-2 rounded-lg ${uanType === '28' ? 'bg-green-600 text-white' : 'bg-gray-100'}`}>28% UAN</button>
+                  <button onClick={() => setUanType('32')} className={`flex-1 py-2 rounded-lg ${uanType === '32' ? 'bg-green-600 text-white' : 'bg-gray-100'}`}>32% UAN</button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Phosphorus Source</label>
+                  <select value={pSource} onChange={(e) => setPSource(e.target.value)} className="w-full px-3 py-2 border rounded-lg">
+                    <option value="MAP">MAP (11-52-0)</option>
+                    <option value="DAP">DAP (18-46-0)</option>
+                    <option value="Mesz">MES-Z (12-40-0-10S-1Zn)</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input type="checkbox" id="usePotash" checked={usePotash} onChange={(e) => setUsePotash(e.target.checked)} className="rounded" />
+                  <label htmlFor="usePotash" className="text-sm font-medium">Include Potash</label>
+                </div>
+              </>
+            )}
+
+            <button onClick={calculateBlend} className="w-full py-3 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700">Calculate Blend</button>
+          </div>
+
+          {/* Results */}
+          <div className="space-y-4">
+            {result && (
+              <>
+                <div className="bg-white rounded-xl shadow-sm border p-4">
+                  <h3 className="font-semibold text-green-700 mb-3">Blend Recipe (per acre)</h3>
+                  {result.products.map(p => (
+                    <div key={p.key} className="flex justify-between py-2 border-b last:border-0">
+                      <span className="font-medium">{p.name}</span>
+                      <span>{p.perAcre.toFixed(2)} {p.unit}</span>
+                    </div>
+                  ))}
+                  <div className="flex justify-between py-2 mt-2 border-t-2 font-bold">
+                    <span>Application Rate</span>
+                    <span>{result.totalPerAcre.toFixed(1)} {unit}/ac</span>
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-xl shadow-sm border p-4">
+                  <h3 className="font-semibold text-green-700 mb-3">Field Totals ({result.acres} acres)</h3>
+                  {result.products.map(p => (
+                    <div key={p.key} className="flex justify-between py-2 border-b last:border-0">
+                      <span>{p.name}</span>
+                      <span>{formatNumber(p.total, 0)} {p.unit}</span>
+                    </div>
+                  ))}
+                  <div className="flex justify-between py-2 mt-2 border-t-2 font-bold">
+                    <span>Total</span>
+                    <span>{formatNumber(result.totalAmount, 0)} {unit}{result.totalTons ? ` (${result.totalTons.toFixed(2)} tons)` : ''}</span>
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-xl shadow-sm border p-4">
+                  <h3 className="font-semibold text-green-700 mb-3">Cost</h3>
+                  <div className="flex justify-between py-2 border-b"><span>Cost per acre</span><span className="font-medium">{formatCurrency(result.cost.perAcre)}/ac</span></div>
+                  <div className="flex justify-between py-2 border-b"><span>Total field cost</span><span className="font-medium">{formatCurrency(result.cost.total)}</span></div>
+                  <div className="flex justify-between py-2"><span>Cost per {unit}</span><span className="font-medium">{formatCurrency(result.cost.perUnit)}/{unit}</span></div>
+                </div>
+
+                {/* Load Builder */}
+                <div className="bg-white rounded-xl shadow-sm border p-4">
+                  <h3 className="font-semibold text-green-700 mb-3">Load Builder</h3>
+                  <div className="flex gap-2 mb-3">
+                    <input type="number" value={loadCapacity} onChange={(e) => setLoadCapacity(e.target.value)} className="flex-1 px-3 py-2 border rounded-lg" placeholder={`Load capacity (${unit})`} />
+                    <button onClick={calculateLoad} className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700">Calculate</button>
+                  </div>
+                  {loadResult && (
+                    <div className="bg-gray-50 rounded-lg p-3 space-y-2">
+                      <div className="font-medium text-sm text-gray-600">Load covers {loadResult.acres.toFixed(1)} acres</div>
+                      {loadResult.products.map(p => (
+                        <div key={p.key} className="flex justify-between text-sm">
+                          <span>{p.name}</span>
+                          <span className="font-medium">{formatNumber(p.loadAmount, 0)} {p.unit}</span>
+                        </div>
+                      ))}
+                      <div className="flex justify-between pt-2 border-t text-sm">
+                        <span>Load cost</span><span className="font-medium">{formatCurrency(loadResult.cost)}</span>
+                      </div>
+                      <div className="text-xs text-gray-500">Loads needed for field: {loadResult.loadsNeeded}</div>
+                    </div>
+                  )}
+                </div>
+
+                <button onClick={saveBlend} className="w-full py-2 bg-gray-100 text-gray-700 rounded-lg font-medium hover:bg-gray-200">Save This Blend</button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Saved Blends Tab */}
+      {activeTab === 'saved' && (
+        <div className="bg-white rounded-xl shadow-sm border">
+          {savedBlends.length === 0 ? (
+            <div className="p-8 text-center text-gray-500">No saved blends. Calculate a blend and save it!</div>
+          ) : (
+            <div className="divide-y">
+              {savedBlends.map((blend, idx) => (
+                <div key={idx} className="p-4 flex items-center justify-between">
+                  <div>
+                    <div className="font-medium">{blend.name}</div>
+                    <div className="text-sm text-gray-500">{blend.type === 'liquid' ? 'Liquid' : 'Dry'} | {blend.totalPerAcre.toFixed(1)} {blend.type === 'liquid' ? 'gal' : 'lbs'}/ac | {formatCurrency(blend.cost.perAcre)}/ac</div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => loadBlend(blend)} className="px-3 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700">Load</button>
+                    <button onClick={() => deleteBlend(idx)} className="px-3 py-1 bg-red-100 text-red-600 rounded text-sm hover:bg-red-200">Delete</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Prices Tab */}
+      {activeTab === 'prices' && (
+        <div className="bg-white rounded-xl shadow-sm border p-6">
+          <h3 className="font-semibold mb-4">Liquid Products ($/ton except Zn)</h3>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">
+            {[['1034', '10-34-0'], ['ats', 'ATS'], ['zn', 'Chelated Zn ($/gal)'], ['uan28', '28% UAN'], ['uan32', '32% UAN']].map(([key, label]) => (
+              <div key={key}>
+                <label className="block text-sm text-gray-600 mb-1">{label}</label>
+                <input type="number" value={prices[key]} onChange={(e) => setPrices(p => ({ ...p, [key]: parseFloat(e.target.value) }))} className="w-full px-3 py-2 border rounded-lg" />
+              </div>
+            ))}
+          </div>
+          <h3 className="font-semibold mb-4">Dry Products ($/ton)</h3>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">
+            {[['MAP', 'MAP'], ['DAP', 'DAP'], ['Mesz', 'MES-Z'], ['Urea', 'Urea'], ['Potash', 'Potash']].map(([key, label]) => (
+              <div key={key}>
+                <label className="block text-sm text-gray-600 mb-1">{label}</label>
+                <input type="number" value={prices[key]} onChange={(e) => setPrices(p => ({ ...p, [key]: parseFloat(e.target.value) }))} className="w-full px-3 py-2 border rounded-lg" />
+              </div>
+            ))}
+          </div>
+          <button onClick={savePrices} className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700">Save Prices</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// SETTINGS PAGE
+// ============================================================================
+function SettingsPage({ isConnected }) {
+  const [products, setProducts] = useState([]);
+  const [showProductModal, setShowProductModal] = useState(false);
+  const [editingProduct, setEditingProduct] = useState(null);
+  const [activeTab, setActiveTab] = useState('products');
+  const { addToast } = useToast();
+
+  const loadProducts = async () => {
+    const data = await getProducts(true);
+    setProducts(data);
+  };
+
+  useEffect(() => { loadProducts(); }, []);
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
+        <p className="text-sm text-gray-500">Manage products and app configuration</p>
+      </div>
+
+      <div className="flex gap-2 border-b">
+        <button onClick={() => setActiveTab('products')} className={`px-4 py-2 font-medium ${activeTab === 'products' ? 'text-green-600 border-b-2 border-green-600' : 'text-gray-500'}`}>Products</button>
+        <button onClick={() => setActiveTab('hotlinks')} className={`px-4 py-2 font-medium ${activeTab === 'hotlinks' ? 'text-green-600 border-b-2 border-green-600' : 'text-gray-500'}`}>App Links</button>
+        <button onClick={() => setActiveTab('status')} className={`px-4 py-2 font-medium ${activeTab === 'status' ? 'text-green-600 border-b-2 border-green-600' : 'text-gray-500'}`}>Status</button>
+      </div>
+
+      {activeTab === 'products' && (
+        <div className="bg-white rounded-xl shadow-sm border">
+          <div className="p-4 border-b flex items-center justify-between">
+            <h2 className="font-semibold">Fertilizer Products</h2>
+            <button onClick={() => { setEditingProduct(null); setShowProductModal(true); }} className="flex items-center gap-2 px-3 py-1.5 bg-green-600 text-white rounded-lg text-sm hover:bg-green-700">
+              <Icon name="plus" size={16} /> Add Product
+            </button>
+          </div>
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-2 text-left">Name</th>
+                <th className="px-4 py-2 text-left">Form</th>
+                <th className="px-4 py-2 text-center">N-P-K</th>
+                <th className="px-4 py-2 text-left">Unit</th>
+                <th className="px-4 py-2 text-right">Price</th>
+                <th className="px-4 py-2 text-center">Active</th>
+                <th className="px-4 py-2 text-center">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {products.map(p => (
+                <tr key={p.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-2 font-medium">{p.name}</td>
+                  <td className="px-4 py-2">{p.form}</td>
+                  <td className="px-4 py-2 text-center text-xs">{p.n_percent}-{p.p_percent}-{p.k_percent}</td>
+                  <td className="px-4 py-2">{p.unit}</td>
+                  <td className="px-4 py-2 text-right">{formatCurrency(p.default_price)}</td>
+                  <td className="px-4 py-2 text-center">{p.active ? <span className="text-green-600">Yes</span> : <span className="text-gray-400">No</span>}</td>
+                  <td className="px-4 py-2 text-center">
+                    <button onClick={() => { setEditingProduct(p); setShowProductModal(true); }} className="p-1 hover:bg-gray-100 rounded"><Icon name="pencil" size={16} /></button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {activeTab === 'hotlinks' && (
+        <div className="bg-white rounded-xl shadow-sm border p-6">
+          <h2 className="font-semibold mb-4">Farm Management Suite</h2>
+          <div className="grid gap-4">
+            {appLinks.map(app => (
+              <a key={app.name} href={app.url} className="flex items-center gap-4 p-4 border rounded-lg hover:bg-gray-50">
+                <div className="p-2 bg-green-100 rounded-lg"><Icon name={app.icon} size={24} className="text-green-600" /></div>
+                <div>
+                  <div className="font-medium">{app.name}</div>
+                  <div className="text-sm text-gray-500">{app.desc}</div>
+                </div>
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'status' && (
+        <div className="bg-white rounded-xl shadow-sm border p-6">
+          <div className="flex items-center gap-3">
+            <div className={`w-3 h-3 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
+            <span className="font-medium">{isConnected ? 'Connected to Database' : 'Disconnected'}</span>
+          </div>
+          <p className="text-sm text-gray-500 mt-2">Fertilizer App v1.0.0</p>
+        </div>
+      )}
+
+      {showProductModal && <ProductModal product={editingProduct} onClose={() => setShowProductModal(false)} onSave={() => { setShowProductModal(false); loadProducts(); }} />}
+    </div>
+  );
+}
+
+function ProductModal({ product, onClose, onSave }) {
+  const [form, setForm] = useState({ name: '', form: 'Dry', unit: 'lb', n_percent: 0, p_percent: 0, k_percent: 0, default_price: '', active: true });
+  const [saving, setSaving] = useState(false);
+  const { addToast } = useToast();
+
+  useEffect(() => {
+    if (product) setForm(product);
+  }, [product]);
+
+  const handleSave = async () => {
+    if (!form.name) {
+      addToast('Please enter product name', { type: 'error' });
+      return;
+    }
+    setSaving(true);
+    try {
+      await saveProduct({ ...form, id: product?.id });
+      addToast('Product saved', { type: 'success' });
+      onSave();
+    } catch (e) {
+      addToast('Failed to save: ' + e.message, { type: 'error' });
+    }
+    setSaving(false);
+  };
+
+  return (
+    <Modal isOpen={true} onClose={onClose} title={product ? 'Edit Product' : 'Add Product'}>
+      <div className="space-y-4">
+        <div>
+          <label className="block text-sm font-medium mb-1">Name *</label>
+          <input type="text" value={form.name} onChange={(e) => setForm(f => ({ ...f, name: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" />
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium mb-1">Form</label>
+            <select value={form.form} onChange={(e) => setForm(f => ({ ...f, form: e.target.value }))} className="w-full px-3 py-2 border rounded-lg">
+              <option value="Dry">Dry</option>
+              <option value="Liquid">Liquid</option>
+              <option value="Anhydrous">Anhydrous</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Unit</label>
+            <select value={form.unit} onChange={(e) => setForm(f => ({ ...f, unit: e.target.value }))} className="w-full px-3 py-2 border rounded-lg">
+              <option value="lb">lb</option>
+              <option value="gal">gal</option>
+              <option value="ton">ton</option>
+            </select>
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-4">
+          <div>
+            <label className="block text-sm font-medium mb-1">N %</label>
+            <input type="number" step="0.1" value={form.n_percent} onChange={(e) => setForm(f => ({ ...f, n_percent: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">P %</label>
+            <input type="number" step="0.1" value={form.p_percent} onChange={(e) => setForm(f => ({ ...f, p_percent: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">K %</label>
+            <input type="number" step="0.1" value={form.k_percent} onChange={(e) => setForm(f => ({ ...f, k_percent: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" />
+          </div>
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Default Price</label>
+          <input type="number" step="0.01" value={form.default_price} onChange={(e) => setForm(f => ({ ...f, default_price: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" />
+        </div>
+        <div className="flex items-center gap-2">
+          <input type="checkbox" checked={form.active} onChange={(e) => setForm(f => ({ ...f, active: e.target.checked }))} className="rounded" />
+          <label className="text-sm">Active</label>
+        </div>
+        <div className="flex justify-end gap-3 pt-4 border-t">
+          <button onClick={onClose} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
+          <button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50">{saving ? 'Saving...' : 'Save'}</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ============================================================================
+// MAIN APP
+// ============================================================================
+function App() {
+  const [currentPage, setCurrentPage] = useState('dashboard');
+  const [isConnected, setIsConnected] = useState(null);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const currentYear = new Date().getFullYear();
+  const [selectedCropYear, setSelectedCropYear] = useState(currentYear);
+
+  useEffect(() => {
+    async function checkAuth() {
+      const { data: { session } } = await db.auth.getSession();
+      if (!session) {
+        window.location.href = 'login.html';
+        return;
+      }
+      setUser(session.user);
+      setAuthLoading(false);
+    }
+    checkAuth();
+    const { data: { subscription } } = db.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_OUT' || !session) window.location.href = 'login.html';
+      else setUser(session.user);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => { testConnection().then(setIsConnected); }, []);
+
+  const handleLogout = async () => {
+    await db.auth.signOut();
+    window.location.href = 'login.html';
+  };
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <Icon name="loader" className="animate-spin text-green-600" size={32} />
+      </div>
+    );
+  }
+
+  const renderPage = () => {
+    switch (currentPage) {
+      case 'dashboard': return <DashboardPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
+      case 'applications': return <ApplicationsPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
+      case 'calculator': return <CalculatorPage />;
+      case 'prepaid': return <PrepaidPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
+      case 'plans': return <PlansPage />;
+      case 'total-needs': return <TotalNeedsPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
+      case 'reports': return <ReportsPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
+      case 'settings': return <SettingsPage isConnected={isConnected} />;
+      default: return <DashboardPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      {/* Mobile header */}
+      <div className="lg:hidden bg-white border-b px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <button onClick={() => setIsSidebarOpen(true)} className="p-2 hover:bg-gray-100 rounded-lg"><Icon name="menu" size={20} /></button>
+          <div className="flex items-center gap-2">
+            <Icon name="flask-conical" size={24} className="text-green-600" />
+            <span className="font-bold text-gray-900">Fertilizer</span>
+          </div>
+        </div>
+        <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : isConnected === false ? 'bg-red-500' : 'bg-gray-300'}`} />
+      </div>
+
+      {/* Mobile sidebar overlay */}
+      {isSidebarOpen && (
+        <div className="lg:hidden fixed inset-0 z-50">
+          <div className="fixed inset-0 bg-black bg-opacity-50" onClick={() => setIsSidebarOpen(false)} />
+          <div className="fixed left-0 top-0 bottom-0 w-64 bg-white shadow-xl">
+            <div className="p-4 border-b flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Icon name="flask-conical" size={24} className="text-green-600" />
+                <span className="font-bold text-gray-900">Fertilizer</span>
+              </div>
+              <button onClick={() => setIsSidebarOpen(false)} className="p-2 hover:bg-gray-100 rounded-lg"><Icon name="x" size={20} /></button>
+            </div>
+            <nav className="p-2">
+              {navItems.map(item => (
+                <button key={item.id} onClick={() => { setCurrentPage(item.id); setIsSidebarOpen(false); }}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left mb-1 ${currentPage === item.id ? 'bg-green-100 text-green-900' : 'text-gray-600 hover:bg-gray-100'}`}>
+                  <Icon name={item.icon} size={20} />
+                  <span className="font-medium">{item.label}</span>
+                </button>
+              ))}
+            </nav>
+          </div>
+        </div>
+      )}
+
+      <div className="lg:flex">
+        {/* Desktop sidebar */}
+        <div className="hidden lg:block w-64 min-h-screen bg-white border-r">
+          <div className="p-4 border-b">
+            <div className="flex items-center gap-2">
+              <Icon name="flask-conical" size={28} className="text-green-600" />
+              <div>
+                <div className="font-bold text-gray-900">Fertilizer App</div>
+                <div className="text-xs text-gray-500">v1.0.0</div>
+              </div>
+            </div>
+          </div>
+          <nav className="p-2">
+            {navItems.map(item => (
+              <button key={item.id} onClick={() => setCurrentPage(item.id)}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left mb-1 ${currentPage === item.id ? 'bg-green-100 text-green-900' : 'text-gray-600 hover:bg-gray-100'}`}>
+                <Icon name={item.icon} size={20} />
+                <span className="font-medium">{item.label}</span>
+              </button>
+            ))}
+          </nav>
+          <div className="absolute bottom-0 left-0 w-64 p-4 border-t space-y-3">
+            {user && (
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-700 truncate">{user.email}</span>
+                <button onClick={handleLogout} className="p-2 text-gray-400 hover:text-red-500 rounded-lg" title="Sign out">
+                  <Icon name="log-out" size={18} />
+                </button>
+              </div>
+            )}
+            <div className="flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : isConnected === false ? 'bg-red-500' : 'bg-gray-300'}`} />
+              <span className="text-sm text-gray-500">{isConnected ? 'Connected' : isConnected === false ? 'Disconnected' : 'Checking...'}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Main content */}
+        <div className="flex-1 p-4 lg:p-8">{renderPage()}</div>
+      </div>
+    </div>
+  );
+}
+
+// Render the app
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <ToastProvider>
+    <App />
+  </ToastProvider>
+);
+</script>
+</body>
+</html>

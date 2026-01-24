@@ -1,6 +1,113 @@
-# GrainTrack Suite Changelog
+# Farm Management Suite Changelog
 
-## [1.9.1] - 2026-01-23
+All notable changes to the Farm Management Suite applications.
+
+---
+
+## Fertilizer App [1.0.0] - 2026-01-23
+
+### Added - Initial Release
+- **Application Logging**
+  - Farm > Field cascading selection (select farm first, then filter fields)
+  - Date, applicator, plan selection
+  - Multiple products per application with rates
+  - Total cost calculation
+
+- **Blend Calculator** (integrated from standalone fertcalc.html)
+  - Liquid blends: 10-34-0, UAN (28%/32%), ATS, Chelated Zn
+  - Dry blends: MAP, DAP, MES-Z, Urea, Potash
+  - Solve order: P first → S/Zn → finish with N
+  - Load builder for tender calculations
+  - Saved blends with localStorage
+  - Configurable product prices
+
+- **Prepaid Inventory**
+  - Track fertilizer purchased ahead
+  - Quantity remaining tracking (FIFO ready)
+  - Supplier and invoice tracking
+
+- **Fertilizer Plans**
+  - Template recipes for applications
+  - Product rates and timing
+  - Commodity-specific plans
+
+- **Total Needs Calculator**
+  - Assign plans to field/crop years
+  - Calculate total product needs
+  - PDF export for COOP ordering
+
+- **Reports**
+  - Filter by date, farm, field, product, landlord, tenant
+  - By Landlord view with cost split
+  - Adjustment % for estimated vs actual reconciliation
+  - Auto-calculate adjustment from actual product pulled
+  - PDF export
+
+### Database
+New tables (in `migrations/farm_management_suite.sql`):
+- `fert_products` - Fertilizer product catalog
+- `fert_prepaid` - Prepaid inventory lots
+- `fert_plans` - Application plan templates
+- `fert_plan_products` - Products in plans
+- `fert_applications` - Application records
+- `fert_application_products` - Products used in applications
+- `fert_split_imports` - COOP split report imports
+- `fert_split_costs` - Split report cost items
+
+---
+
+## Breakeven Calculator [1.0.0] - 2026-01-23
+
+### Added - Initial Release
+- **Cost Aggregator Architecture**
+  - Pulls fertilizer costs from Fertilizer App
+  - Pulls herbicide costs from Spray-Suite
+  - Manages overhead, seed, and land rent directly
+
+- **Overhead Expenses**
+  - Category-based organization (Equipment, Labor, Fixed, Misc)
+  - Allocation types: All acres or specific crops/practices
+  - Per-acre allocation calculations
+
+- **Seed Costs**
+  - Variety tracking per field
+  - Price per bag, seeds per bag, seeding rate
+  - Total cost calculation
+
+- **Land Rent**
+  - Cash rent tracking by field
+  - Crop year specific
+
+- **Inputs Page**
+  - Combined seed and rent management
+  - Tab-based interface
+
+- **Breakeven Analysis**
+  - Per-field breakeven calculation
+  - Per-commodity weighted average
+  - Planned vs actual cost toggle
+  - Cost breakdown by category
+
+- **Dashboard**
+  - Commodity breakeven cards
+  - Cost breakdown pie chart
+  - Planned vs actual comparison
+
+### Database
+New tables (in `migrations/farm_management_suite.sql`):
+- `be_overhead_categories` - Overhead expense categories
+- `be_overhead_expenses` - Overhead expense records
+- `be_overhead_allocations` - Allocation rules
+- `be_seed_costs` - Seed cost by field/year
+- `be_land_rent` - Land rent by field/year
+- `be_herbicide_plans` - Herbicide plan templates
+- `be_field_crop_plans` - Plan assignments to fields
+- `be_field_herbicide_passes` - Herbicide passes
+- `be_field_breakeven` - Cached breakeven calculations
+
+---
+
+## GrainTrack [1.9.1] - 2026-01-23
 
 ### Changed - Market Signal Dashboard
 

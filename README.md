@@ -1,90 +1,163 @@
-# GrainTrack Suite
+# Farm Management Suite
 
-Grain inventory management system for farm operations. Track deliveries, storage locations, contracts, and inventory movements with full audit trails.
+A comprehensive set of web applications for agricultural operations management, built for Baldwin Farms.
 
-## Features
+## Applications
 
-- **Dashboard** - Overview with Barchart futures integration (RSI, Stochastics, price data)
-- **Inventory Management** - Track grain by location, commodity, and crop year
-- **POY Import** - Import grain delivery data from elevator Proof of Yield PDFs via Claude API
-- **Transfers** - Track grain moving between parties (family swaps, etc.)
-- **Adjustments** - Record shrink, reconciliation, and other inventory adjustments
-- **Contracts** - Manage grain sales contracts
-- **Basis Management** - Track basis by location and commodity
-- **Storage Locations** - Manage on-farm and commercial storage
-- **Buyers** - Maintain buyer/elevator directory
+| App | File | Description |
+|-----|------|-------------|
+| **GrainTrack** | `graintrack.html` | Grain marketing, contracts, inventory tracking, and production management |
+| **Spray-Suite** | `spray-suite/` | Chemical application logging with FIFO inventory tracking |
+| **Fertilizer App** | `fertilizer.html` | Fertilizer applications, prepaid inventory, blend calculator, and reporting |
+| **Fertilizer Calculator** | `fertcalc.html` | Standalone public blend calculator tool |
+| **Breakeven Calculator** | `breakeven.html` | Cost aggregation and breakeven analysis per field/commodity |
+
+## Architecture
+
+All applications share a common Supabase database with interconnected tables:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        FARM MANAGEMENT SUITE                                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   ┌─────────────────┐        ┌─────────────────┐        ┌─────────────────┐ │
+│   │   GRAINTRACK    │        │  SPRAY-SUITE    │        │ FERTILIZER APP  │ │
+│   │   (Marketing)   │        │  (Chemicals)    │        │ (Fertilizer)    │ │
+│   │                 │        │                 │        │                 │ │
+│   │ • Contracts     │        │ • Applications  │        │ • Applications  │ │
+│   │ • Inventory     │        │ • FIFO Inv.     │        │ • Prepaid Inv.  │ │
+│   │ • Production    │        │ • Tank Mixes    │        │ • Plans         │ │
+│   │ • Dashboard     │        │ • Field Logger  │        │ • Calculator    │ │
+│   └────────┬────────┘        └────────┬────────┘        └────────┬────────┘ │
+│            │                          │                          │          │
+│            └──────────────────────────┴──────────────────────────┘          │
+│                                       │                                      │
+│                                       ▼                                      │
+│                          ┌─────────────────────────┐                        │
+│                          │   BREAKEVEN CALCULATOR  │                        │
+│                          │   (Cost Aggregator)     │                        │
+│                          │                         │                        │
+│                          │ • Overhead costs        │                        │
+│                          │ • Seed costs            │                        │
+│                          │ • Land rent             │                        │
+│                          │ • Fertilizer (PULLED)   │◄── From Fertilizer App │
+│                          │ • Herbicide (PULLED)    │◄── From Spray-Suite    │
+│                          └─────────────────────────┘                        │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Shared Database Tables
+
+| Table | Used By |
+|-------|---------|
+| `farms` | All apps |
+| `fields` | All apps |
+| `commodities` | GrainTrack, Fertilizer, Breakeven |
+| `applicators` | Spray-Suite, Fertilizer |
+| `field_crop_years` | GrainTrack, Fertilizer, Breakeven |
 
 ## Tech Stack
 
 - **Frontend**: React 18 (via CDN), Tailwind CSS, Lucide Icons
-- **Backend**: Supabase (PostgreSQL)
-- **Hosting**: Hostinger (static HTML)
-- **PDF Parsing**: Claude API (via PHP proxy)
+- **Backend**: Supabase (PostgreSQL + Row Level Security)
+- **PDF Generation**: jsPDF + AutoTable
+- **PDF Parsing**: Claude API (via PHP proxy) for POY import
+- **Build**: Single-file HTML apps (no build step required)
 
 ## Project Structure
 
 ```
 grain-inventory/
-├── graintrack_1_7_0.html          # Main application
-├── claude-proxy.php               # PHP proxy for Claude API
-├── config.example.php             # Template for API config
-├── CHANGELOG_1_7_0.md             # Release notes
-├── GrainTrackSuite_PlanningDoc_1_7_0.md
-├── GrainTrackSuite_ContinuationPrompt_1_7_0.md
-└── .gitignore
+├── graintrack.html          # Grain marketing app
+├── fertilizer.html          # Fertilizer management app
+├── fertcalc.html            # Standalone blend calculator (public tool)
+├── breakeven.html           # Breakeven calculator
+├── login.html               # Shared login page
+├── spray-suite/             # Chemical application suite
+│   └── apps/
+│       └── chemical_app_manager_v3_7_3.html
+├── migrations/
+│   └── farm_management_suite.sql
+├── api/
+│   └── claude-proxy.php     # PHP proxy for Claude API
+├── README.md
+├── CHANGELOG.md
+└── PLANNING.md
 ```
+
+## Features
+
+### GrainTrack
+- Contract management (cash sales, basis, HTA, futures)
+- Grain inventory by storage location
+- Production tracking by field
+- Delivery logging with POY PDF import
+- Dashboard with Barchart futures integration (RSI, Stochastics)
+- Transfers and adjustments
+
+### Spray-Suite
+- Chemical application logging with weather data
+- FIFO inventory tracking
+- Tank mix recipes
+- Container type management
+- Field-by-field cost tracking
+
+### Fertilizer App
+- Application logging with farm > field cascading selection
+- Prepaid inventory (bought-ahead tracking with FIFO)
+- Fertilizer plans (templates)
+- Blend calculator (solve for P first, finish with N)
+- Reports by landlord/tenant with adjustment %
+- Total needs calculator for COOP ordering
+
+### Breakeven Calculator
+- Overhead expense allocation by crop/practice
+- Seed cost tracking
+- Land rent management
+- Pulls actual costs from Fertilizer App & Spray-Suite
+- Per-field and per-commodity breakeven analysis
 
 ## Setup
 
 ### 1. Supabase Database
 
-Create a Supabase project and run the database migrations. Required tables:
-- `commodities`
-- `grain_locations`
-- `grain_inventory`
-- `inventory_transactions`
-- `contracts`
-- `location_basis`
-- `elevator_location_mappings`
-- `poy_imports`
-- `imported_tickets`
+Create a Supabase project and run the migration files in order:
+```sql
+-- Run in Supabase SQL Editor
+migrations/farm_management_suite.sql
+```
 
-See `CHANGELOG_1_7_0.md` for schema details.
+### 2. Configuration
 
-### 2. Hostinger Deployment
+Update the Supabase URL and anon key in each HTML file:
+```javascript
+const SUPABASE_URL = 'https://your-project.supabase.co';
+const SUPABASE_KEY = 'your-anon-key';
+```
 
-1. Upload `graintrack_1_7_0.html` as `index.html` to `/portal/grain/`
+### 3. Deployment
 
-2. Create `/portal/grain/api/` folder
+**Hostinger (current)**
+- Upload HTML files to `/portal/` directories
+- Set up `config.php` for Claude API proxy
 
-3. Upload `claude-proxy.php` to `/portal/grain/api/`
-
-4. Create `config.php` in `/portal/grain/api/` (never commit this):
-   ```php
-   <?php
-   define('ANTHROPIC_KEY', 'sk-ant-api03-YOUR-KEY-HERE');
-   ```
-
-5. Test the proxy:
-   ```bash
-   curl -X POST https://yourdomain.com/portal/grain/api/claude-proxy.php
-   # Should return: {"error":"Empty request body"}
-   ```
-
-## Configuration
-
-The application connects to Supabase using the anon (public) key embedded in the HTML. This is safe for client-side use with Row Level Security enabled.
-
-The Claude API key is kept server-side in `config.php` on Hostinger and is never exposed to the client.
+**Alternative hosting**
+- Serve the HTML files from any web server
+- Or use Supabase hosting, Netlify, Vercel, etc.
 
 ## Development
 
-1. Clone the repo
-2. Make changes to the HTML file
-3. Test locally or push to Hostinger
-4. Commit and push to GitHub
-
 ```bash
+# Clone the repo
+git clone https://github.com/baldwinfarms/grain-inventory.git
+cd grain-inventory
+
+# Make changes
+# Test locally in browser (just open the HTML file)
+
+# Commit and push
 git add .
 git commit -m "Description of changes"
 git push
@@ -92,11 +165,18 @@ git push
 
 ## Version History
 
-- **v1.7.0** - POY Import, Inventory Adjustments, Transfers
-- **v1.6.0** - Barchart Integration, Basis Management
+See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
 
-See `CHANGELOG_1_7_0.md` for detailed release notes.
+### Current Versions
+- **GrainTrack**: v1.7.0
+- **Spray-Suite**: v3.7.3
+- **Fertilizer App**: v1.0.0
+- **Breakeven Calculator**: v1.0.0
 
 ## License
 
-Private - Baldwin Ag
+Private - Baldwin Farms
+
+## Support
+
+For issues or feature requests, contact the development team.

@@ -1,0 +1,1267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Fertilizer Calculator">
+    <title>Fertilizer Calculator - Baldwin Ag</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 10px;
+            padding-bottom: env(safe-area-inset-bottom, 10px);
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            text-align: center;
+            color: white;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .header h1 {
+            font-size: 2em;
+            margin-bottom: 5px;
+        }
+        
+        .header p {
+            opacity: 0.9;
+        }
+        
+        .tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 20px;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            justify-content: center;
+        }
+        
+        .tab {
+            padding: 12px 20px;
+            background: rgba(255,255,255,0.2);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.3s;
+            -webkit-tap-highlight-color: transparent;
+            min-height: 48px;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        
+        .tab.active {
+            background: white;
+            color: #667eea;
+        }
+        
+        .content {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+        }
+        
+        .page {
+            display: none;
+        }
+        
+        .page.active {
+            display: block;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #333;
+        }
+        
+        input, select {
+            width: 100%;
+            padding: 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 16px;
+        }
+        
+        input:focus, select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .radio-group {
+            display: flex;
+            gap: 15px;
+            margin: 10px 0;
+        }
+        
+        .radio-option {
+            flex: 1;
+        }
+        
+        .radio-option input[type="radio"] {
+            display: none;
+        }
+        
+        .radio-option label {
+            display: block;
+            padding: 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .radio-option input[type="radio"]:checked + label {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+        
+        .btn {
+            width: 100%;
+            padding: 18px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 18px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s;
+            -webkit-tap-highlight-color: transparent;
+            min-height: 50px;
+            margin-top: 10px;
+        }
+        
+        .btn:active {
+            transform: scale(0.98);
+        }
+        
+        .btn-secondary {
+            background: #6c757d;
+        }
+        
+        .result-box {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        
+        .result-box h3 {
+            color: #667eea;
+            margin-bottom: 15px;
+        }
+        
+        .result-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #dee2e6;
+        }
+        
+        .result-item:last-child {
+            border-bottom: none;
+        }
+        
+        .result-label {
+            font-weight: 600;
+            color: #495057;
+        }
+        
+        .result-value {
+            color: #212529;
+            font-weight: 600;
+        }
+        
+        .green {
+            color: #28a745;
+        }
+        
+        .saved-blend {
+            background: white;
+            border: 2px solid #e0e0e0;
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        
+        .saved-blend h4 {
+            color: #667eea;
+            margin-bottom: 8px;
+        }
+        
+        .saved-blend-info {
+            font-size: 14px;
+            color: #6c757d;
+            margin-bottom: 10px;
+        }
+        
+        .saved-blend-actions {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .btn-small {
+            padding: 10px 20px;
+            font-size: 14px;
+            flex: 1;
+        }
+        
+        .price-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 15px;
+        }
+        
+        .price-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }
+        
+        .price-item label {
+            margin: 0;
+            flex: 1;
+        }
+        
+        .price-item input {
+            width: 120px;
+            padding: 10px;
+        }
+        
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 1.6em;
+            }
+            
+            .tabs {
+                gap: 5px;
+            }
+            
+            .tab {
+                padding: 10px 12px;
+                font-size: 12px;
+            }
+            
+            .content {
+                padding: 15px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>💧 Starter Fertilizer Calculator</h1>
+            <p>Baldwin Ag - Precision Nutrient Planning</p>
+        </div>
+        
+        <div class="tabs">
+            <button class="tab active" onclick="showPage('analysis')">Target Analysis</button>
+            <button class="tab" onclick="showPage('field')">Field Total</button>
+            <button class="tab" onclick="showPage('load')">Load Builder</button>
+            <button class="tab" onclick="showPage('saved')">Saved Blends</button>
+            <button class="tab" onclick="showPage('prices')">Prices</button>
+        </div>
+        
+        <div class="content">
+            <!-- Page 1: Target Analysis -->
+            <div id="page-analysis" class="page active">
+                <h2>Target Fertilizer Analysis</h2>
+                
+                <div class="form-group">
+                    <label>Blend Type</label>
+                    <div class="radio-group">
+                        <div class="radio-option">
+                            <input type="radio" id="type-liquid" name="blendType" value="liquid" checked onchange="updateBlendType()">
+                            <label for="type-liquid">Liquid</label>
+                        </div>
+                        <div class="radio-option">
+                            <input type="radio" id="type-dry" name="blendType" value="dry" onchange="updateBlendType()">
+                            <label for="type-dry">Dry</label>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label>Field Acres</label>
+                    <input type="number" id="acres" placeholder="100" step="0.1">
+                </div>
+                
+                <div class="form-group">
+                    <label>Target Nitrogen (N) - lbs/acre</label>
+                    <input type="number" id="target-n" placeholder="100" step="0.1">
+                </div>
+                
+                <div class="form-group">
+                    <label>Target Phosphorus (P2O5) - lbs/acre</label>
+                    <input type="number" id="target-p" placeholder="40" step="0.1">
+                </div>
+                
+                <div class="form-group" id="target-k-group" style="display:none;">
+                    <label>Target Potassium (K2O) - lbs/acre</label>
+                    <input type="number" id="target-k" placeholder="20" step="0.1">
+                </div>
+                
+                <div class="form-group">
+                    <label>Target Sulfur (S) - lbs/acre</label>
+                    <input type="number" id="target-s" placeholder="10" step="0.1">
+                </div>
+                
+                <div class="form-group" id="target-zn-group">
+                    <label>Target Zinc (Zn) - lbs/acre</label>
+                    <input type="number" id="target-zn" placeholder="0.5" step="0.1">
+                </div>
+                
+                <!-- Liquid Product Selection -->
+                <div id="liquid-products">
+                    <div class="form-group">
+                        <label>UAN Type</label>
+                        <div class="radio-group">
+                            <div class="radio-option">
+                                <input type="radio" id="uan-28" name="uanType" value="28" checked>
+                                <label for="uan-28">28% UAN</label>
+                            </div>
+                            <div class="radio-option">
+                                <input type="radio" id="uan-32" name="uanType" value="32">
+                                <label for="uan-32">32% UAN</label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Dry Product Selection -->
+                <div id="dry-products" style="display:none;">
+                    <div class="form-group">
+                        <label>Phosphorus Source</label>
+                        <select id="p-source">
+                            <option value="MAP">MAP (11-52-0)</option>
+                            <option value="DAP">DAP (18-46-0)</option>
+                            <option value="Mesz">Mesz (12-40-0-10S-1Zn)</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Include Potash?</label>
+                        <div class="radio-group">
+                            <div class="radio-option">
+                                <input type="radio" id="potash-yes" name="potash" value="yes">
+                                <label for="potash-yes">Yes</label>
+                            </div>
+                            <div class="radio-option">
+                                <input type="radio" id="potash-no" name="potash" value="no" checked>
+                                <label for="potash-no">No</label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <button class="btn" onclick="calculateBlend()">Calculate Blend</button>
+                <button class="btn btn-secondary" onclick="clearForm()">Clear Form</button>
+            </div>
+            
+            <!-- Page 2: Field Total -->
+            <div id="page-field" class="page">
+                <h2>Field Total Requirements</h2>
+                <div id="field-results"></div>
+                <button class="btn" onclick="goToLoadBuilder()">Build Load Request</button>
+                <button class="btn btn-secondary" onclick="saveBlend()">Save This Blend</button>
+                <button class="btn btn-secondary" onclick="showPage('analysis')">Start Over</button>
+            </div>
+            
+            <!-- Page 3: Load Builder -->
+            <div id="page-load" class="page">
+                <h2>Load Request Builder</h2>
+                
+                <div class="form-group">
+                    <label id="load-capacity-label">Load Capacity (gallons)</label>
+                    <input type="number" id="load-capacity" placeholder="3000" step="1">
+                </div>
+                
+                <button class="btn" onclick="calculateLoad()">Calculate Load</button>
+                
+                <div id="load-results"></div>
+                
+                <button class="btn btn-secondary" onclick="showPage('analysis')">New Calculation</button>
+            </div>
+            
+            <!-- Page 4: Saved Blends -->
+            <div id="page-saved" class="page">
+                <h2>Saved Blends</h2>
+                <div id="saved-blends-list"></div>
+            </div>
+            
+            <!-- Page 5: Product Prices -->
+            <div id="page-prices" class="page">
+                <h2>Product Prices</h2>
+                
+                <h3 style="color: #667eea; margin-top: 20px;">Liquid Products</h3>
+                <div class="price-grid">
+                    <div class="price-item">
+                        <label>10-34-0 ($/ton)</label>
+                        <input type="number" id="price-1034" step="1" value="1073">
+                    </div>
+                    <div class="price-item">
+                        <label>ATS (12-0-0-26S) ($/ton)</label>
+                        <input type="number" id="price-ats" step="1" value="860">
+                    </div>
+                    <div class="price-item">
+                        <label>Chelated Zn (10-0-0-10Zn) ($/gal)</label>
+                        <input type="number" id="price-zn" step="0.01" value="8.00">
+                    </div>
+                    <div class="price-item">
+                        <label>28% UAN ($/ton)</label>
+                        <input type="number" id="price-uan28" step="1" value="563">
+                    </div>
+                    <div class="price-item">
+                        <label>32% UAN ($/ton)</label>
+                        <input type="number" id="price-uan32" step="1" value="633">
+                    </div>
+                </div>
+                
+                <h3 style="color: #667eea; margin-top: 30px;">Dry Products ($/ton)</h3>
+                <div class="price-grid">
+                    <div class="price-item">
+                        <label>MAP (11-52-0)</label>
+                        <input type="number" id="price-map" step="1" value="675">
+                    </div>
+                    <div class="price-item">
+                        <label>DAP (18-46-0)</label>
+                        <input type="number" id="price-dap" step="1" value="730">
+                    </div>
+                    <div class="price-item">
+                        <label>Mesz (12-40-0-10S-1Zn)</label>
+                        <input type="number" id="price-mesz" step="1" value="750">
+                    </div>
+                    <div class="price-item">
+                        <label>Urea (46-0-0)</label>
+                        <input type="number" id="price-urea" step="1" value="425">
+                    </div>
+                    <div class="price-item">
+                        <label>Potash (0-0-60)</label>
+                        <input type="number" id="price-potash" step="1" value="590">
+                    </div>
+                </div>
+                
+                <button class="btn" onclick="savePrices()">Save Prices</button>
+                <button class="btn btn-secondary" onclick="resetPrices()">Reset to Defaults</button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Product analysis (lbs/gallon for liquid, % for dry)
+        const liquidProducts = {
+            '1034': { n: 1.165, p: 3.961, s: 0, zn: 0, weight: 11.65 },
+            'ats': { n: 1.325, p: 0, s: 2.870, zn: 0, weight: 11.04 },
+            'zn': { n: 1.04, p: 0, s: 0, zn: 1.04, weight: 10.4 },
+            'uan28': { n: 2.988, p: 0, s: 0, zn: 0, weight: 10.67 },
+            'uan32': { n: 3.539, p: 0, s: 0, zn: 0, weight: 11.06 }
+        };
+        
+        const dryProducts = {
+            'MAP': { n: 0.11, p: 0.52, k: 0, s: 0, zn: 0 },
+            'DAP': { n: 0.18, p: 0.46, k: 0, s: 0, zn: 0 },
+            'Mesz': { n: 0.12, p: 0.40, k: 0, s: 0.10, zn: 0.01 },
+            'Urea': { n: 0.46, p: 0, k: 0, s: 0, zn: 0 },
+            'Potash': { n: 0, p: 0, k: 0.60, s: 0, zn: 0 }
+        };
+        
+        let currentBlend = null;
+        let savedBlends = JSON.parse(localStorage.getItem('fertBlends') || '[]');
+        
+        // Initialize
+        loadPrices();
+        loadNutrientTargets();
+        updateSavedBlendsList();
+        
+        function loadNutrientTargets() {
+            const saved = localStorage.getItem('fertNutrients');
+            if (!saved) return;
+            
+            const nutrients = JSON.parse(saved);
+            if (nutrients.n) document.getElementById('target-n').value = nutrients.n;
+            if (nutrients.p) document.getElementById('target-p').value = nutrients.p;
+            if (nutrients.k) document.getElementById('target-k').value = nutrients.k;
+            if (nutrients.s) document.getElementById('target-s').value = nutrients.s;
+            if (nutrients.zn) document.getElementById('target-zn').value = nutrients.zn;
+        }
+        
+        function saveNutrientTargets() {
+            const nutrients = {
+                n: document.getElementById('target-n').value,
+                p: document.getElementById('target-p').value,
+                k: document.getElementById('target-k').value,
+                s: document.getElementById('target-s').value,
+                zn: document.getElementById('target-zn').value
+            };
+            localStorage.setItem('fertNutrients', JSON.stringify(nutrients));
+        }
+        
+        function clearForm() {
+            if (!confirm('Clear all target values?')) return;
+            
+            document.getElementById('acres').value = '';
+            document.getElementById('target-n').value = '';
+            document.getElementById('target-p').value = '';
+            document.getElementById('target-k').value = '';
+            document.getElementById('target-s').value = '';
+            document.getElementById('target-zn').value = '';
+            
+            localStorage.removeItem('fertNutrients');
+        }
+        
+        function goToLoadBuilder() {
+            if (!currentBlend) {
+                alert('Please calculate a blend first');
+                return;
+            }
+            
+            // Pre-fill load capacity with total field needs
+            const capacity = Math.round(currentBlend.totalAmount);
+            document.getElementById('load-capacity').value = capacity;
+            
+            // Navigate to load builder page
+            showPage('load');
+        }
+        
+        function showPage(pageName) {
+            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            
+            document.getElementById(`page-${pageName}`).classList.add('active');
+            event.target.classList.add('active');
+        }
+        
+        function updateBlendType() {
+            const isLiquid = document.getElementById('type-liquid').checked;
+            
+            document.getElementById('liquid-products').style.display = isLiquid ? 'block' : 'none';
+            document.getElementById('dry-products').style.display = isLiquid ? 'none' : 'block';
+            document.getElementById('target-zn-group').style.display = isLiquid ? 'block' : 'none';
+            document.getElementById('target-k-group').style.display = isLiquid ? 'none' : 'block';
+            document.getElementById('load-capacity-label').textContent = isLiquid ? 'Load Capacity (gallons)' : 'Load Capacity (tons)';
+        }
+        
+        function calculateBlend() {
+            const blendType = document.querySelector('input[name="blendType"]:checked').value;
+            const acres = parseFloat(document.getElementById('acres').value) || 0;
+            const targetN = parseFloat(document.getElementById('target-n').value) || 0;
+            const targetP = parseFloat(document.getElementById('target-p').value) || 0;
+            const targetS = parseFloat(document.getElementById('target-s').value) || 0;
+            
+            if (acres === 0 || targetN === 0) {
+                alert('Please enter acres and nitrogen target');
+                return;
+            }
+            
+            if (blendType === 'liquid') {
+                calculateLiquidBlend(acres, targetN, targetP, targetS);
+            } else {
+                calculateDryBlend(acres, targetN, targetP, targetS);
+            }
+            
+            // Save nutrient targets for next time
+            saveNutrientTargets();
+            
+            showPage('field');
+        }
+        
+        function calculateLiquidBlend(acres, targetN, targetP, targetS) {
+            const targetZn = parseFloat(document.getElementById('target-zn').value) || 0;
+            const uanType = document.querySelector('input[name="uanType"]:checked').value;
+            
+            // Step 1: Solve for P (10-34-0)
+            const gal1034PerAcre = targetP / liquidProducts['1034'].p;
+            const nFrom1034 = gal1034PerAcre * liquidProducts['1034'].n;
+            
+            // Step 2: Solve for S (ATS)
+            const galATSPerAcre = targetS / liquidProducts['ats'].s;
+            const nFromATS = galATSPerAcre * liquidProducts['ats'].n;
+            
+            // Step 3: Solve for Zn (Chelated Zn)
+            const galZnPerAcre = targetZn / liquidProducts['zn'].zn;
+            const nFromZn = galZnPerAcre * liquidProducts['zn'].n;
+            
+            // Step 4: Remaining N (UAN)
+            const nRemaining = targetN - nFrom1034 - nFromATS - nFromZn;
+            const uanProduct = uanType === '28' ? 'uan28' : 'uan32';
+            const galUANPerAcre = Math.max(0, nRemaining / liquidProducts[uanProduct].n);
+            
+            // Total application rate
+            const totalGalPerAcre = gal1034PerAcre + galATSPerAcre + galZnPerAcre + galUANPerAcre;
+            
+            // Total field needs
+            const total1034 = gal1034PerAcre * acres;
+            const totalATS = galATSPerAcre * acres;
+            const totalZn = galZnPerAcre * acres;
+            const totalUAN = galUANPerAcre * acres;
+            const totalGallons = totalGalPerAcre * acres;
+            
+            // Actual nutrients delivered
+            const actualN = (nFrom1034 + nFromATS + nFromZn + (galUANPerAcre * liquidProducts[uanProduct].n));
+            const actualP = targetP;
+            const actualS = targetS;
+            const actualZn = targetZn;
+            
+            // Costs
+            const prices = getPrices();
+            // Convert gallons to tons for pricing (except zinc which is priced per gallon)
+            const tons1034 = (total1034 * liquidProducts['1034'].weight) / 2000;
+            const tonsATS = (totalATS * liquidProducts['ats'].weight) / 2000;
+            const tonsUAN = (totalUAN * liquidProducts[uanProduct].weight) / 2000;
+            
+            const cost1034 = tons1034 * prices['1034'];
+            const costATS = tonsATS * prices['ats'];
+            const costZn = totalZn * prices['zn']; // Zinc priced per gallon
+            const costUAN = tonsUAN * prices[uanProduct];
+            const totalCost = cost1034 + costATS + costZn + costUAN;
+            const costPerAcre = totalCost / acres;
+            const costPerGallon = totalCost / totalGallons;
+            
+            currentBlend = {
+                type: 'liquid',
+                acres: acres,
+                products: {
+                    '1034': { perAcre: gal1034PerAcre, total: total1034, cost: cost1034 },
+                    'ats': { perAcre: galATSPerAcre, total: totalATS, cost: costATS },
+                    'zn': { perAcre: galZnPerAcre, total: totalZn, cost: costZn },
+                    'uan': { type: uanType, perAcre: galUANPerAcre, total: totalUAN, cost: costUAN }
+                },
+                totalPerAcre: totalGalPerAcre,
+                totalAmount: totalGallons,
+                nutrients: {
+                    target: { n: targetN, p: targetP, s: targetS, zn: targetZn },
+                    actual: { n: actualN, p: actualP, s: actualS, zn: actualZn }
+                },
+                cost: { total: totalCost, perAcre: costPerAcre, perUnit: costPerGallon }
+            };
+            
+            displayFieldResults();
+        }
+        
+        function calculateDryBlend(acres, targetN, targetP, targetS) {
+            const targetK = parseFloat(document.getElementById('target-k').value) || 0;
+            const pSource = document.getElementById('p-source').value;
+            const usePotash = document.querySelector('input[name="potash"]:checked').value === 'yes';
+            
+            // Step 1: Solve for P
+            const pProduct = dryProducts[pSource];
+            const lbsP_PerAcre = targetP / pProduct.p;
+            const nFromP = lbsP_PerAcre * pProduct.n;
+            const sFromP = lbsP_PerAcre * pProduct.s;
+            const znFromP = lbsP_PerAcre * pProduct.zn;
+            
+            // Step 2: Solve for K if needed
+            let lbsPotashPerAcre = 0;
+            if (usePotash && targetK > 0) {
+                lbsPotashPerAcre = targetK / dryProducts['Potash'].k;
+            }
+            
+            // Step 3: Remaining N (Urea)
+            const nRemaining = targetN - nFromP;
+            const lbsUreaPerAcre = Math.max(0, nRemaining / dryProducts['Urea'].n);
+            
+            // Total application rate
+            const totalLbsPerAcre = lbsP_PerAcre + lbsPotashPerAcre + lbsUreaPerAcre;
+            
+            // Total field needs
+            const totalP = lbsP_PerAcre * acres;
+            const totalPotash = lbsPotashPerAcre * acres;
+            const totalUrea = lbsUreaPerAcre * acres;
+            const totalLbs = totalLbsPerAcre * acres;
+            const totalTons = totalLbs / 2000;
+            
+            // Actual nutrients delivered
+            const actualN = nFromP + (lbsUreaPerAcre * dryProducts['Urea'].n);
+            const actualP = targetP;
+            const actualK = usePotash ? targetK : 0;
+            const actualS = sFromP;
+            const actualZn = znFromP;
+            
+            // Costs
+            const prices = getPrices();
+            const costP = (totalP / 2000) * prices[pSource];
+            const costPotash = (totalPotash / 2000) * prices['Potash'];
+            const costUrea = (totalUrea / 2000) * prices['Urea'];
+            const totalCost = costP + costPotash + costUrea;
+            const costPerAcre = totalCost / acres;
+            const costPerLb = totalCost / totalLbs;
+            
+            currentBlend = {
+                type: 'dry',
+                acres: acres,
+                products: {
+                    [pSource]: { perAcre: lbsP_PerAcre, total: totalP, cost: costP },
+                    'Potash': { perAcre: lbsPotashPerAcre, total: totalPotash, cost: costPotash, used: usePotash },
+                    'Urea': { perAcre: lbsUreaPerAcre, total: totalUrea, cost: costUrea }
+                },
+                totalPerAcre: totalLbsPerAcre,
+                totalAmount: totalLbs,
+                totalTons: totalTons,
+                nutrients: {
+                    target: { n: targetN, p: targetP, k: targetK, s: targetS },
+                    actual: { n: actualN, p: actualP, k: actualK, s: actualS, zn: actualZn }
+                },
+                cost: { total: totalCost, perAcre: costPerAcre, perUnit: costPerLb }
+            };
+            
+            displayFieldResults();
+        }
+        
+        function displayFieldResults() {
+            if (!currentBlend) return;
+            
+            const isLiquid = currentBlend.type === 'liquid';
+            const unit = isLiquid ? 'gal' : 'lbs';
+            
+            let html = `
+                <div class="result-box">
+                    <h3>Blend Recipe (per acre)</h3>
+            `;
+            
+            if (isLiquid) {
+                // Order: P (10-34-0), N (UAN), S (ATS), Zn - only show non-zero
+                if (currentBlend.products['1034'].perAcre > 0) {
+                    html += `
+                        <div class="result-item">
+                            <span class="result-label">10-34-0</span>
+                            <span class="result-value">${currentBlend.products['1034'].perAcre.toFixed(2)} gal</span>
+                        </div>
+                    `;
+                }
+                if (currentBlend.products['uan'].perAcre > 0) {
+                    html += `
+                        <div class="result-item">
+                            <span class="result-label">${currentBlend.products['uan'].type}% UAN</span>
+                            <span class="result-value">${currentBlend.products['uan'].perAcre.toFixed(2)} gal</span>
+                        </div>
+                    `;
+                }
+                if (currentBlend.products['ats'].perAcre > 0) {
+                    html += `
+                        <div class="result-item">
+                            <span class="result-label">ATS (12-0-0-26S)</span>
+                            <span class="result-value">${currentBlend.products['ats'].perAcre.toFixed(2)} gal</span>
+                        </div>
+                    `;
+                }
+                if (currentBlend.products['zn'].perAcre > 0) {
+                    html += `
+                        <div class="result-item">
+                            <span class="result-label">Chelated Zn</span>
+                            <span class="result-value">${currentBlend.products['zn'].perAcre.toFixed(2)} gal</span>
+                        </div>
+                    `;
+                }
+            } else {
+                Object.keys(currentBlend.products).forEach(prod => {
+                    if (prod === 'Potash' && !currentBlend.products[prod].used) return;
+                    html += `
+                        <div class="result-item">
+                            <span class="result-label">${prod}</span>
+                            <span class="result-value">${currentBlend.products[prod].perAcre.toFixed(1)} lbs</span>
+                        </div>
+                    `;
+                });
+            }
+            
+            html += `
+                    <div class="result-item" style="border-top: 2px solid #dee2e6; margin-top: 10px; padding-top: 10px;">
+                        <span class="result-label"><strong>Application Rate</strong></span>
+                        <span class="result-value"><strong>${currentBlend.totalPerAcre.toFixed(1)} ${unit}/acre</strong></span>
+                    </div>
+                </div>
+                
+                <div class="result-box">
+                    <h3>Total Field Needs (${currentBlend.acres} acres)</h3>
+            `;
+            
+            if (isLiquid) {
+                // Order: P, N, S, Zn - only show non-zero
+                if (currentBlend.products['1034'].total > 0) {
+                    html += `
+                        <div class="result-item">
+                            <span class="result-label">10-34-0</span>
+                            <span class="result-value">${currentBlend.products['1034'].total.toFixed(1)} gal</span>
+                        </div>
+                    `;
+                }
+                if (currentBlend.products['uan'].total > 0) {
+                    html += `
+                        <div class="result-item">
+                            <span class="result-label">${currentBlend.products['uan'].type}% UAN</span>
+                            <span class="result-value">${currentBlend.products['uan'].total.toFixed(1)} gal</span>
+                        </div>
+                    `;
+                }
+                if (currentBlend.products['ats'].total > 0) {
+                    html += `
+                        <div class="result-item">
+                            <span class="result-label">ATS</span>
+                            <span class="result-value">${currentBlend.products['ats'].total.toFixed(1)} gal</span>
+                        </div>
+                    `;
+                }
+                if (currentBlend.products['zn'].total > 0) {
+                    html += `
+                        <div class="result-item">
+                            <span class="result-label">Chelated Zn</span>
+                            <span class="result-value">${currentBlend.products['zn'].total.toFixed(1)} gal</span>
+                        </div>
+                    `;
+                }
+            } else {
+                Object.keys(currentBlend.products).forEach(prod => {
+                    if (prod === 'Potash' && !currentBlend.products[prod].used) return;
+                    html += `
+                        <div class="result-item">
+                            <span class="result-label">${prod}</span>
+                            <span class="result-value">${currentBlend.products[prod].total.toFixed(0)} lbs (${(currentBlend.products[prod].total/2000).toFixed(2)} tons)</span>
+                        </div>
+                    `;
+                });
+            }
+            
+            html += `
+                    <div class="result-item" style="border-top: 2px solid #dee2e6; margin-top: 10px; padding-top: 10px;">
+                        <span class="result-label"><strong>Total</strong></span>
+                        <span class="result-value"><strong>${currentBlend.totalAmount.toFixed(0)} ${unit}${isLiquid ? '' : ' (' + currentBlend.totalTons.toFixed(2) + ' tons)'}</strong></span>
+                    </div>
+                </div>
+                
+                <div class="result-box">
+                    <h3>Nutrients Delivered (per acre)</h3>
+                    <div class="result-item">
+                        <span class="result-label">Nitrogen (N)</span>
+                        <span class="result-value">${currentBlend.nutrients.target.n.toFixed(1)} → ${currentBlend.nutrients.actual.n.toFixed(1)} lbs <span class="green">✓</span></span>
+                    </div>
+                    <div class="result-item">
+                        <span class="result-label">Phosphorus (P2O5)</span>
+                        <span class="result-value">${currentBlend.nutrients.target.p.toFixed(1)} → ${currentBlend.nutrients.actual.p.toFixed(1)} lbs <span class="green">✓</span></span>
+                    </div>
+            `;
+            
+            if (isLiquid) {
+                html += `
+                    <div class="result-item">
+                        <span class="result-label">Sulfur (S)</span>
+                        <span class="result-value">${currentBlend.nutrients.target.s.toFixed(1)} → ${currentBlend.nutrients.actual.s.toFixed(1)} lbs <span class="green">✓</span></span>
+                    </div>
+                    <div class="result-item">
+                        <span class="result-label">Zinc (Zn)</span>
+                        <span class="result-value">${currentBlend.nutrients.target.zn.toFixed(2)} → ${currentBlend.nutrients.actual.zn.toFixed(2)} lbs <span class="green">✓</span></span>
+                    </div>
+                `;
+            } else {
+                if (currentBlend.nutrients.target.k > 0) {
+                    html += `
+                        <div class="result-item">
+                            <span class="result-label">Potassium (K2O)</span>
+                            <span class="result-value">${currentBlend.nutrients.target.k.toFixed(1)} → ${currentBlend.nutrients.actual.k.toFixed(1)} lbs <span class="green">✓</span></span>
+                        </div>
+                    `;
+                }
+                html += `
+                    <div class="result-item">
+                        <span class="result-label">Sulfur (S) - Bonus</span>
+                        <span class="result-value">${currentBlend.nutrients.actual.s.toFixed(1)} lbs</span>
+                    </div>
+                    <div class="result-item">
+                        <span class="result-label">Zinc (Zn) - Bonus</span>
+                        <span class="result-value">${currentBlend.nutrients.actual.zn.toFixed(2)} lbs</span>
+                    </div>
+                `;
+            }
+            
+            // Blend Analysis Section
+            const actualN = currentBlend.nutrients.actual.n;
+            const actualP = currentBlend.nutrients.actual.p;
+            const actualS = currentBlend.nutrients.actual.s;
+            const actualK = currentBlend.nutrients.actual.k || 0;
+            const actualZn = currentBlend.nutrients.actual.zn || 0;
+            
+            // Calculate total weight per acre
+            const totalWeight = isLiquid ?
+                (currentBlend.products['1034'].perAcre * liquidProducts['1034'].weight) +
+                (currentBlend.products['ats'].perAcre * liquidProducts['ats'].weight) +
+                (currentBlend.products['zn'].perAcre * liquidProducts['zn'].weight) +
+                (currentBlend.products['uan'].perAcre * liquidProducts[currentBlend.products['uan'].type === '28' ? 'uan28' : 'uan32'].weight)
+                : currentBlend.totalPerAcre;
+            
+            // Calculate blend percentages
+            const blendN = (actualN / totalWeight) * 100;
+            const blendP = (actualP / totalWeight) * 100;
+            const blendS = (actualS / totalWeight) * 100;
+            const blendK = (actualK / totalWeight) * 100;
+            const blendZn = (actualZn / totalWeight) * 100;
+            
+            // Format blend ratio
+            let blendRatio = `${blendN.toFixed(0)}-${blendP.toFixed(0)}-${blendK.toFixed(0)}`;
+            if (blendS > 0 || blendZn > 0) {
+                blendRatio += `-${blendS.toFixed(0)}S`;
+                if (blendZn >= 0.1) {
+                    blendRatio += `-${blendZn.toFixed(1)}Zn`;
+                }
+            }
+            
+            html += `
+                </div>
+                
+                <div class="result-box">
+                    <h3>Blend Analysis</h3>
+                    <div class="result-item">
+                        <span class="result-label">Application rate</span>
+                        <span class="result-value">${currentBlend.totalPerAcre.toFixed(1)} ${unit}/acre</span>
+                    </div>
+            `;
+            
+            if (isLiquid) {
+                html += `
+                    <div class="result-item">
+                        <span class="result-label">Weight per acre</span>
+                        <span class="result-value">${totalWeight.toFixed(1)} lbs</span>
+                    </div>
+                `;
+            }
+            
+            html += `
+                    <div class="result-item" style="border-top: 2px solid #dee2e6; margin-top: 10px; padding-top: 10px;">
+                        <span class="result-label"><strong>Blend Ratio</strong></span>
+                        <span class="result-value"><strong>${blendRatio}</strong></span>
+                    </div>
+                </div>
+                
+                <div class="result-box">
+                    <h3>Cost</h3>
+                    <div class="result-item">
+                        <span class="result-label">Cost per acre</span>
+                        <span class="result-value">$${currentBlend.cost.perAcre.toFixed(2)}/acre</span>
+                    </div>
+                    <div class="result-item">
+                        <span class="result-label">Total field cost</span>
+                        <span class="result-value">$${currentBlend.cost.total.toFixed(2)}</span>
+                    </div>
+                    <div class="result-item">
+                        <span class="result-label">Cost per ${unit}</span>
+                        <span class="result-value">$${currentBlend.cost.perUnit.toFixed(2)}/${unit}</span>
+                    </div>
+                </div>
+            `;
+            
+            document.getElementById('field-results').innerHTML = html;
+        }
+        
+        function calculateLoad() {
+            if (!currentBlend) {
+                alert('Please calculate a blend first');
+                return;
+            }
+            
+            const loadCapacity = parseFloat(document.getElementById('load-capacity').value);
+            if (!loadCapacity || loadCapacity <= 0) {
+                alert('Please enter load capacity');
+                return;
+            }
+            
+            const isLiquid = currentBlend.type === 'liquid';
+            const totalNeeded = currentBlend.totalAmount;
+            
+            // Load is independent of field size - calculate ratio based on load capacity
+            const loadRatio = loadCapacity / currentBlend.totalPerAcre;
+            const loadAcres = loadRatio;
+            
+            let html = '<div class="result-box"><h3>Load Request</h3>';
+            
+            if (isLiquid) {
+                // Order: P, N, S, Zn - only show non-zero
+                if (currentBlend.products['1034'].perAcre * loadAcres > 0.1) {
+                    html += `
+                        <div class="result-item">
+                            <span class="result-label">10-34-0</span>
+                            <span class="result-value">${(currentBlend.products['1034'].perAcre * loadAcres).toFixed(0)} gal</span>
+                        </div>
+                    `;
+                }
+                if (currentBlend.products['uan'].perAcre * loadAcres > 0.1) {
+                    html += `
+                        <div class="result-item">
+                            <span class="result-label">${currentBlend.products['uan'].type}% UAN</span>
+                            <span class="result-value">${(currentBlend.products['uan'].perAcre * loadAcres).toFixed(0)} gal</span>
+                        </div>
+                    `;
+                }
+                if (currentBlend.products['ats'].perAcre * loadAcres > 0.1) {
+                    html += `
+                        <div class="result-item">
+                            <span class="result-label">ATS</span>
+                            <span class="result-value">${(currentBlend.products['ats'].perAcre * loadAcres).toFixed(0)} gal</span>
+                        </div>
+                    `;
+                }
+                if (currentBlend.products['zn'].perAcre * loadAcres > 0.1) {
+                    html += `
+                        <div class="result-item">
+                            <span class="result-label">Chelated Zn</span>
+                            <span class="result-value">${(currentBlend.products['zn'].perAcre * loadAcres).toFixed(0)} gal</span>
+                        </div>
+                    `;
+                }
+            } else {
+                Object.keys(currentBlend.products).forEach(prod => {
+                    if (prod === 'Potash' && !currentBlend.products[prod].used) return;
+                    const lbs = currentBlend.products[prod].perAcre * loadAcres;
+                    html += `
+                        <div class="result-item">
+                            <span class="result-label">${prod}</span>
+                            <span class="result-value">${lbs.toFixed(0)} lbs (${(lbs/2000).toFixed(2)} tons)</span>
+                        </div>
+                    `;
+                });
+            }
+            
+            const loadCost = currentBlend.cost.perAcre * loadAcres;
+            
+            html += `
+                <div class="result-item" style="border-top: 2px solid #dee2e6; margin-top: 10px; padding-top: 10px;">
+                    <span class="result-label"><strong>Total Load</strong></span>
+                    <span class="result-value"><strong>${loadCapacity.toFixed(0)} ${isLiquid ? 'gal' : 'lbs'}${isLiquid ? '' : ' (' + (loadCapacity/2000).toFixed(2) + ' tons)'}</strong></span>
+                </div>
+                <div class="result-item">
+                    <span class="result-label">This load covers</span>
+                    <span class="result-value">${loadAcres.toFixed(1)} acres</span>
+                </div>
+                <div class="result-item">
+                    <span class="result-label">Load cost</span>
+                    <span class="result-value">$${loadCost.toFixed(2)}</span>
+                </div>
+            `;
+            
+            // Show field coverage info
+            if (loadAcres < currentBlend.acres) {
+                const loadsNeeded = Math.ceil(currentBlend.acres / loadAcres);
+                const remainingAcres = currentBlend.acres - loadAcres;
+                html += `
+                    </div>
+                    <div class="result-box">
+                        <h3>Field Coverage</h3>
+                        <div class="result-item">
+                            <span class="result-label">Your field</span>
+                            <span class="result-value">${currentBlend.acres} acres</span>
+                        </div>
+                        <div class="result-item">
+                            <span class="result-label">This load covers</span>
+                            <span class="result-value">${loadAcres.toFixed(1)} acres</span>
+                        </div>
+                        <div class="result-item">
+                            <span class="result-label">Remaining</span>
+                            <span class="result-value">${remainingAcres.toFixed(1)} acres</span>
+                        </div>
+                        <div class="result-item" style="border-top: 2px solid #dee2e6; margin-top: 10px; padding-top: 10px;">
+                            <span class="result-label"><strong>Loads needed for field</strong></span>
+                            <span class="result-value"><strong>${loadsNeeded} loads</strong></span>
+                        </div>
+                `;
+            } else {
+                const excessAcres = loadAcres - currentBlend.acres;
+                html += `
+                    </div>
+                    <div class="result-box">
+                        <h3>Field Coverage</h3>
+                        <div class="result-item">
+                            <span class="result-label">Your field</span>
+                            <span class="result-value">${currentBlend.acres} acres</span>
+                        </div>
+                        <div class="result-item">
+                            <span class="result-label">This load covers</span>
+                            <span class="result-value">${loadAcres.toFixed(1)} acres</span>
+                        </div>
+                        <div class="result-item">
+                            <span class="result-label">Extra (over field size)</span>
+                            <span class="result-value">${excessAcres.toFixed(1)} acres</span>
+                        </div>
+                `;
+            }
+            
+            html += '</div>';
+            document.getElementById('load-results').innerHTML = html;
+        }
+        
+        function saveBlend() {
+            if (!currentBlend) return;
+            
+            const name = prompt('Enter a name for this blend:', 
+                `${currentBlend.type === 'liquid' ? 'Liquid' : 'Dry'} ${currentBlend.nutrients.target.n}-${currentBlend.nutrients.target.p}-${currentBlend.nutrients.target.s}`);
+            
+            if (!name) return;
+            
+            const blend = {
+                name: name,
+                timestamp: new Date().toISOString(),
+                ...currentBlend
+            };
+            
+            savedBlends.push(blend);
+            localStorage.setItem('fertBlends', JSON.stringify(savedBlends));
+            updateSavedBlendsList();
+            alert('Blend saved!');
+        }
+        
+        function updateSavedBlendsList() {
+            const container = document.getElementById('saved-blends-list');
+            
+            if (savedBlends.length === 0) {
+                container.innerHTML = '<p style="text-align: center; color: #6c757d; padding: 40px;">No saved blends yet. Calculate a blend and save it!</p>';
+                return;
+            }
+            
+            let html = '';
+            savedBlends.forEach((blend, index) => {
+                const unit = blend.type === 'liquid' ? 'gal' : 'lbs';
+                html += `
+                    <div class="saved-blend">
+                        <h4>${blend.name}</h4>
+                        <div class="saved-blend-info">
+                            ${blend.type === 'liquid' ? 'Liquid' : 'Dry'} | 
+                            ${blend.totalPerAcre.toFixed(1)} ${unit}/acre | 
+                            $${blend.cost.perAcre.toFixed(2)}/acre
+                        </div>
+                        <div class="saved-blend-info">
+                            ${blend.nutrients.target.n}-${blend.nutrients.target.p}-${blend.nutrients.target.s}
+                            ${blend.type === 'dry' && blend.nutrients.target.k > 0 ? '-' + blend.nutrients.target.k : ''}
+                        </div>
+                        <div class="saved-blend-actions">
+                            <button class="btn btn-small" onclick="loadBlend(${index})">Load</button>
+                            <button class="btn btn-small btn-secondary" onclick="deleteBlend(${index})">Delete</button>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            container.innerHTML = html;
+        }
+        
+        function loadBlend(index) {
+            const blend = savedBlends[index];
+            
+            // Set blend type
+            document.getElementById(blend.type === 'liquid' ? 'type-liquid' : 'type-dry').checked = true;
+            updateBlendType();
+            
+            // Set values
+            document.getElementById('acres').value = blend.acres;
+            document.getElementById('target-n').value = blend.nutrients.target.n;
+            document.getElementById('target-p').value = blend.nutrients.target.p;
+            document.getElementById('target-s').value = blend.nutrients.target.s;
+            
+            if (blend.type === 'liquid') {
+                document.getElementById('target-zn').value = blend.nutrients.target.zn;
+                const uanType = blend.products['uan'].type;
+                document.getElementById('uan-' + uanType).checked = true;
+            } else {
+                if (blend.nutrients.target.k) {
+                    document.getElementById('target-k').value = blend.nutrients.target.k;
+                    document.getElementById('potash-yes').checked = blend.products['Potash'].used;
+                }
+            }
+            
+            showPage('analysis');
+            alert('Blend loaded! Click "Calculate Blend" to recalculate.');
+        }
+        
+        function deleteBlend(index) {
+            if (!confirm('Delete this blend?')) return;
+            
+            savedBlends.splice(index, 1);
+            localStorage.setItem('fertBlends', JSON.stringify(savedBlends));
+            updateSavedBlendsList();
+        }
+        
+        function getPrices() {
+            return {
+                '1034': parseFloat(document.getElementById('price-1034').value) || 1073,
+                'ats': parseFloat(document.getElementById('price-ats').value) || 860,
+                'zn': parseFloat(document.getElementById('price-zn').value) || 8.00,
+                'uan28': parseFloat(document.getElementById('price-uan28').value) || 563,
+                'uan32': parseFloat(document.getElementById('price-uan32').value) || 633,
+                'MAP': parseFloat(document.getElementById('price-map').value) || 675,
+                'DAP': parseFloat(document.getElementById('price-dap').value) || 730,
+                'Mesz': parseFloat(document.getElementById('price-mesz').value) || 750,
+                'Urea': parseFloat(document.getElementById('price-urea').value) || 425,
+                'Potash': parseFloat(document.getElementById('price-potash').value) || 590
+            };
+        }
+        
+        function savePrices() {
+            const prices = getPrices();
+            localStorage.setItem('fertPrices', JSON.stringify(prices));
+            alert('Prices saved!');
+        }
+        
+        function loadPrices() {
+            const saved = localStorage.getItem('fertPrices');
+            if (!saved) return;
+            
+            const prices = JSON.parse(saved);
+            document.getElementById('price-1034').value = prices['1034'] || 1073;
+            document.getElementById('price-ats').value = prices['ats'] || 860;
+            document.getElementById('price-zn').value = prices['zn'] || 8.00;
+            document.getElementById('price-uan28').value = prices['uan28'] || 563;
+            document.getElementById('price-uan32').value = prices['uan32'] || 633;
+            document.getElementById('price-map').value = prices['MAP'] || 675;
+            document.getElementById('price-dap').value = prices['DAP'] || 730;
+            document.getElementById('price-mesz').value = prices['Mesz'] || 750;
+            document.getElementById('price-urea').value = prices['Urea'] || 425;
+            document.getElementById('price-potash').value = prices['Potash'] || 590;
+        }
+        
+        function resetPrices() {
+            if (!confirm('Reset all prices to defaults?')) return;
+            
+            document.getElementById('price-1034').value = 1073;
+            document.getElementById('price-ats').value = 860;
+            document.getElementById('price-zn').value = 8.00;
+            document.getElementById('price-uan28').value = 563;
+            document.getElementById('price-uan32').value = 633;
+            document.getElementById('price-map').value = 675;
+            document.getElementById('price-dap').value = 730;
+            document.getElementById('price-mesz').value = 750;
+            document.getElementById('price-urea').value = 425;
+            document.getElementById('price-potash').value = 590;
+            
+            savePrices();
+        }
+    </script>
+</body>
+</html>
