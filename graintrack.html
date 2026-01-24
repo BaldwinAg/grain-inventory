@@ -2405,18 +2405,178 @@ function fileToBase64(file) {
   });
 }
 
+// ============================================================================
+// BREAKEVEN INTEGRATION - Pull weighted breakeven from Breakeven Calculator
+// ============================================================================
+
+// Get breakeven costs aggregated by commodity for dashboard display
+async function getBreakevenByCommodity(cropYear) {
+  try {
+    // Fetch all the data we need (same as breakeven.html)
+    const [fcyResult, expensesResult, seedsResult, rentsResult] = await Promise.all([
+      db.from('field_crop_years')
+        .select('*, fields(id, name, acres, tenant_share, landlord), commodities(id, name)')
+        .eq('crop_year', cropYear)
+        .is('deleted_at', null),
+      db.from('be_overhead_expenses')
+        .select('*, be_overhead_allocations(commodity_id, practice_type)')
+        .eq('crop_year', cropYear)
+        .is('deleted_at', null),
+      db.from('be_seed_costs')
+        .select('*, field_crop_years(id, planted_acres)')
+        .is('deleted_at', null),
+      db.from('be_land_rent')
+        .select('*')
+        .eq('crop_year', cropYear)
+        .is('deleted_at', null)
+    ]);
+
+    const fieldCropYears = (fcyResult.data || []).map(f => ({
+      ...f,
+      field_id: f.fields?.id,
+      commodity_id: f.commodities?.id,
+      commodity_name: f.commodities?.name,
+      tenant_share: f.fields?.tenant_share != null ? Number(f.fields.tenant_share) : 1
+    }));
+
+    const expenses = expensesResult.data || [];
+    const seeds = seedsResult.data || [];
+    const rents = rentsResult.data || [];
+
+    // Fetch fertilizer costs from Fertilizer App
+    const fertResult = await db.from('fert_applications')
+      .select('field_id, total_cost')
+      .eq('crop_year', cropYear)
+      .is('deleted_at', null);
+    const fertByField = {};
+    (fertResult.data || []).forEach(a => {
+      fertByField[a.field_id] = (fertByField[a.field_id] || 0) + (a.total_cost || 0);
+    });
+
+    // Fetch herbicide costs from Spray-Suite
+    const startDate = `${cropYear - 1}-09-01`;
+    const endDate = `${cropYear}-08-31`;
+    const herbResult = await db.from('applications')
+      .select('field_id, total_cost')
+      .gte('date', startDate)
+      .lte('date', endDate);
+    const herbByField = {};
+    (herbResult.data || []).forEach(a => {
+      herbByField[a.field_id] = (herbByField[a.field_id] || 0) + (a.total_cost || 0);
+    });
+
+    // Allocate overhead expenses
+    const overheadAlloc = {};
+    fieldCropYears.forEach(fcy => { overheadAlloc[fcy.id] = 0; });
+    expenses.forEach(expense => {
+      if (expense.allocation_type === 'ALL_ACRES') {
+        const totalAcres = fieldCropYears.reduce((sum, f) => sum + (f.planted_acres || 0), 0);
+        if (totalAcres > 0) {
+          fieldCropYears.forEach(fcy => {
+            overheadAlloc[fcy.id] += (expense.amount * (fcy.planted_acres || 0)) / totalAcres;
+          });
+        }
+      } else {
+        const allocs = expense.be_overhead_allocations || [];
+        const eligibleFields = fieldCropYears.filter(fcy =>
+          allocs.some(a => a.commodity_id === fcy.commodity_id &&
+            (a.practice_type === null ||
+             (a.practice_type === 'IR' && fcy.is_irrigated) ||
+             (a.practice_type === 'DL' && !fcy.is_irrigated)))
+        );
+        const totalAcres = eligibleFields.reduce((sum, f) => sum + (f.planted_acres || 0), 0);
+        if (totalAcres > 0) {
+          eligibleFields.forEach(fcy => {
+            overheadAlloc[fcy.id] += (expense.amount * (fcy.planted_acres || 0)) / totalAcres;
+          });
+        }
+      }
+    });
+
+    // Build seed map
+    const seedMap = {};
+    seeds.forEach(s => {
+      if (s.field_crop_year_id) {
+        seedMap[s.field_crop_year_id] = s.total_cost || 0;
+      }
+    });
+
+    // Build rent map
+    const rentMap = {};
+    rents.forEach(r => {
+      rentMap[r.field_id] = r.rent_per_acre || 0;
+    });
+
+    // Calculate costs per field and aggregate by commodity
+    const byCommodity = {};
+
+    fieldCropYears.forEach(fcy => {
+      if (!fcy.commodity_id) return;
+
+      const overhead = overheadAlloc[fcy.id] || 0;
+      const seed = seedMap[fcy.id] || 0;
+      const rent = (rentMap[fcy.field_id] || 0) * (fcy.planted_acres || 0);
+      const fert = fertByField[fcy.field_id] || 0;
+      const herb = herbByField[fcy.field_id] || 0;
+
+      // Apply tenant share for share crop fields (simplified - full share for display)
+      const tenantShare = fcy.tenant_share || 1;
+      const fertTenant = fert * tenantShare;
+      const herbTenant = herb * tenantShare; // Simplified - actual logic is more complex
+
+      const totalCost = overhead + seed + rent + fertTenant + herbTenant;
+      const bushels = fcy.actual_production || ((fcy.planted_acres || 0) * (fcy.estimated_yield || 0));
+      const bushelsTenant = bushels * tenantShare;
+
+      if (!byCommodity[fcy.commodity_id]) {
+        byCommodity[fcy.commodity_id] = {
+          commodity_id: fcy.commodity_id,
+          commodity_name: fcy.commodity_name,
+          totalCost: 0,
+          totalBushels: 0,
+          totalAcres: 0,
+          fieldCount: 0
+        };
+      }
+
+      byCommodity[fcy.commodity_id].totalCost += totalCost;
+      byCommodity[fcy.commodity_id].totalBushels += bushelsTenant;
+      byCommodity[fcy.commodity_id].totalAcres += fcy.planted_acres || 0;
+      byCommodity[fcy.commodity_id].fieldCount += 1;
+    });
+
+    // Calculate weighted breakeven for each commodity
+    const result = {};
+    Object.values(byCommodity).forEach(c => {
+      result[c.commodity_id] = {
+        breakeven: c.totalBushels > 0 ? c.totalCost / c.totalBushels : null,
+        totalCost: c.totalCost,
+        totalBushels: c.totalBushels,
+        totalAcres: c.totalAcres,
+        costPerAcre: c.totalAcres > 0 ? c.totalCost / c.totalAcres : 0
+      };
+    });
+
+    return result;
+  } catch (error) {
+    console.error('Error fetching breakeven data:', error);
+    return {};
+  }
+}
+
 // Dashboard data
 async function getDashboardData(cropYear, detailMode = 'combined') {
   const byPractice = detailMode === 'detailed';
 
-  const [commodities, productionSummary, contractsSummary, insuranceSettings, marketPrices, referenceBasis] =
+  const [commodities, productionSummary, contractsSummary, insuranceSettings, marketPrices, referenceBasis, breakevenData] =
     await Promise.all([
       getCommodities(),
       getProductionSummary(cropYear, byPractice),
       getContractsSummary(cropYear),
       getInsuranceSettings(cropYear),
       getLatestMarketPrices(cropYear),
-      getReferenceBasis(cropYear)
+      getReferenceBasis(cropYear),
+      getBreakevenByCommodity(cropYear)
     ]);
 
   const commodityProgress = [];
@@ -2554,7 +2714,11 @@ async function getDashboardData(cropYear, detailMode = 'combined') {
             OPTIONS: { count: 0, bushels: 0, long_put: 0, long_call: 0, short_put: 0, short_call: 0 },
             HTA: { count: 0, bushels: 0 },
             BASIS: { count: 0, bushels: 0 }
-          }
+          },
+          // Breakeven data (from Breakeven Calculator)
+          breakeven_price: breakevenData[commodity.id]?.breakeven || null,
+          breakeven_total_cost: breakevenData[commodity.id]?.totalCost || null,
+          breakeven_cost_per_acre: breakevenData[commodity.id]?.costPerAcre || null
         });
       }
     } else {
@@ -2659,7 +2823,11 @@ async function getDashboardData(cropYear, detailMode = 'combined') {
             OPTIONS: { count: 0, bushels: 0, long_put: 0, long_call: 0, short_put: 0, short_call: 0 },
             HTA: { count: 0, bushels: 0 },
             BASIS: { count: 0, bushels: 0 }
-          }
+          },
+          // Breakeven data (from Breakeven Calculator)
+          breakeven_price: breakevenData[commodity.id]?.breakeven || null,
+          breakeven_total_cost: breakevenData[commodity.id]?.totalCost || null,
+          breakeven_cost_per_acre: breakevenData[commodity.id]?.costPerAcre || null
         });
       }
     }
@@ -3018,6 +3186,28 @@ function DashboardPage({ cropYear, onYearChange }) {
                     <p className="text-gray-500">Blended</p>
                     <p className="font-semibold">{formatPrice(displayBlended)}</p>
                   </div>
+                  {c.breakeven_price && (
+                    <div className="text-right border-l pl-4 ml-2">
+                      <p className="text-gray-500 flex items-center justify-end gap-1">
+                        Breakeven
+                        <a href="https://baldwinag.com/portal/breakeven" className="text-blue-500 hover:text-blue-700" title="View in Breakeven Calculator">
+                          <Icon name="external-link" size={10} />
+                        </a>
+                      </p>
+                      <p className={`font-semibold ${
+                        c.current_market_price && c.breakeven_price
+                          ? (c.current_market_price >= c.breakeven_price ? 'text-green-600' : 'text-red-600')
+                          : ''
+                      }`}>
+                        {formatPrice(c.breakeven_price)}
+                      </p>
+                      {c.current_market_price && c.breakeven_price && (
+                        <p className={`text-xs ${c.current_market_price >= c.breakeven_price ? 'text-green-600' : 'text-red-600'}`}>
+                          {c.current_market_price >= c.breakeven_price ? '+' : ''}{formatPrice(c.current_market_price - c.breakeven_price)} margin
+                        </p>
+                      )}
+                    </div>
+                  )}
                   {c.net_premium !== 0 && (
                     <div className="text-right">
                       <p className="text-gray-500">Net Prem</p>
@@ -7075,21 +7265,21 @@ function SettingsPage({ isConnected }) {
           <h2 className="font-semibold text-gray-900">Farm Management Suite</h2>
         </div>
         <div className="p-5 grid gap-3">
-          <a href="fertilizer.html" className="flex items-center gap-4 p-4 border rounded-lg hover:bg-gray-50 transition-colors">
+          <a href="https://baldwinag.com/portal/fertilizer" className="flex items-center gap-4 p-4 border rounded-lg hover:bg-gray-50 transition-colors">
             <div className="p-2 bg-green-100 rounded-lg"><Icon name="flask-conical" size={24} className="text-green-600" /></div>
             <div>
               <div className="font-medium text-gray-900">Fertilizer App</div>
               <div className="text-sm text-gray-500">Applications, prepaid inventory, COOP splits</div>
             </div>
           </a>
-          <a href="breakeven.html" className="flex items-center gap-4 p-4 border rounded-lg hover:bg-gray-50 transition-colors">
+          <a href="https://baldwinag.com/portal/breakeven" className="flex items-center gap-4 p-4 border rounded-lg hover:bg-gray-50 transition-colors">
             <div className="p-2 bg-blue-100 rounded-lg"><Icon name="target" size={24} className="text-blue-600" /></div>
             <div>
               <div className="font-medium text-gray-900">Breakeven Calculator</div>
               <div className="text-sm text-gray-500">Cost aggregation and breakeven analysis</div>
             </div>
           </a>
-          <a href="spray-suite/apps/chemical_app_manager_v3_7_3.html" className="flex items-center gap-4 p-4 border rounded-lg hover:bg-gray-50 transition-colors">
+          <a href="https://baldwinag.com/spray/manager" className="flex items-center gap-4 p-4 border rounded-lg hover:bg-gray-50 transition-colors">
             <div className="p-2 bg-amber-100 rounded-lg"><Icon name="spray-can" size={24} className="text-amber-600" /></div>
             <div>
               <div className="font-medium text-gray-900">Spray-Suite</div>
@@ -7207,9 +7397,9 @@ function App() {
           </div>
         </div>
         <div className="flex items-center gap-1">
-          <a href="/portal/fertilizer" className="p-2 hover:bg-gray-100 rounded-lg" title="Fertilizer"><Icon name="flask-conical" size={18} className="text-green-600" /></a>
-          <a href="/portal/breakeven" className="p-2 hover:bg-gray-100 rounded-lg" title="Breakeven"><Icon name="calculator" size={18} className="text-blue-600" /></a>
-          <a href="/spray/manager" className="p-2 hover:bg-gray-100 rounded-lg" title="Spray-Suite"><Icon name="spray-can" size={18} className="text-purple-600" /></a>
+          <a href="https://baldwinag.com/portal/fertilizer" className="p-2 hover:bg-gray-100 rounded-lg" title="Fertilizer"><Icon name="flask-conical" size={18} className="text-green-600" /></a>
+          <a href="https://baldwinag.com/portal/breakeven" className="p-2 hover:bg-gray-100 rounded-lg" title="Breakeven"><Icon name="calculator" size={18} className="text-blue-600" /></a>
+          <a href="https://baldwinag.com/spray/manager" className="p-2 hover:bg-gray-100 rounded-lg" title="Spray-Suite"><Icon name="spray-can" size={18} className="text-purple-600" /></a>
         </div>
       </div>
 
@@ -7266,9 +7456,9 @@ function App() {
                 </div>
               </div>
               <div className="flex items-center gap-1">
-                <a href="/portal/fertilizer" className="p-2 hover:bg-gray-100 rounded-lg" title="Fertilizer"><Icon name="flask-conical" size={18} className="text-green-600" /></a>
-                <a href="/portal/breakeven" className="p-2 hover:bg-gray-100 rounded-lg" title="Breakeven"><Icon name="calculator" size={18} className="text-blue-600" /></a>
-                <a href="/spray/manager" className="p-2 hover:bg-gray-100 rounded-lg" title="Spray-Suite"><Icon name="spray-can" size={18} className="text-purple-600" /></a>
+                <a href="https://baldwinag.com/portal/fertilizer" className="p-2 hover:bg-gray-100 rounded-lg" title="Fertilizer"><Icon name="flask-conical" size={18} className="text-green-600" /></a>
+                <a href="https://baldwinag.com/portal/breakeven" className="p-2 hover:bg-gray-100 rounded-lg" title="Breakeven"><Icon name="calculator" size={18} className="text-blue-600" /></a>
+                <a href="https://baldwinag.com/spray/manager" className="p-2 hover:bg-gray-100 rounded-lg" title="Spray-Suite"><Icon name="spray-can" size={18} className="text-purple-600" /></a>
               </div>
             </div>
           </div>

@@ -113,11 +113,14 @@ grain-inventory/
 - Total needs calculator for COOP ordering
 
 ### Breakeven Calculator
-- Overhead expense allocation by crop/practice
-- Seed cost tracking
-- Land rent management
+- Overhead expense allocation by crop/practice (IR/DL support)
+- Seed cost tracking with commodity defaults and bag calculations
+- Land rent management with copy year forward
 - Pulls actual costs from Fertilizer App & Spray-Suite
 - Per-field and per-commodity breakeven analysis
+- Landlord report with PDF export for landlord statements
+- GrainTrack integration (breakeven on dashboard)
+- Cost breakdown visualization by category
 
 ## Setup
 
@@ -168,10 +171,10 @@ git push
 See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
 
 ### Current Versions
-- **GrainTrack**: v1.7.0
+- **GrainTrack**: v1.9.2
 - **Spray-Suite**: v3.7.3
-- **Fertilizer App**: v1.0.0
-- **Breakeven Calculator**: v1.0.0
+- **Fertilizer App**: v1.0.1
+- **Breakeven Calculator**: v1.1.0
 
 ## License
 

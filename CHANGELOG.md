@@ -4,6 +4,75 @@ All notable changes to the Farm Management Suite applications.
 
 ---
 
+## Breakeven Calculator [1.1.0] - 2026-01-24
+
+### Added - Landlord Reports & GrainTrack Integration
+
+- **Landlord Report Page**
+  - New dedicated page for landlord expense reporting
+  - Fields grouped by landlord with expandable cards
+  - Shows fertilizer and split herbicide costs (landlord's share)
+  - Excludes burndowns, overhead, seed, rent (tenant responsibility)
+  - CSV export for all landlords
+  - PDF export for full report or individual landlord statements
+
+- **GrainTrack Integration**
+  - Breakeven prices now displayed on GrainTrack dashboard
+  - Shows profit/loss margin vs current market price
+  - Green/red color coding for above/below breakeven
+  - Link to Breakeven Calculator from dashboard
+
+- **Seed Cost Calculator Enhancements**
+  - Commodity-specific defaults (Corn: $300/bag, 80K seeds, 32K rate; Beans: $65/unit, 140K seeds, 120K rate)
+  - Bags needed calculation with breakdown display
+  - Cost per acre display
+
+- **Overhead Allocation Improvements**
+  - Practice type selection (Irrigated/Dryland)
+  - Visual checkbox UI for crop/practice selection
+  - Better allocation display on expense cards
+
+- **Dashboard Enhancements**
+  - Cost breakdown bar chart with category colors
+  - Category icons (building, seedling, home, flask, spray-can)
+  - Per-commodity mini cost breakdown
+
+- **Herbicide Plan Builder**
+  - Shows linked tank mix products when available
+  - Products display with rates from Spray-Suite
+
+- **Copy Year Forward**
+  - Copy overhead expenses to next year with one click
+  - Copy land rent to next year
+  - Preserves all settings and values
+
+### Fixed
+- Field Assignments page now correctly shows tenant_share from field data
+- All app links now use full domain (baldwinag.com/portal/...)
+
+---
+
+## GrainTrack [1.9.2] - 2026-01-24
+
+### Added
+- **Breakeven Integration**
+  - Dashboard shows breakeven price per commodity
+  - Profit/loss margin calculation vs market price
+  - Color-coded indicators (green = profitable, red = below breakeven)
+  - Quick link to Breakeven Calculator
+
+### Fixed
+- App links now use full domain URLs (baldwinag.com)
+
+---
+
+## Fertilizer App [1.0.1] - 2026-01-24
+
+### Fixed
+- App links now use full domain URLs (baldwinag.com)
+
+---
+
 ## Fertilizer App [1.0.0] - 2026-01-23
 
 ### Added - Initial Release

@@ -543,20 +543,26 @@ const navItems = [
   { id: 'crop-plans', label: 'Crop Plans', icon: 'layers' },
   { id: 'field-assignments', label: 'Field Assignments', icon: 'map-pin' },
   { id: 'breakeven', label: 'Breakeven', icon: 'target' },
+  { id: 'landlord-report', label: 'Landlord Report', icon: 'users' },
   { id: 'settings', label: 'Settings', icon: 'settings' }
 ];
 
 const appLinks = [
-  { name: 'GrainTrack', url: 'graintrack.html', icon: 'wheat', desc: 'Marketing & Inventory' },
-  { name: 'Spray-Suite', url: 'spray-suite/apps/chemical_app_manager_v3_7_3.html', icon: 'spray-can', desc: 'Chemical Applications' },
-  { name: 'Fertilizer', url: 'fertilizer.html', icon: 'flask-conical', desc: 'Fertilizer Applications' }
+  { name: 'GrainTrack', url: 'https://baldwinag.com/portal/graintrack', icon: 'wheat', desc: 'Marketing & Inventory' },
+  { name: 'Spray-Suite', url: 'https://baldwinag.com/spray/manager', icon: 'spray-can', desc: 'Chemical Applications' },
+  { name: 'Fertilizer', url: 'https://baldwinag.com/portal/fertilizer', icon: 'flask-conical', desc: 'Fertilizer Applications' }
 ];
 
 // ============================================================================
 // DASHBOARD PAGE
 // ============================================================================
 function DashboardPage({ cropYear, onYearChange }) {
-  const [data, setData] = useState({ commodities: [], totalCost: 0, totalAcres: 0 });
+  const [data, setData] = useState({
+    commodities: [],
+    totalCost: 0,
+    totalAcres: 0,
+    breakdown: { overhead: 0, seed: 0, rent: 0, fertilizer: 0, herbicide: 0 }
+  });
   const [loading, setLoading] = useState(true);
   const currentYear = new Date().getFullYear();
   const cropYears = [currentYear - 1, currentYear, currentYear + 1];
@@ -578,30 +584,53 @@ function DashboardPage({ cropYear, onYearChange }) {
       const seedMap = {};
       seeds.forEach(s => { seedMap[s.field_crop_year_id] = s.total_cost || calculateSeedCost({ ...s, planted_acres: s.planted_acres }); });
       const rentMap = {};
-      rents.forEach(r => { rentMap[r.field_id] = (r.rent_per_acre || 0) * (r.field_acres || 0); });
+      rents.forEach(r => { rentMap[r.field_id] = r.rent_per_acre || 0; });
 
       let totalCost = 0;
       let totalAcres = 0;
+      const breakdown = { overhead: 0, seed: 0, rent: 0, fertilizer: 0, herbicide: 0 };
       const byCommodity = {};
 
       fcys.forEach(fcy => {
         const overhead = overheadAlloc[fcy.id] || 0;
         const seed = seedMap[fcy.id] || 0;
-        const rent = rentMap[fcy.field_id] || 0;
+        const rentPerAcre = rentMap[fcy.field_id] || 0;
+        const rent = rentPerAcre * (fcy.planted_acres || 0);
         const fert = fertCosts[fcy.field_id] || 0;
-        const herb = herbCosts[fcy.field_id] || 0;
+        const herbData = herbCosts[fcy.field_id] || { total: 0 };
+        const herb = typeof herbData === 'object' ? herbData.total : herbData;
         const fieldTotal = overhead + seed + rent + fert + herb;
         const bushels = fcy.actual_production || ((fcy.planted_acres || 0) * (fcy.estimated_yield || 0));
 
         totalCost += fieldTotal;
         totalAcres += fcy.planted_acres || 0;
+        breakdown.overhead += overhead;
+        breakdown.seed += seed;
+        breakdown.rent += rent;
+        breakdown.fertilizer += fert;
+        breakdown.herbicide += herb;
 
         if (!byCommodity[fcy.commodity_id]) {
-          byCommodity[fcy.commodity_id] = { name: fcy.commodity_name, cost: 0, acres: 0, bushels: 0 };
+          byCommodity[fcy.commodity_id] = {
+            name: fcy.commodity_name,
+            cost: 0,
+            acres: 0,
+            bushels: 0,
+            overhead: 0,
+            seed: 0,
+            rent: 0,
+            fertilizer: 0,
+            herbicide: 0
+          };
         }
         byCommodity[fcy.commodity_id].cost += fieldTotal;
         byCommodity[fcy.commodity_id].acres += fcy.planted_acres || 0;
         byCommodity[fcy.commodity_id].bushels += bushels;
+        byCommodity[fcy.commodity_id].overhead += overhead;
+        byCommodity[fcy.commodity_id].seed += seed;
+        byCommodity[fcy.commodity_id].rent += rent;
+        byCommodity[fcy.commodity_id].fertilizer += fert;
+        byCommodity[fcy.commodity_id].herbicide += herb;
       });
 
       const commoditySummary = Object.values(byCommodity).map(c => ({
@@ -610,19 +639,27 @@ function DashboardPage({ cropYear, onYearChange }) {
         costPerAcre: c.acres > 0 ? c.cost / c.acres : 0
       }));
 
-      setData({ commodities: commoditySummary, totalCost, totalAcres });
+      setData({ commodities: commoditySummary, totalCost, totalAcres, breakdown });
       setLoading(false);
     }
     load();
   }, [cropYear]);
 
   const commodityColors = {
-    'Corn': { bg: 'bg-amber-100', text: 'text-amber-700', border: 'border-amber-200' },
-    'Soybeans': { bg: 'bg-emerald-100', text: 'text-emerald-700', border: 'border-emerald-200' },
-    'Wheat': { bg: 'bg-violet-100', text: 'text-violet-700', border: 'border-violet-200' },
-    'Milo': { bg: 'bg-red-100', text: 'text-red-700', border: 'border-red-200' }
+    'Corn': { bg: 'bg-amber-500', light: 'bg-amber-100', text: 'text-amber-700', border: 'border-amber-200' },
+    'Soybeans': { bg: 'bg-emerald-500', light: 'bg-emerald-100', text: 'text-emerald-700', border: 'border-emerald-200' },
+    'Wheat': { bg: 'bg-violet-500', light: 'bg-violet-100', text: 'text-violet-700', border: 'border-violet-200' },
+    'Milo': { bg: 'bg-red-500', light: 'bg-red-100', text: 'text-red-700', border: 'border-red-200' }
   };
-  const defaultColor = { bg: 'bg-gray-100', text: 'text-gray-700', border: 'border-gray-200' };
+  const defaultColor = { bg: 'bg-gray-500', light: 'bg-gray-100', text: 'text-gray-700', border: 'border-gray-200' };
+
+  const categoryColors = {
+    overhead: { bg: 'bg-slate-500', label: 'Overhead' },
+    seed: { bg: 'bg-amber-500', label: 'Seed' },
+    rent: { bg: 'bg-green-500', label: 'Rent' },
+    fertilizer: { bg: 'bg-blue-500', label: 'Fertilizer' },
+    herbicide: { bg: 'bg-purple-500', label: 'Herbicide' }
+  };
 
   if (loading) return <div className="flex items-center justify-center h-64"><Icon name="loader" className="animate-spin text-blue-600" size={32} /></div>;
 
@@ -631,59 +668,156 @@ function DashboardPage({ cropYear, onYearChange }) {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Breakeven Dashboard</h1>
-          <p className="text-sm text-gray-500">Cost summary and breakeven prices</p>
+          <p className="text-sm text-gray-500">Cost summary and breakeven prices for {cropYear}</p>
         </div>
         <select value={cropYear} onChange={(e) => onYearChange(parseInt(e.target.value))} className="px-4 py-2 border rounded-lg">
           {cropYears.map(y => <option key={y} value={y}>{y} Crop Year</option>)}
         </select>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-white rounded-xl shadow-sm border p-6">
+      {/* Summary Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl shadow-lg p-6 text-white">
           <div className="flex items-center gap-3 mb-2">
-            <div className="p-2 bg-blue-100 rounded-lg"><Icon name="dollar-sign" size={24} className="text-blue-600" /></div>
-            <span className="text-sm text-gray-500">Total Cost</span>
+            <Icon name="dollar-sign" size={24} />
+            <span className="text-blue-100">Total Cost</span>
           </div>
-          <div className="text-3xl font-bold text-gray-900">{formatCurrency(data.totalCost)}</div>
-          <div className="text-sm text-gray-500 mt-1">{formatNumber(data.totalAcres)} total acres</div>
+          <div className="text-3xl font-bold">{formatCurrency(data.totalCost)}</div>
+          <div className="text-sm text-blue-100 mt-1">{formatNumber(data.totalAcres)} acres</div>
         </div>
-        <div className="bg-white rounded-xl shadow-sm border p-6">
+        <div className="bg-gradient-to-br from-green-500 to-green-600 rounded-xl shadow-lg p-6 text-white">
           <div className="flex items-center gap-3 mb-2">
-            <div className="p-2 bg-green-100 rounded-lg"><Icon name="calculator" size={24} className="text-green-600" /></div>
-            <span className="text-sm text-gray-500">Avg Cost/Acre</span>
+            <Icon name="map" size={24} />
+            <span className="text-green-100">Avg Cost/Acre</span>
           </div>
-          <div className="text-3xl font-bold text-gray-900">{data.totalAcres > 0 ? formatCurrency(data.totalCost / data.totalAcres) : '-'}</div>
+          <div className="text-3xl font-bold">{data.totalAcres > 0 ? formatCurrency(data.totalCost / data.totalAcres) : '-'}</div>
+        </div>
+        <div className="bg-gradient-to-br from-purple-500 to-purple-600 rounded-xl shadow-lg p-6 text-white">
+          <div className="flex items-center gap-3 mb-2">
+            <Icon name="bar-chart-3" size={24} />
+            <span className="text-purple-100">Commodities</span>
+          </div>
+          <div className="text-3xl font-bold">{data.commodities.length}</div>
+          <div className="text-sm text-purple-100 mt-1">{data.commodities.map(c => c.name).join(', ')}</div>
         </div>
       </div>
 
+      {/* Cost Breakdown */}
+      <div className="bg-white rounded-xl shadow-sm border p-6">
+        <h2 className="font-semibold text-lg mb-4">Cost Breakdown</h2>
+
+        {/* Visual Bar Chart */}
+        <div className="mb-6">
+          <div className="h-8 rounded-full overflow-hidden flex bg-gray-100">
+            {Object.entries(categoryColors).map(([key, config]) => {
+              const value = data.breakdown[key] || 0;
+              const percent = data.totalCost > 0 ? (value / data.totalCost) * 100 : 0;
+              if (percent < 0.5) return null;
+              return (
+                <div
+                  key={key}
+                  className={`${config.bg} transition-all duration-500 flex items-center justify-center`}
+                  style={{ width: `${percent}%` }}
+                  title={`${config.label}: ${formatCurrency(value)} (${percent.toFixed(1)}%)`}
+                >
+                  {percent > 8 && <span className="text-white text-xs font-medium">{percent.toFixed(0)}%</span>}
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex flex-wrap gap-4 mt-3 justify-center">
+            {Object.entries(categoryColors).map(([key, config]) => (
+              <div key={key} className="flex items-center gap-2 text-sm">
+                <div className={`w-3 h-3 rounded-full ${config.bg}`}></div>
+                <span className="text-gray-600">{config.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Breakdown Table */}
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+          {Object.entries(categoryColors).map(([key, config]) => {
+            const value = data.breakdown[key] || 0;
+            const percent = data.totalCost > 0 ? (value / data.totalCost) * 100 : 0;
+            return (
+              <div key={key} className="text-center p-3 rounded-lg bg-gray-50">
+                <div className={`w-10 h-10 rounded-full ${config.bg} mx-auto mb-2 flex items-center justify-center`}>
+                  <Icon name={key === 'overhead' ? 'building' : key === 'seed' ? 'sprout' : key === 'rent' ? 'home' : key === 'fertilizer' ? 'flask-conical' : 'spray-can'} size={18} className="text-white" />
+                </div>
+                <div className="text-xs text-gray-500 uppercase tracking-wide">{config.label}</div>
+                <div className="font-bold text-lg">{formatCurrency(value)}</div>
+                <div className="text-xs text-gray-400">{percent.toFixed(1)}%</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Commodity Breakeven Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {data.commodities.map(c => {
           const colors = commodityColors[c.name] || defaultColor;
           return (
-            <div key={c.name} className={`${colors.bg} rounded-xl p-6 border ${colors.border}`}>
-              <h3 className={`text-lg font-semibold ${colors.text} mb-4`}>{c.name}</h3>
-              <div className="space-y-2">
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Breakeven:</span>
-                  <span className="font-bold text-gray-900">{c.breakeven ? formatPrice(c.breakeven) : '-'}</span>
+            <div key={c.name} className="bg-white rounded-xl shadow-sm border overflow-hidden">
+              <div className={`${colors.bg} px-6 py-4`}>
+                <h3 className="text-xl font-bold text-white">{c.name}</h3>
+                <div className="text-white/80 text-sm">{formatNumber(c.acres)} acres • {formatNumber(c.bushels)} bu</div>
+              </div>
+              <div className="p-6">
+                <div className="flex items-baseline gap-2 mb-4">
+                  <span className="text-3xl font-bold text-gray-900">{c.breakeven ? formatPrice(c.breakeven) : '-'}</span>
+                  <span className="text-gray-500">breakeven</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Total Cost:</span>
-                  <span className="font-medium">{formatCurrency(c.cost)}</span>
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-between py-1 border-b">
+                    <span className="text-gray-500">Total Cost</span>
+                    <span className="font-semibold">{formatCurrency(c.cost)}</span>
+                  </div>
+                  <div className="flex justify-between py-1 border-b">
+                    <span className="text-gray-500">Cost/Acre</span>
+                    <span className="font-semibold">{formatCurrency(c.costPerAcre)}</span>
+                  </div>
+                  <div className="flex justify-between py-1">
+                    <span className="text-gray-500">Bushels</span>
+                    <span className="font-semibold">{formatNumber(c.bushels)}</span>
+                  </div>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Acres:</span>
-                  <span className="font-medium">{formatNumber(c.acres)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Cost/Acre:</span>
-                  <span className="font-medium">{formatCurrency(c.costPerAcre)}</span>
+
+                {/* Mini breakdown */}
+                <div className="mt-4 pt-4 border-t">
+                  <div className="text-xs text-gray-500 uppercase tracking-wide mb-2">Cost Breakdown</div>
+                  <div className="h-2 rounded-full overflow-hidden flex bg-gray-100">
+                    {c.overhead > 0 && <div className="bg-slate-500" style={{ width: `${(c.overhead / c.cost) * 100}%` }}></div>}
+                    {c.seed > 0 && <div className="bg-amber-500" style={{ width: `${(c.seed / c.cost) * 100}%` }}></div>}
+                    {c.rent > 0 && <div className="bg-green-500" style={{ width: `${(c.rent / c.cost) * 100}%` }}></div>}
+                    {c.fertilizer > 0 && <div className="bg-blue-500" style={{ width: `${(c.fertilizer / c.cost) * 100}%` }}></div>}
+                    {c.herbicide > 0 && <div className="bg-purple-500" style={{ width: `${(c.herbicide / c.cost) * 100}%` }}></div>}
+                  </div>
+                  <div className="grid grid-cols-5 gap-1 mt-2 text-xs text-center text-gray-400">
+                    <span>{((c.overhead / c.cost) * 100).toFixed(0)}%</span>
+                    <span>{((c.seed / c.cost) * 100).toFixed(0)}%</span>
+                    <span>{((c.rent / c.cost) * 100).toFixed(0)}%</span>
+                    <span>{((c.fertilizer / c.cost) * 100).toFixed(0)}%</span>
+                    <span>{((c.herbicide / c.cost) * 100).toFixed(0)}%</span>
+                  </div>
                 </div>
               </div>
             </div>
           );
         })}
       </div>
+
+      {data.commodities.length === 0 && (
+        <div className="bg-white rounded-xl shadow-sm border p-8 text-center">
+          <Icon name="alert-circle" size={48} className="mx-auto text-gray-300 mb-4" />
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">No Production Data</h3>
+          <p className="text-gray-500">Add production records in GrainTrack to see breakeven calculations here.</p>
+          <a href="graintrack.html" className="inline-flex items-center gap-2 mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+            <Icon name="external-link" size={16} /> Open GrainTrack
+          </a>
+        </div>
+      )}
     </div>
   );
 }
@@ -697,6 +831,7 @@ function OverheadPage({ cropYear, onYearChange }) {
   const [commodities, setCommodities] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
+  const [showCopyModal, setShowCopyModal] = useState(false);
   const [editingItem, setEditingItem] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [activeCategory, setActiveCategory] = useState(null);
@@ -727,6 +862,40 @@ function OverheadPage({ cropYear, onYearChange }) {
     }
   };
 
+  const handleCopyFromYear = async (sourceYear) => {
+    try {
+      const sourceExpenses = await getOverheadExpenses(sourceYear);
+      if (sourceExpenses.length === 0) {
+        addToast(`No expenses found in ${sourceYear}`, { type: 'error' });
+        return;
+      }
+
+      let copied = 0;
+      for (const exp of sourceExpenses) {
+        const allocations = exp.be_overhead_allocations?.map(a => ({
+          commodity_id: a.commodity_id,
+          practice_type: a.practice_type
+        })) || [];
+
+        await saveOverheadExpense({
+          name: exp.name,
+          category_id: exp.category_id,
+          amount: exp.amount,
+          allocation_type: exp.allocation_type,
+          notes: exp.notes,
+          crop_year: cropYear
+        }, allocations);
+        copied++;
+      }
+
+      addToast(`Copied ${copied} expenses from ${sourceYear}`, { type: 'success' });
+      setShowCopyModal(false);
+      loadData();
+    } catch (e) {
+      addToast('Failed to copy: ' + e.message, { type: 'error' });
+    }
+  };
+
   const filteredExpenses = activeCategory ? expenses.filter(e => e.category_id === activeCategory) : expenses;
   const categoryTotal = filteredExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
   const grandTotal = expenses.reduce((sum, e) => sum + (e.amount || 0), 0);
@@ -742,6 +911,9 @@ function OverheadPage({ cropYear, onYearChange }) {
           <select value={cropYear} onChange={(e) => onYearChange(parseInt(e.target.value))} className="px-4 py-2 border rounded-lg">
             {cropYears.map(y => <option key={y} value={y}>{y}</option>)}
           </select>
+          <button onClick={() => setShowCopyModal(true)} className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200" title="Copy from another year">
+            <Icon name="copy" size={18} /> Copy Year
+          </button>
           <button onClick={() => { setEditingItem(null); setShowModal(true); }} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
             <Icon name="plus" size={18} /> Add Expense
           </button>
@@ -788,9 +960,20 @@ function OverheadPage({ cropYear, onYearChange }) {
                     <td className="px-4 py-3 text-right font-medium">{formatCurrency(exp.amount)}</td>
                     <td className="px-4 py-3">
                       {exp.allocation_type === 'ALL_ACRES' ? (
-                        <span className="text-green-600 text-sm">All Acres</span>
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-100 text-green-700 rounded text-xs font-medium">
+                          <Icon name="check-circle" size={12} /> All Acres
+                        </span>
                       ) : (
-                        <span className="text-sm">{exp.be_overhead_allocations?.map(a => a.commodities?.name).join(', ') || 'Specific Crops'}</span>
+                        <div className="flex flex-wrap gap-1">
+                          {(exp.be_overhead_allocations || []).map((a, i) => {
+                            const practice = a.practice_type === 'IR' ? ' (IR)' : a.practice_type === 'DL' ? ' (DL)' : '';
+                            return (
+                              <span key={i} className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-xs">
+                                {a.commodities?.name}{practice}
+                              </span>
+                            );
+                          })}
+                        </div>
                       )}
                     </td>
                     <td className="px-4 py-3 text-center">
@@ -813,6 +996,34 @@ function OverheadPage({ cropYear, onYearChange }) {
       </div>
 
       {showModal && <OverheadModal expense={editingItem} cropYear={cropYear} categories={categories} commodities={commodities} onClose={() => setShowModal(false)} onSave={() => { setShowModal(false); loadData(); }} />}
+      {showCopyModal && (
+        <Modal isOpen={true} onClose={() => setShowCopyModal(false)} title="Copy Overhead from Another Year">
+          <div className="space-y-4">
+            <p className="text-gray-600">Select a year to copy all overhead expenses from. This will add copies to {cropYear}.</p>
+            {expenses.length > 0 && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
+                <Icon name="alert-triangle" size={16} className="inline mr-2" />
+                Warning: {cropYear} already has {expenses.length} expense(s). Copying will add more, not replace.
+              </div>
+            )}
+            <div className="grid grid-cols-3 gap-3">
+              {cropYears.filter(y => y !== cropYear).map(year => (
+                <button
+                  key={year}
+                  onClick={() => handleCopyFromYear(year)}
+                  className="p-4 border-2 rounded-lg hover:border-blue-400 hover:bg-blue-50 transition-all"
+                >
+                  <div className="text-2xl font-bold text-gray-900">{year}</div>
+                  <div className="text-sm text-gray-500">Copy from</div>
+                </button>
+              ))}
+            </div>
+            <div className="flex justify-end pt-4 border-t">
+              <button onClick={() => setShowCopyModal(false)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
+            </div>
+          </div>
+        </Modal>
+      )}
       <ConfirmModal isOpen={!!deleteConfirm} title="Delete Expense" message="Are you sure?" onConfirm={handleDelete} onCancel={() => setDeleteConfirm(null)} />
     </div>
   );
@@ -824,6 +1035,12 @@ function OverheadModal({ expense, cropYear, categories, commodities, onClose, on
   const [saving, setSaving] = useState(false);
   const { addToast } = useToast();
 
+  const practiceTypes = [
+    { id: null, label: 'All Practices', desc: 'Both irrigated and dryland' },
+    { id: 'IR', label: 'Irrigated Only', desc: 'Only irrigated fields' },
+    { id: 'DL', label: 'Dryland Only', desc: 'Only dryland fields' }
+  ];
+
   useEffect(() => {
     if (expense) {
       setForm({ ...expense });
@@ -831,17 +1048,33 @@ function OverheadModal({ expense, cropYear, categories, commodities, onClose, on
     }
   }, [expense]);
 
+  const isCommoditySelected = (commodityId) => allocations.some(a => a.commodity_id === commodityId);
+
   const toggleCommodity = (commodityId) => {
-    if (allocations.some(a => a.commodity_id === commodityId)) {
+    if (isCommoditySelected(commodityId)) {
       setAllocations(prev => prev.filter(a => a.commodity_id !== commodityId));
     } else {
       setAllocations(prev => [...prev, { commodity_id: commodityId, practice_type: null }]);
     }
   };
 
+  const setPracticeForCommodity = (commodityId, practiceType) => {
+    setAllocations(prev => prev.map(a =>
+      a.commodity_id === commodityId ? { ...a, practice_type: practiceType } : a
+    ));
+  };
+
+  const getAllocationForCommodity = (commodityId) => {
+    return allocations.find(a => a.commodity_id === commodityId);
+  };
+
   const handleSave = async () => {
     if (!form.name || !form.amount) {
       addToast('Please fill required fields', { type: 'error' });
+      return;
+    }
+    if (form.allocation_type === 'SPECIFIC_CROPS' && allocations.length === 0) {
+      addToast('Please select at least one commodity', { type: 'error' });
       return;
     }
     setSaving(true);
@@ -875,28 +1108,85 @@ function OverheadModal({ expense, cropYear, categories, commodities, onClose, on
           </div>
         </div>
         <div>
-          <label className="block text-sm font-medium mb-1">Allocation</label>
-          <select value={form.allocation_type} onChange={(e) => setForm(f => ({ ...f, allocation_type: e.target.value }))} className="w-full px-3 py-2 border rounded-lg">
-            <option value="ALL_ACRES">All Acres (spread evenly)</option>
-            <option value="SPECIFIC_CROPS">Specific Crops Only</option>
-          </select>
+          <label className="block text-sm font-medium mb-1">Allocation Method</label>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => setForm(f => ({ ...f, allocation_type: 'ALL_ACRES' }))}
+              className={`p-3 rounded-lg border-2 text-left transition-all ${form.allocation_type === 'ALL_ACRES' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'}`}
+            >
+              <div className="font-medium">All Acres</div>
+              <div className="text-xs text-gray-500">Spread evenly across all fields</div>
+            </button>
+            <button
+              type="button"
+              onClick={() => setForm(f => ({ ...f, allocation_type: 'SPECIFIC_CROPS' }))}
+              className={`p-3 rounded-lg border-2 text-left transition-all ${form.allocation_type === 'SPECIFIC_CROPS' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'}`}
+            >
+              <div className="font-medium">Specific Crops</div>
+              <div className="text-xs text-gray-500">Only certain commodities/practices</div>
+            </button>
+          </div>
         </div>
         {form.allocation_type === 'SPECIFIC_CROPS' && (
-          <div className="border rounded-lg p-3">
-            <div className="text-sm font-medium mb-2">Select Commodities</div>
-            <div className="flex flex-wrap gap-2">
-              {commodities.map(c => (
-                <button key={c.id} onClick={() => toggleCommodity(c.id)}
-                  className={`px-3 py-1 rounded-full text-sm ${allocations.some(a => a.commodity_id === c.id) ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600'}`}>
-                  {c.name}
-                </button>
-              ))}
+          <div className="border rounded-lg p-4 bg-gray-50 space-y-3">
+            <div className="text-sm font-medium text-gray-700">Select Crops & Practices</div>
+            <p className="text-xs text-gray-500">Click a crop to include it, then choose which practice types to include.</p>
+            <div className="space-y-2">
+              {commodities.map(c => {
+                const isSelected = isCommoditySelected(c.id);
+                const alloc = getAllocationForCommodity(c.id);
+                return (
+                  <div key={c.id} className={`rounded-lg border-2 transition-all ${isSelected ? 'border-blue-400 bg-white' : 'border-gray-200 bg-white'}`}>
+                    <button
+                      type="button"
+                      onClick={() => toggleCommodity(c.id)}
+                      className="w-full p-3 flex items-center justify-between"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className={`w-5 h-5 rounded border-2 flex items-center justify-center ${isSelected ? 'bg-blue-500 border-blue-500' : 'border-gray-300'}`}>
+                          {isSelected && <Icon name="check" size={14} className="text-white" />}
+                        </div>
+                        <span className={`font-medium ${isSelected ? 'text-blue-700' : 'text-gray-600'}`}>{c.name}</span>
+                      </div>
+                      {isSelected && (
+                        <span className="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded">
+                          {alloc?.practice_type === 'IR' ? 'Irrigated' : alloc?.practice_type === 'DL' ? 'Dryland' : 'All'}
+                        </span>
+                      )}
+                    </button>
+                    {isSelected && (
+                      <div className="px-3 pb-3 flex gap-2">
+                        {practiceTypes.map(pt => (
+                          <button
+                            key={pt.id || 'all'}
+                            type="button"
+                            onClick={() => setPracticeForCommodity(c.id, pt.id)}
+                            className={`px-3 py-1.5 rounded text-xs font-medium transition-all ${alloc?.practice_type === pt.id ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                          >
+                            {pt.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
+            {allocations.length > 0 && (
+              <div className="mt-3 pt-3 border-t text-xs text-gray-500">
+                <strong>Summary:</strong> {allocations.map(a => {
+                  const com = commodities.find(c => c.id === a.commodity_id);
+                  const practice = a.practice_type === 'IR' ? ' (IR)' : a.practice_type === 'DL' ? ' (DL)' : '';
+                  return com?.name + practice;
+                }).join(', ')}
+              </div>
+            )}
           </div>
         )}
         <div>
           <label className="block text-sm font-medium mb-1">Notes</label>
-          <textarea value={form.notes || ''} onChange={(e) => setForm(f => ({ ...f, notes: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" rows={2} />
+          <textarea value={form.notes || ''} onChange={(e) => setForm(f => ({ ...f, notes: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" rows={2} placeholder="Optional notes about this expense..." />
         </div>
         <div className="flex justify-end gap-3 pt-4 border-t">
           <button onClick={onClose} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
@@ -919,6 +1209,7 @@ function InputsPage({ cropYear, onYearChange }) {
   const [loading, setLoading] = useState(true);
   const [showSeedModal, setShowSeedModal] = useState(false);
   const [showRentModal, setShowRentModal] = useState(false);
+  const [showCopyRentModal, setShowCopyRentModal] = useState(false);
   const [editingSeed, setEditingSeed] = useState(null);
   const [editingRent, setEditingRent] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
@@ -960,6 +1251,34 @@ function InputsPage({ cropYear, onYearChange }) {
     }
   };
 
+  const handleCopyRentFromYear = async (sourceYear) => {
+    try {
+      const sourceRents = await getLandRent(sourceYear);
+      if (sourceRents.length === 0) {
+        addToast(`No rent entries found in ${sourceYear}`, { type: 'error' });
+        return;
+      }
+
+      let copied = 0;
+      for (const rent of sourceRents) {
+        await saveLandRent({
+          field_id: rent.field_id,
+          crop_year: cropYear,
+          rent_type: rent.rent_type,
+          rent_per_acre: rent.rent_per_acre,
+          notes: rent.notes
+        });
+        copied++;
+      }
+
+      addToast(`Copied ${copied} rent entries from ${sourceYear}`, { type: 'success' });
+      setShowCopyRentModal(false);
+      loadData();
+    } catch (e) {
+      addToast('Failed to copy: ' + e.message, { type: 'error' });
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -995,32 +1314,62 @@ function InputsPage({ cropYear, onYearChange }) {
                 <tr>
                   <th className="px-4 py-3 text-left">Field</th>
                   <th className="px-4 py-3 text-left">Variety</th>
+                  <th className="px-4 py-3 text-right">Acres</th>
                   <th className="px-4 py-3 text-right">Rate</th>
-                  <th className="px-4 py-3 text-right">Price/Bag</th>
-                  <th className="px-4 py-3 text-right">Total Cost</th>
+                  <th className="px-4 py-3 text-right">Bags</th>
+                  <th className="px-4 py-3 text-right">$/Bag</th>
+                  <th className="px-4 py-3 text-right">$/Acre</th>
+                  <th className="px-4 py-3 text-right font-semibold">Total</th>
                   <th className="px-4 py-3 text-center">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
                 {seeds.length === 0 ? (
-                  <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-500">No seed costs entered</td></tr>
-                ) : seeds.map(s => (
-                  <tr key={s.id} className="hover:bg-gray-50">
-                    <td className="px-4 py-3">
-                      <div className="font-medium">{s.field_name}</div>
-                      <div className="text-xs text-gray-500">{s.commodity_name}</div>
-                    </td>
-                    <td className="px-4 py-3">{s.variety || '-'}<br/><span className="text-xs text-gray-500">{s.brand}</span></td>
-                    <td className="px-4 py-3 text-right">{formatNumber(s.seeding_rate)}/ac</td>
-                    <td className="px-4 py-3 text-right">{formatCurrency(s.price_per_bag)}</td>
-                    <td className="px-4 py-3 text-right font-medium">{formatCurrency(s.total_cost || calculateSeedCost({ ...s, planted_acres: s.planted_acres }))}</td>
-                    <td className="px-4 py-3 text-center">
-                      <button onClick={() => { setEditingSeed(s); setShowSeedModal(true); }} className="p-1 hover:bg-gray-100 rounded"><Icon name="pencil" size={16} /></button>
-                      <button onClick={() => setDeleteConfirm({ ...s, type: 'seed' })} className="p-1 hover:bg-red-100 rounded text-red-600"><Icon name="trash-2" size={16} /></button>
-                    </td>
-                  </tr>
-                ))}
+                  <tr><td colSpan={9} className="px-4 py-8 text-center text-gray-500">No seed costs entered</td></tr>
+                ) : seeds.map(s => {
+                  const totalCost = s.total_cost || calculateSeedCost({ ...s, planted_acres: s.planted_acres });
+                  const bagsNeeded = s.seeding_rate && s.seeds_per_bag && s.planted_acres
+                    ? (s.seeding_rate * s.planted_acres) / s.seeds_per_bag : 0;
+                  const costPerAcre = totalCost && s.planted_acres ? totalCost / s.planted_acres : 0;
+                  return (
+                    <tr key={s.id} className="hover:bg-gray-50">
+                      <td className="px-4 py-3">
+                        <div className="font-medium">{s.field_name}</div>
+                        <div className="text-xs text-gray-500">{s.commodity_name}</div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div>{s.variety || '-'}</div>
+                        {s.brand && <div className="text-xs text-gray-500">{s.brand}</div>}
+                      </td>
+                      <td className="px-4 py-3 text-right">{formatNumber(s.planted_acres)}</td>
+                      <td className="px-4 py-3 text-right text-gray-600">{formatNumber(s.seeding_rate)}/ac</td>
+                      <td className="px-4 py-3 text-right text-gray-600">{bagsNeeded.toFixed(1)}</td>
+                      <td className="px-4 py-3 text-right text-gray-600">{formatCurrency(s.price_per_bag)}</td>
+                      <td className="px-4 py-3 text-right text-gray-600">{formatCurrency(costPerAcre)}</td>
+                      <td className="px-4 py-3 text-right font-semibold">{formatCurrency(totalCost)}</td>
+                      <td className="px-4 py-3 text-center">
+                        <button onClick={() => { setEditingSeed(s); setShowSeedModal(true); }} className="p-1 hover:bg-gray-100 rounded"><Icon name="pencil" size={16} /></button>
+                        <button onClick={() => setDeleteConfirm({ ...s, type: 'seed' })} className="p-1 hover:bg-red-100 rounded text-red-600"><Icon name="trash-2" size={16} /></button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
+              {seeds.length > 0 && (
+                <tfoot className="bg-gray-100">
+                  <tr className="font-semibold">
+                    <td className="px-4 py-3">TOTAL</td>
+                    <td></td>
+                    <td className="px-4 py-3 text-right">{formatNumber(seeds.reduce((s, seed) => s + (seed.planted_acres || 0), 0))}</td>
+                    <td></td>
+                    <td className="px-4 py-3 text-right">{seeds.reduce((s, seed) => s + ((seed.seeding_rate && seed.seeds_per_bag && seed.planted_acres) ? (seed.seeding_rate * seed.planted_acres) / seed.seeds_per_bag : 0), 0).toFixed(1)}</td>
+                    <td></td>
+                    <td></td>
+                    <td className="px-4 py-3 text-right">{formatCurrency(seeds.reduce((s, seed) => s + (seed.total_cost || calculateSeedCost({ ...seed, planted_acres: seed.planted_acres })), 0))}</td>
+                    <td></td>
+                  </tr>
+                </tfoot>
+              )}
             </table>
           )}
         </div>
@@ -1030,9 +1379,14 @@ function InputsPage({ cropYear, onYearChange }) {
         <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
           <div className="p-4 border-b flex items-center justify-between">
             <h2 className="font-semibold">Land Rent</h2>
-            <button onClick={() => { setEditingRent(null); setShowRentModal(true); }} className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">
-              <Icon name="plus" size={16} /> Add Rent
-            </button>
+            <div className="flex gap-2">
+              <button onClick={() => setShowCopyRentModal(true)} className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200">
+                <Icon name="copy" size={16} /> Copy Year
+              </button>
+              <button onClick={() => { setEditingRent(null); setShowRentModal(true); }} className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">
+                <Icon name="plus" size={16} /> Add Rent
+              </button>
+            </div>
           </div>
           {loading ? (
             <div className="p-8 text-center"><Icon name="loader" className="animate-spin text-blue-600 mx-auto" size={32} /></div>
@@ -1073,12 +1427,42 @@ function InputsPage({ cropYear, onYearChange }) {
 
       {showSeedModal && <SeedModal seed={editingSeed} fieldCropYears={fieldCropYears} onClose={() => setShowSeedModal(false)} onSave={() => { setShowSeedModal(false); loadData(); }} />}
       {showRentModal && <RentModal rent={editingRent} cropYear={cropYear} fields={fields} onClose={() => setShowRentModal(false)} onSave={() => { setShowRentModal(false); loadData(); }} />}
+      {showCopyRentModal && (
+        <Modal isOpen={true} onClose={() => setShowCopyRentModal(false)} title="Copy Rent from Another Year">
+          <div className="space-y-4">
+            <p className="text-gray-600">Select a year to copy all rent entries from. Existing entries for fields in {cropYear} will be updated.</p>
+            <div className="grid grid-cols-3 gap-3">
+              {cropYears.filter(y => y !== cropYear).map(year => (
+                <button
+                  key={year}
+                  onClick={() => handleCopyRentFromYear(year)}
+                  className="p-4 border-2 rounded-lg hover:border-blue-400 hover:bg-blue-50 transition-all"
+                >
+                  <div className="text-2xl font-bold text-gray-900">{year}</div>
+                  <div className="text-sm text-gray-500">Copy from</div>
+                </button>
+              ))}
+            </div>
+            <div className="flex justify-end pt-4 border-t">
+              <button onClick={() => setShowCopyRentModal(false)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
+            </div>
+          </div>
+        </Modal>
+      )}
       <ConfirmModal isOpen={!!deleteConfirm} title={`Delete ${deleteConfirm?.type === 'seed' ? 'Seed Cost' : 'Rent'}`} message="Are you sure?" onConfirm={deleteConfirm?.type === 'seed' ? handleDeleteSeed : handleDeleteRent} onCancel={() => setDeleteConfirm(null)} />
     </div>
   );
 }
 
 function SeedModal({ seed, fieldCropYears, onClose, onSave }) {
+  // Default seeds/bag by commodity
+  const seedDefaults = {
+    'Corn': { seeds_per_bag: 80000, seeding_rate: 32000 },
+    'Soybeans': { seeds_per_bag: 140000, seeding_rate: 140000 },
+    'Wheat': { seeds_per_bag: 600000, seeding_rate: 1200000 },
+    'Milo': { seeds_per_bag: 80000, seeding_rate: 32000 }
+  };
+
   const [form, setForm] = useState({ field_crop_year_id: '', variety: '', brand: '', price_per_bag: '', seeds_per_bag: 80000, seeding_rate: 32000, total_cost: '' });
   const [saving, setSaving] = useState(false);
   const { addToast } = useToast();
@@ -1088,9 +1472,19 @@ function SeedModal({ seed, fieldCropYears, onClose, onSave }) {
   }, [seed]);
 
   const selectedFcy = fieldCropYears.find(f => f.id === form.field_crop_year_id);
-  const calculatedCost = form.price_per_bag && form.seeds_per_bag && form.seeding_rate && selectedFcy?.planted_acres
-    ? ((form.seeding_rate * selectedFcy.planted_acres) / form.seeds_per_bag) * form.price_per_bag
-    : 0;
+
+  // Auto-set defaults when field is selected based on commodity
+  useEffect(() => {
+    if (selectedFcy && !seed) {
+      const defaults = seedDefaults[selectedFcy.commodity_name] || { seeds_per_bag: 80000, seeding_rate: 32000 };
+      setForm(f => ({ ...f, seeds_per_bag: defaults.seeds_per_bag, seeding_rate: defaults.seeding_rate }));
+    }
+  }, [selectedFcy?.commodity_name]);
+
+  const totalSeeds = form.seeding_rate && selectedFcy?.planted_acres ? form.seeding_rate * selectedFcy.planted_acres : 0;
+  const bagsNeeded = form.seeds_per_bag && totalSeeds ? totalSeeds / form.seeds_per_bag : 0;
+  const calculatedCost = form.price_per_bag && bagsNeeded ? bagsNeeded * parseFloat(form.price_per_bag) : 0;
+  const costPerAcre = calculatedCost && selectedFcy?.planted_acres ? calculatedCost / selectedFcy.planted_acres : 0;
 
   const handleSave = async () => {
     if (!form.field_crop_year_id) {
@@ -1142,14 +1536,38 @@ function SeedModal({ seed, fieldCropYears, onClose, onSave }) {
             <input type="number" value={form.seeding_rate} onChange={(e) => setForm(f => ({ ...f, seeding_rate: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" />
           </div>
         </div>
-        <div className="bg-gray-50 rounded-lg p-4">
-          <div className="flex justify-between">
-            <span>Calculated Cost:</span>
-            <span className="font-bold">{formatCurrency(calculatedCost)}</span>
-          </div>
-          <div className="mt-2">
+        <div className="bg-blue-50 rounded-lg p-4 space-y-2">
+          <div className="text-sm font-medium text-blue-800 mb-2">Seed Calculation</div>
+          {selectedFcy?.planted_acres ? (
+            <>
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                <span className="text-gray-600">Acres:</span>
+                <span className="text-right font-medium">{formatNumber(selectedFcy.planted_acres)}</span>
+                <span className="text-gray-600">Seeds/Acre:</span>
+                <span className="text-right font-medium">{formatNumber(form.seeding_rate || 0)}</span>
+                <span className="text-gray-600">Total Seeds:</span>
+                <span className="text-right font-medium">{formatNumber(totalSeeds)}</span>
+                <span className="text-gray-600">Seeds/Bag:</span>
+                <span className="text-right font-medium">{formatNumber(form.seeds_per_bag || 0)}</span>
+                <span className="text-gray-600 font-semibold">Bags Needed:</span>
+                <span className="text-right font-bold text-blue-700">{bagsNeeded.toFixed(2)}</span>
+              </div>
+              <div className="border-t pt-2 mt-2 flex justify-between text-sm">
+                <span className="text-gray-600">@ {formatCurrency(form.price_per_bag || 0)}/bag:</span>
+                <span className="font-bold text-lg">{formatCurrency(calculatedCost)}</span>
+              </div>
+              <div className="flex justify-between text-sm text-gray-500">
+                <span>Cost per acre:</span>
+                <span>{formatCurrency(costPerAcre)}/ac</span>
+              </div>
+            </>
+          ) : (
+            <p className="text-sm text-gray-500">Select a field to see calculations</p>
+          )}
+          <div className="mt-3 pt-3 border-t">
             <label className="block text-sm font-medium mb-1">Override Total Cost (optional)</label>
-            <input type="number" step="0.01" value={form.total_cost} onChange={(e) => setForm(f => ({ ...f, total_cost: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" placeholder="Leave blank to use calculated" />
+            <input type="number" step="0.01" value={form.total_cost} onChange={(e) => setForm(f => ({ ...f, total_cost: e.target.value }))} className="w-full px-3 py-2 border rounded-lg bg-white" placeholder="Leave blank to use calculated" />
+            <p className="text-xs text-gray-500 mt-1">Use this if you have an actual invoice amount different from calculated</p>
           </div>
         </div>
         <div className="flex justify-end gap-3 pt-4 border-t">
@@ -1290,7 +1708,7 @@ function CropPlansPage({ cropYear, onYearChange }) {
           </div>
           <div className="p-4 bg-amber-50 border-b text-sm text-amber-800">
             <Icon name="link" size={16} className="inline mr-2" />
-            Link plans to <a href="/spray/manager" className="underline font-medium">Spray-Suite tank mixes</a> to pull actual FIFO costs, or set estimated cost manually.
+            Link plans to <a href="https://baldwinag.com/spray/manager" className="underline font-medium">Spray-Suite tank mixes</a> to pull actual FIFO costs, or set estimated cost manually.
           </div>
           {loading ? (
             <div className="p-8 text-center"><Icon name="loader" className="animate-spin text-blue-600 mx-auto" size={32} /></div>
@@ -1339,13 +1757,13 @@ function CropPlansPage({ cropYear, onYearChange }) {
         <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
           <div className="p-4 border-b flex items-center justify-between">
             <h2 className="font-semibold">Fertilizer Plans</h2>
-            <a href="/portal/fertilizer" className="flex items-center gap-2 px-3 py-1.5 bg-green-600 text-white rounded-lg text-sm hover:bg-green-700">
+            <a href="https://baldwinag.com/portal/fertilizer" className="flex items-center gap-2 px-3 py-1.5 bg-green-600 text-white rounded-lg text-sm hover:bg-green-700">
               <Icon name="flask-conical" size={16} /> Manage in Fertilizer App
             </a>
           </div>
           <div className="p-4 bg-green-50 border-b text-sm text-green-800">
             <Icon name="link" size={16} className="inline mr-2" />
-            Fertilizer plans are managed in the <a href="/portal/fertilizer" className="underline font-medium">Fertilizer App</a>. They appear here for assignment.
+            Fertilizer plans are managed in the <a href="https://baldwinag.com/portal/fertilizer" className="underline font-medium">Fertilizer App</a>. They appear here for assignment.
           </div>
           {loading ? (
             <div className="p-8 text-center"><Icon name="loader" className="animate-spin text-blue-600 mx-auto" size={32} /></div>
@@ -1414,7 +1832,35 @@ function HerbicidePlanModal({ plan, commodities, tankMixes, onClose, onSave }) {
     estimated_cost_per_acre: plan?.estimated_cost_per_acre || ''
   });
   const [saving, setSaving] = useState(false);
+  const [tankMixDetails, setTankMixDetails] = useState(null);
+  const [loadingDetails, setLoadingDetails] = useState(false);
   const { addToast } = useToast();
+
+  // Load tank mix details when selected
+  useEffect(() => {
+    async function loadTankMixDetails() {
+      if (!form.tank_mix_id) {
+        setTankMixDetails(null);
+        return;
+      }
+      setLoadingDetails(true);
+      try {
+        const { data } = await db.from('tank_mixes')
+          .select('*, tank_mix_products(*, products(name, unit))')
+          .eq('id', form.tank_mix_id)
+          .single();
+        setTankMixDetails(data);
+        // Auto-fill estimated cost if not set
+        if (data?.cost_per_acre && !form.estimated_cost_per_acre) {
+          setForm(f => ({ ...f, estimated_cost_per_acre: data.cost_per_acre }));
+        }
+      } catch (e) {
+        console.error('Error loading tank mix:', e);
+      }
+      setLoadingDetails(false);
+    }
+    loadTankMixDetails();
+  }, [form.tank_mix_id]);
 
   const handleSave = async () => {
     if (!form.name.trim()) {
@@ -1432,6 +1878,8 @@ function HerbicidePlanModal({ plan, commodities, tankMixes, onClose, onSave }) {
     setSaving(false);
   };
 
+  const selectedTankMix = tankMixes.find(t => t.id === form.tank_mix_id);
+
   return (
     <Modal isOpen={true} onClose={onClose} title={plan ? 'Edit Herbicide Plan' : 'Add Herbicide Plan'}>
       <div className="space-y-4">
@@ -1446,23 +1894,114 @@ function HerbicidePlanModal({ plan, commodities, tankMixes, onClose, onSave }) {
             {commodities.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </div>
-        <div>
-          <label className="block text-sm font-medium mb-1">Link to Tank Mix (optional)</label>
-          <select value={form.tank_mix_id} onChange={(e) => setForm(f => ({ ...f, tank_mix_id: e.target.value }))} className="w-full px-3 py-2 border rounded-lg">
-            <option value="">No link - use manual cost</option>
-            {tankMixes.map(t => <option key={t.id} value={t.id}>{t.name} {t.commodity_name ? `(${t.commodity_name})` : ''}</option>)}
-          </select>
-          <p className="text-xs text-gray-500 mt-1">Link to a Spray-Suite tank mix to use actual FIFO costs</p>
+
+        <div className="bg-gray-50 rounded-lg p-4">
+          <div className="font-medium mb-3 flex items-center gap-2">
+            <Icon name="link" size={16} className="text-blue-600" />
+            Cost Source
+          </div>
+
+          <div className="space-y-3">
+            <label className="flex items-center gap-3 p-3 bg-white rounded-lg border cursor-pointer hover:border-blue-300">
+              <input
+                type="radio"
+                name="costSource"
+                checked={!form.tank_mix_id}
+                onChange={() => setForm(f => ({ ...f, tank_mix_id: '' }))}
+                className="text-blue-600"
+              />
+              <div>
+                <div className="font-medium">Manual Estimate</div>
+                <div className="text-xs text-gray-500">Enter cost per acre manually</div>
+              </div>
+            </label>
+
+            <label className="flex items-center gap-3 p-3 bg-white rounded-lg border cursor-pointer hover:border-blue-300">
+              <input
+                type="radio"
+                name="costSource"
+                checked={!!form.tank_mix_id}
+                onChange={() => {}}
+                className="text-blue-600"
+              />
+              <div className="flex-1">
+                <div className="font-medium">Link to Spray-Suite Tank Mix</div>
+                <div className="text-xs text-gray-500">Use actual FIFO costs from inventory</div>
+              </div>
+            </label>
+
+            {form.tank_mix_id !== '' || !form.tank_mix_id ? null : null}
+            <select
+              value={form.tank_mix_id}
+              onChange={(e) => setForm(f => ({ ...f, tank_mix_id: e.target.value }))}
+              className="w-full px-3 py-2 border rounded-lg ml-6"
+              style={{ marginLeft: '2rem' }}
+            >
+              <option value="">Select a tank mix...</option>
+              {tankMixes.map(t => (
+                <option key={t.id} value={t.id}>
+                  {t.name} {t.commodity_name ? `(${t.commodity_name})` : ''} - {formatCurrency(t.cost_per_acre || 0)}/ac
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
+
+        {/* Tank Mix Details */}
+        {form.tank_mix_id && (
+          <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
+            <div className="flex items-center justify-between mb-3">
+              <div className="font-medium text-blue-800">Linked Tank Mix: {selectedTankMix?.name}</div>
+              <a href="https://baldwinag.com/spray/manager" target="_blank" className="text-xs text-blue-600 hover:underline flex items-center gap-1">
+                <Icon name="external-link" size={12} /> View in Spray-Suite
+              </a>
+            </div>
+            {loadingDetails ? (
+              <div className="text-center py-2"><Icon name="loader" className="animate-spin" size={16} /></div>
+            ) : tankMixDetails?.tank_mix_products?.length > 0 ? (
+              <div className="space-y-1">
+                <div className="text-xs text-blue-600 uppercase tracking-wide mb-2">Products in this mix:</div>
+                {tankMixDetails.tank_mix_products.map((p, i) => (
+                  <div key={i} className="flex justify-between text-sm bg-white/50 rounded px-2 py-1">
+                    <span>{p.products?.name || 'Unknown'}</span>
+                    <span className="text-gray-500">{p.rate} {p.products?.unit || 'oz'}/ac</span>
+                  </div>
+                ))}
+                <div className="flex justify-between font-semibold text-sm mt-2 pt-2 border-t border-blue-200">
+                  <span>Estimated Cost:</span>
+                  <span>{formatCurrency(tankMixDetails.cost_per_acre || 0)}/ac</span>
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-blue-700">No product details available</p>
+            )}
+          </div>
+        )}
+
+        {/* Manual cost input */}
         <div>
-          <label className="block text-sm font-medium mb-1">Estimated Cost/Acre</label>
-          <input type="number" step="0.01" value={form.estimated_cost_per_acre} onChange={(e) => setForm(f => ({ ...f, estimated_cost_per_acre: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" placeholder="25.00" />
-          <p className="text-xs text-gray-500 mt-1">Used for planning if no tank mix linked</p>
+          <label className="block text-sm font-medium mb-1">
+            {form.tank_mix_id ? 'Override Cost/Acre (optional)' : 'Estimated Cost/Acre *'}
+          </label>
+          <div className="flex items-center gap-2">
+            <span className="text-gray-500">$</span>
+            <input
+              type="number"
+              step="0.01"
+              value={form.estimated_cost_per_acre}
+              onChange={(e) => setForm(f => ({ ...f, estimated_cost_per_acre: e.target.value }))}
+              className="w-full px-3 py-2 border rounded-lg"
+              placeholder={form.tank_mix_id ? 'Leave blank to use tank mix cost' : '25.00'}
+            />
+            <span className="text-gray-500">/acre</span>
+          </div>
         </div>
+
         <div>
           <label className="block text-sm font-medium mb-1">Description</label>
           <textarea value={form.description} onChange={(e) => setForm(f => ({ ...f, description: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" rows={2} placeholder="Notes about this plan..." />
         </div>
+
         <div className="flex justify-end gap-3 pt-4 border-t">
           <button onClick={onClose} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
           <button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
@@ -1580,9 +2119,9 @@ function FieldAssignmentsPage({ cropYear, onYearChange }) {
                   <td className="px-4 py-3">{f.commodity_name}</td>
                   <td className="px-4 py-3 text-right">{formatNumber(f.planted_acres)}</td>
                   <td className="px-4 py-3">
-                    {f.plan?.tenant_share && f.plan.tenant_share < 1 ? (
+                    {f.tenant_share != null && f.tenant_share < 1 ? (
                       <span className="px-2 py-0.5 bg-purple-100 text-purple-800 rounded text-xs">
-                        {((1 - f.plan.tenant_share) * 100).toFixed(0)}% to {f.plan?.landlord || 'Landlord'}
+                        {((1 - f.tenant_share) * 100).toFixed(0)}% to {f.landlord || 'Landlord'}
                       </span>
                     ) : (
                       <span className="text-gray-400 text-xs">100% Tenant</span>
@@ -2043,6 +2582,379 @@ function BreakevenPage({ cropYear, onYearChange }) {
 }
 
 // ============================================================================
+// LANDLORD REPORT PAGE
+// ============================================================================
+function LandlordReportPage({ cropYear, onYearChange }) {
+  const [data, setData] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [expandedLandlord, setExpandedLandlord] = useState(null);
+  const currentYear = new Date().getFullYear();
+  const cropYears = [currentYear - 1, currentYear, currentYear + 1];
+
+  useEffect(() => {
+    async function load() {
+      setLoading(true);
+      const [fcys, fertCosts, herbCosts] = await Promise.all([
+        getFieldCropYears(cropYear),
+        getFertilizerCostsDetailed(cropYear),
+        getHerbicideCosts(cropYear)
+      ]);
+
+      // Only include fields with landlord splits (tenant_share < 1)
+      const landlordFields = fcys.filter(fcy => fcy.tenant_share != null && fcy.tenant_share < 1);
+
+      // Calculate landlord costs for each field
+      const fieldsWithCosts = landlordFields.map(fcy => {
+        const tenantShare = fcy.tenant_share;
+        const landlordShare = 1 - tenantShare;
+
+        // Fertilizer: ALWAYS split
+        const fertData = fertCosts[fcy.field_id] || { total: 0 };
+        const fertTotal = fertData.total;
+        const fertLandlord = fertTotal * landlordShare;
+
+        // Herbicide: Only split products marked 'split' = 'Y'
+        const herbData = herbCosts[fcy.field_id] || { total: 0, splitCost: 0, nonSplitCost: 0 };
+        const herbSplitCost = herbData.splitCost;  // Only these are split
+        const herbLandlord = herbSplitCost * landlordShare;
+
+        const totalLandlord = fertLandlord + herbLandlord;
+        const costPerAcreLandlord = fcy.planted_acres > 0 ? totalLandlord / fcy.planted_acres : 0;
+
+        return {
+          ...fcy,
+          landlordShare,
+          fertTotal,
+          fertLandlord,
+          herbSplitCost,
+          herbLandlord,
+          totalLandlord,
+          costPerAcreLandlord
+        };
+      });
+
+      // Group by landlord name
+      const byLandlord = {};
+      fieldsWithCosts.forEach(f => {
+        const landlordName = f.landlord || 'Unknown Landlord';
+        if (!byLandlord[landlordName]) {
+          byLandlord[landlordName] = { name: landlordName, fields: [], totals: { acres: 0, fertLandlord: 0, herbLandlord: 0, totalLandlord: 0 } };
+        }
+        byLandlord[landlordName].fields.push(f);
+        byLandlord[landlordName].totals.acres += f.planted_acres || 0;
+        byLandlord[landlordName].totals.fertLandlord += f.fertLandlord;
+        byLandlord[landlordName].totals.herbLandlord += f.herbLandlord;
+        byLandlord[landlordName].totals.totalLandlord += f.totalLandlord;
+      });
+
+      setData(Object.values(byLandlord).sort((a, b) => a.name.localeCompare(b.name)));
+      setLoading(false);
+    }
+    load();
+  }, [cropYear]);
+
+  const exportCSV = () => {
+    const headers = ['Landlord', 'Field', 'Farm', 'Commodity', 'Acres', 'Landlord %', 'Fertilizer Share', 'Herbicide Share', 'Total Landlord Cost'];
+    const rows = [];
+    data.forEach(landlord => {
+      landlord.fields.forEach(f => {
+        rows.push([
+          landlord.name,
+          f.field_name,
+          f.farm_name,
+          f.commodity_name,
+          f.planted_acres,
+          (f.landlordShare * 100).toFixed(0) + '%',
+          f.fertLandlord.toFixed(2),
+          f.herbLandlord.toFixed(2),
+          f.totalLandlord.toFixed(2)
+        ]);
+      });
+      rows.push([landlord.name + ' TOTAL', '', '', '', landlord.totals.acres, '', landlord.totals.fertLandlord.toFixed(2), landlord.totals.herbLandlord.toFixed(2), landlord.totals.totalLandlord.toFixed(2)]);
+    });
+    const csv = [headers, ...rows].map(r => r.join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `landlord-report-${cropYear}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const grandTotals = data.reduce((acc, l) => ({
+    acres: acc.acres + l.totals.acres,
+    fertLandlord: acc.fertLandlord + l.totals.fertLandlord,
+    herbLandlord: acc.herbLandlord + l.totals.herbLandlord,
+    totalLandlord: acc.totalLandlord + l.totals.totalLandlord
+  }), { acres: 0, fertLandlord: 0, herbLandlord: 0, totalLandlord: 0 });
+
+  const exportPDF = (landlordName = null) => {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    const margin = 14;
+    let yPos = 20;
+
+    const landlords = landlordName ? data.filter(l => l.name === landlordName) : data;
+    const title = landlordName ? `Landlord Statement - ${landlordName}` : 'Landlord Report Summary';
+
+    // Title
+    doc.setFontSize(18);
+    doc.setFont('helvetica', 'bold');
+    doc.text(title, margin, yPos);
+    yPos += 8;
+
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(100);
+    doc.text(`${cropYear} Crop Year • Generated ${new Date().toLocaleDateString()}`, margin, yPos);
+    yPos += 12;
+
+    doc.setTextColor(0);
+
+    landlords.forEach((landlord, idx) => {
+      if (idx > 0) {
+        yPos += 10;
+        if (yPos > 250) {
+          doc.addPage();
+          yPos = 20;
+        }
+      }
+
+      // Landlord header
+      doc.setFontSize(14);
+      doc.setFont('helvetica', 'bold');
+      doc.text(landlord.name, margin, yPos);
+      yPos += 6;
+
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`${landlord.fields.length} field(s) • ${formatNumber(landlord.totals.acres)} acres`, margin, yPos);
+      yPos += 8;
+
+      // Table
+      const tableData = landlord.fields.map(f => [
+        f.field_name,
+        f.commodity_name,
+        formatNumber(f.planted_acres),
+        (f.landlordShare * 100).toFixed(0) + '%',
+        formatCurrency(f.fertLandlord),
+        formatCurrency(f.herbLandlord),
+        formatCurrency(f.totalLandlord)
+      ]);
+
+      // Add totals row
+      tableData.push([
+        { content: 'TOTAL', styles: { fontStyle: 'bold' } },
+        '',
+        { content: formatNumber(landlord.totals.acres), styles: { fontStyle: 'bold' } },
+        '',
+        { content: formatCurrency(landlord.totals.fertLandlord), styles: { fontStyle: 'bold' } },
+        { content: formatCurrency(landlord.totals.herbLandlord), styles: { fontStyle: 'bold' } },
+        { content: formatCurrency(landlord.totals.totalLandlord), styles: { fontStyle: 'bold' } }
+      ]);
+
+      doc.autoTable({
+        startY: yPos,
+        head: [['Field', 'Crop', 'Acres', 'Share %', 'Fertilizer', 'Herbicide', 'Total']],
+        body: tableData,
+        margin: { left: margin, right: margin },
+        styles: { fontSize: 9 },
+        headStyles: { fillColor: [88, 80, 141] },
+        columnStyles: {
+          2: { halign: 'right' },
+          3: { halign: 'right' },
+          4: { halign: 'right' },
+          5: { halign: 'right' },
+          6: { halign: 'right' }
+        }
+      });
+
+      yPos = doc.lastAutoTable.finalY + 5;
+    });
+
+    // Grand total if showing all landlords
+    if (!landlordName && landlords.length > 1) {
+      yPos += 5;
+      if (yPos > 260) {
+        doc.addPage();
+        yPos = 20;
+      }
+
+      doc.setFillColor(88, 80, 141);
+      doc.rect(margin, yPos, doc.internal.pageSize.width - margin * 2, 12, 'F');
+      doc.setTextColor(255);
+      doc.setFont('helvetica', 'bold');
+      doc.text('GRAND TOTAL ALL LANDLORDS:', margin + 4, yPos + 8);
+      doc.text(formatCurrency(grandTotals.totalLandlord), doc.internal.pageSize.width - margin - 4, yPos + 8, { align: 'right' });
+      doc.setTextColor(0);
+    }
+
+    // Footer note
+    yPos = doc.internal.pageSize.height - 20;
+    doc.setFontSize(8);
+    doc.setFont('helvetica', 'italic');
+    doc.setTextColor(100);
+    doc.text('Note: Includes fertilizer and split herbicide costs only. Burndowns, overhead, seed, rent, insurance, and taxes are tenant responsibility.', margin, yPos);
+
+    const fileName = landlordName
+      ? `landlord-statement-${landlordName.replace(/\s+/g, '-').toLowerCase()}-${cropYear}.pdf`
+      : `landlord-report-${cropYear}.pdf`;
+    doc.save(fileName);
+  };
+
+  if (loading) return <div className="flex items-center justify-center h-64"><Icon name="loader" className="animate-spin text-blue-600" size={32} /></div>;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Landlord Report</h1>
+          <p className="text-sm text-gray-500">Expected expenses by landlord for {cropYear}</p>
+        </div>
+        <div className="flex gap-3">
+          <select value={cropYear} onChange={(e) => onYearChange(parseInt(e.target.value))} className="px-4 py-2 border rounded-lg">
+            {cropYears.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+          <button onClick={exportCSV} className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200">
+            <Icon name="download" size={18} /> CSV
+          </button>
+          <button onClick={() => exportPDF()} className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700">
+            <Icon name="file-text" size={18} /> PDF Report
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800">
+        <Icon name="info" size={16} className="inline mr-2" />
+        <strong>Note:</strong> This report shows landlord's share of <strong>fertilizer</strong> and <strong>herbicide</strong> costs only.
+        Insurance, taxes, overhead, seed, and rent are tenant responsibilities and not included here.
+        Burndowns and non-residual herbicides are also 100% tenant and excluded.
+      </div>
+
+      {data.length === 0 ? (
+        <div className="bg-white rounded-xl shadow-sm border p-8 text-center text-gray-500">
+          <Icon name="users" size={48} className="mx-auto mb-4 text-gray-300" />
+          <p>No landlord fields found for {cropYear}.</p>
+          <p className="text-sm mt-2">Fields with tenant_share less than 100% will appear here.</p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {data.map(landlord => (
+            <div key={landlord.name} className="bg-white rounded-xl shadow-sm border overflow-hidden">
+              <button
+                onClick={() => setExpandedLandlord(expandedLandlord === landlord.name ? null : landlord.name)}
+                className="w-full flex items-center justify-between p-4 hover:bg-gray-50"
+              >
+                <div className="flex items-center gap-4">
+                  <div className="w-10 h-10 bg-purple-100 rounded-full flex items-center justify-center">
+                    <Icon name="user" size={20} className="text-purple-600" />
+                  </div>
+                  <div className="text-left">
+                    <div className="font-semibold text-lg">{landlord.name}</div>
+                    <div className="text-sm text-gray-500">{landlord.fields.length} field{landlord.fields.length !== 1 ? 's' : ''} • {formatNumber(landlord.totals.acres)} acres</div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-6">
+                  <div className="text-right">
+                    <div className="text-sm text-gray-500">Expected Expenses</div>
+                    <div className="text-xl font-bold text-purple-600">{formatCurrency(landlord.totals.totalLandlord)}</div>
+                  </div>
+                  <Icon name={expandedLandlord === landlord.name ? 'chevron-up' : 'chevron-down'} size={20} className="text-gray-400" />
+                </div>
+              </button>
+
+              {expandedLandlord === landlord.name && (
+                <div className="border-t">
+                  <table className="w-full text-sm">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-4 py-2 text-left">Field</th>
+                        <th className="px-4 py-2 text-left">Commodity</th>
+                        <th className="px-4 py-2 text-right">Acres</th>
+                        <th className="px-4 py-2 text-right">Share %</th>
+                        <th className="px-4 py-2 text-right">Fertilizer</th>
+                        <th className="px-4 py-2 text-right">Herbicide</th>
+                        <th className="px-4 py-2 text-right font-semibold">Total</th>
+                        <th className="px-4 py-2 text-right">$/Acre</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {landlord.fields.map(f => (
+                        <tr key={f.id} className="hover:bg-gray-50">
+                          <td className="px-4 py-2">
+                            <div className="font-medium">{f.field_name}</div>
+                            <div className="text-xs text-gray-500">{f.farm_name}</div>
+                          </td>
+                          <td className="px-4 py-2">{f.commodity_name}</td>
+                          <td className="px-4 py-2 text-right">{formatNumber(f.planted_acres)}</td>
+                          <td className="px-4 py-2 text-right">
+                            <span className="px-2 py-0.5 bg-purple-100 text-purple-800 rounded text-xs">
+                              {(f.landlordShare * 100).toFixed(0)}%
+                            </span>
+                          </td>
+                          <td className="px-4 py-2 text-right">{formatCurrency(f.fertLandlord)}</td>
+                          <td className="px-4 py-2 text-right">{formatCurrency(f.herbLandlord)}</td>
+                          <td className="px-4 py-2 text-right font-semibold">{formatCurrency(f.totalLandlord)}</td>
+                          <td className="px-4 py-2 text-right text-gray-600">{formatCurrency(f.costPerAcreLandlord)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot className="bg-purple-50">
+                      <tr className="font-semibold text-purple-800">
+                        <td className="px-4 py-2">{landlord.name} Total</td>
+                        <td></td>
+                        <td className="px-4 py-2 text-right">{formatNumber(landlord.totals.acres)}</td>
+                        <td></td>
+                        <td className="px-4 py-2 text-right">{formatCurrency(landlord.totals.fertLandlord)}</td>
+                        <td className="px-4 py-2 text-right">{formatCurrency(landlord.totals.herbLandlord)}</td>
+                        <td className="px-4 py-2 text-right">{formatCurrency(landlord.totals.totalLandlord)}</td>
+                        <td></td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                  <div className="p-3 bg-gray-50 border-t flex justify-end">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); exportPDF(landlord.name); }}
+                      className="flex items-center gap-2 px-3 py-1.5 bg-purple-600 text-white rounded-lg text-sm hover:bg-purple-700"
+                    >
+                      <Icon name="file-text" size={16} /> Export {landlord.name} Statement
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+
+          <div className="bg-purple-600 text-white rounded-xl shadow-sm p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-purple-200 text-sm">Grand Total - All Landlords</div>
+                <div className="text-2xl font-bold">{formatCurrency(grandTotals.totalLandlord)}</div>
+              </div>
+              <div className="grid grid-cols-3 gap-8 text-right">
+                <div>
+                  <div className="text-purple-200 text-sm">Total Acres</div>
+                  <div className="text-xl font-semibold">{formatNumber(grandTotals.acres)}</div>
+                </div>
+                <div>
+                  <div className="text-purple-200 text-sm">Fertilizer</div>
+                  <div className="text-xl font-semibold">{formatCurrency(grandTotals.fertLandlord)}</div>
+                </div>
+                <div>
+                  <div className="text-purple-200 text-sm">Herbicide</div>
+                  <div className="text-xl font-semibold">{formatCurrency(grandTotals.herbLandlord)}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
 // SETTINGS PAGE
 // ============================================================================
 function SettingsPage({ isConnected }) {
@@ -2151,6 +3063,7 @@ function App() {
       case 'crop-plans': return <CropPlansPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
       case 'field-assignments': return <FieldAssignmentsPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
       case 'breakeven': return <BreakevenPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
+      case 'landlord-report': return <LandlordReportPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
       case 'settings': return <SettingsPage isConnected={isConnected} />;
       default: return <DashboardPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
     }
@@ -2168,9 +3081,9 @@ function App() {
           </div>
         </div>
         <div className="flex items-center gap-1">
-          <a href="/portal/grain" className="p-2 hover:bg-gray-100 rounded-lg" title="GrainTrack"><Icon name="wheat" size={18} className="text-amber-600" /></a>
-          <a href="/portal/fertilizer" className="p-2 hover:bg-gray-100 rounded-lg" title="Fertilizer"><Icon name="flask-conical" size={18} className="text-green-600" /></a>
-          <a href="/spray/manager" className="p-2 hover:bg-gray-100 rounded-lg" title="Spray-Suite"><Icon name="spray-can" size={18} className="text-purple-600" /></a>
+          <a href="https://baldwinag.com/portal/graintrack" className="p-2 hover:bg-gray-100 rounded-lg" title="GrainTrack"><Icon name="wheat" size={18} className="text-amber-600" /></a>
+          <a href="https://baldwinag.com/portal/fertilizer" className="p-2 hover:bg-gray-100 rounded-lg" title="Fertilizer"><Icon name="flask-conical" size={18} className="text-green-600" /></a>
+          <a href="https://baldwinag.com/spray/manager" className="p-2 hover:bg-gray-100 rounded-lg" title="Spray-Suite"><Icon name="spray-can" size={18} className="text-purple-600" /></a>
         </div>
       </div>
 
@@ -2212,9 +3125,9 @@ function App() {
                 </div>
               </div>
               <div className="flex items-center gap-1">
-                <a href="/portal/grain" className="p-2 hover:bg-gray-100 rounded-lg" title="GrainTrack"><Icon name="wheat" size={18} className="text-amber-600" /></a>
-                <a href="/portal/fertilizer" className="p-2 hover:bg-gray-100 rounded-lg" title="Fertilizer"><Icon name="flask-conical" size={18} className="text-green-600" /></a>
-                <a href="/spray/manager" className="p-2 hover:bg-gray-100 rounded-lg" title="Spray-Suite"><Icon name="spray-can" size={18} className="text-purple-600" /></a>
+                <a href="https://baldwinag.com/portal/graintrack" className="p-2 hover:bg-gray-100 rounded-lg" title="GrainTrack"><Icon name="wheat" size={18} className="text-amber-600" /></a>
+                <a href="https://baldwinag.com/portal/fertilizer" className="p-2 hover:bg-gray-100 rounded-lg" title="Fertilizer"><Icon name="flask-conical" size={18} className="text-green-600" /></a>
+                <a href="https://baldwinag.com/spray/manager" className="p-2 hover:bg-gray-100 rounded-lg" title="Spray-Suite"><Icon name="spray-can" size={18} className="text-purple-600" /></a>
               </div>
             </div>
           </div>
