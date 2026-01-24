@@ -2305,7 +2305,11 @@ function App() {
             <span className="font-bold text-gray-900">Fertilizer</span>
           </div>
         </div>
-        <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : isConnected === false ? 'bg-red-500' : 'bg-gray-300'}`} />
+        <div className="flex items-center gap-1">
+          <a href="/portal/grain" className="p-2 hover:bg-gray-100 rounded-lg" title="GrainTrack"><Icon name="wheat" size={18} className="text-amber-600" /></a>
+          <a href="/portal/breakeven" className="p-2 hover:bg-gray-100 rounded-lg" title="Breakeven"><Icon name="calculator" size={18} className="text-blue-600" /></a>
+          <a href="/spray/manager" className="p-2 hover:bg-gray-100 rounded-lg" title="Spray-Suite"><Icon name="spray-can" size={18} className="text-purple-600" /></a>
+        </div>
       </div>
 
       {/* Mobile sidebar overlay */}
@@ -2337,11 +2341,18 @@ function App() {
         {/* Desktop sidebar */}
         <div className="hidden lg:block w-64 min-h-screen bg-white border-r">
           <div className="p-4 border-b">
-            <div className="flex items-center gap-2">
-              <Icon name="flask-conical" size={28} className="text-green-600" />
-              <div>
-                <div className="font-bold text-gray-900">Fertilizer App</div>
-                <div className="text-xs text-gray-500">v1.0.0</div>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Icon name="flask-conical" size={28} className="text-green-600" />
+                <div>
+                  <div className="font-bold text-gray-900">Fertilizer App</div>
+                  <div className="text-xs text-gray-500">v1.0.0</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-1">
+                <a href="/portal/grain" className="p-2 hover:bg-gray-100 rounded-lg" title="GrainTrack"><Icon name="wheat" size={18} className="text-amber-600" /></a>
+                <a href="/portal/breakeven" className="p-2 hover:bg-gray-100 rounded-lg" title="Breakeven"><Icon name="calculator" size={18} className="text-blue-600" /></a>
+                <a href="/spray/manager" className="p-2 hover:bg-gray-100 rounded-lg" title="Spray-Suite"><Icon name="spray-can" size={18} className="text-purple-600" /></a>
               </div>
             </div>
           </div>

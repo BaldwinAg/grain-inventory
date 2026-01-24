@@ -167,16 +167,19 @@ async function getCommodities() {
   return error ? [] : data || [];
 }
 
-// Fields & Production
+// Fields & Production (with landlord/tenant info)
 async function getFieldCropYears(cropYear) {
-  const { data, error } = await db.from('field_crop_years').select('*, fields(id, name, acres, farm_id, farms(name)), commodities(id, name)').eq('crop_year', cropYear).is('deleted_at', null);
+  const { data, error } = await db.from('field_crop_years').select('*, fields(id, name, acres, farm_id, tenant_share, landlord, farms(name, adams_grain_share)), commodities(id, name)').eq('crop_year', cropYear).is('deleted_at', null);
   return error ? [] : (data || []).map(f => ({
     ...f,
     field_id: f.fields?.id,
     field_name: f.fields?.name,
     field_acres: f.fields?.acres,
     farm_name: f.fields?.farms?.name,
-    commodity_name: f.commodities?.name
+    commodity_name: f.commodities?.name,
+    tenant_share: f.fields?.tenant_share || 1,
+    landlord: f.fields?.landlord,
+    effective_share: (f.fields?.tenant_share || 1) * (f.fields?.farms?.adams_grain_share || 1)
   }));
 }
 
@@ -296,10 +299,134 @@ async function getHerbicideCosts(cropYear) {
   return byField;
 }
 
-// Get all fields for rent assignment
+// Get all fields for rent assignment (with landlord/tenant info)
 async function getFields() {
-  const { data, error } = await db.from('fields').select('*, farms(name)').eq('active', true).order('name');
-  return error ? [] : (data || []).map(f => ({ ...f, farm_name: f.farms?.name }));
+  const { data, error } = await db.from('fields').select('*, farms(name, adams_grain_share)').eq('active', true).order('name');
+  return error ? [] : (data || []).map(f => ({
+    ...f,
+    farm_name: f.farms?.name,
+    effective_share: (f.tenant_share || 1) * (f.farms?.adams_grain_share || 1)
+  }));
+}
+
+// Herbicide Plans
+async function getHerbicidePlans() {
+  const { data, error } = await db.from('be_herbicide_plans').select('*, commodities(name)').eq('active', true).is('deleted_at', null).order('name');
+  return error ? [] : (data || []).map(p => ({ ...p, commodity_name: p.commodities?.name }));
+}
+
+async function saveHerbicidePlan(plan) {
+  if (plan.id) {
+    const { error } = await db.from('be_herbicide_plans').update({
+      name: plan.name,
+      commodity_id: plan.commodity_id || null,
+      description: plan.description,
+      tank_mix_id: plan.tank_mix_id || null,
+      estimated_cost_per_acre: plan.estimated_cost_per_acre
+    }).eq('id', plan.id);
+    if (error) throw error;
+    return plan;
+  } else {
+    const { data, error } = await db.from('be_herbicide_plans').insert([plan]).select().single();
+    if (error) throw error;
+    return data;
+  }
+}
+
+async function deleteHerbicidePlan(id) {
+  const { error } = await db.from('be_herbicide_plans').update({ deleted_at: new Date().toISOString() }).eq('id', id);
+  if (error) throw error;
+}
+
+// Fertilizer Plans (from Fertilizer App)
+async function getFertilizerPlans() {
+  const { data, error } = await db.from('fert_plans').select('*, commodities(name), fert_plan_products(*, fert_products(name, unit))').eq('active', true).is('deleted_at', null).order('name');
+  return error ? [] : (data || []).map(p => ({
+    ...p,
+    commodity_name: p.commodities?.name,
+    products: p.fert_plan_products || []
+  }));
+}
+
+// Field Crop Plans
+async function getFieldCropPlans(cropYear) {
+  const { data, error } = await db.from('be_field_crop_plans')
+    .select('*, field_crop_years(id, field_id, commodity_id, planted_acres, fields(name, farms(name), tenant_share, landlord), commodities(name)), fert_plans(name), be_field_herbicide_passes(*, be_herbicide_plans(name, estimated_cost_per_acre))')
+    .is('deleted_at', null);
+  if (error) return [];
+  return (data || []).filter(p => p.field_crop_years).map(p => ({
+    ...p,
+    field_id: p.field_crop_years?.field_id,
+    field_name: p.field_crop_years?.fields?.name,
+    farm_name: p.field_crop_years?.fields?.farms?.name,
+    commodity_id: p.field_crop_years?.commodity_id,
+    commodity_name: p.field_crop_years?.commodities?.name,
+    planted_acres: p.field_crop_years?.planted_acres,
+    tenant_share: p.field_crop_years?.fields?.tenant_share || 1,
+    landlord: p.field_crop_years?.fields?.landlord,
+    fert_plan_name: p.fert_plans?.name,
+    herbicide_passes: p.be_field_herbicide_passes || []
+  }));
+}
+
+async function saveFieldCropPlan(plan) {
+  if (plan.id) {
+    const { error } = await db.from('be_field_crop_plans').update({
+      seed_variety: plan.seed_variety,
+      seed_brand: plan.seed_brand,
+      seeding_rate: plan.seeding_rate,
+      fertilizer_plan_id: plan.fertilizer_plan_id || null,
+      fertilizer_plan_override: plan.fertilizer_plan_override || null,
+      herbicide_cost_override: plan.herbicide_cost_override || null,
+      notes: plan.notes,
+      updated_at: new Date().toISOString()
+    }).eq('id', plan.id);
+    if (error) throw error;
+    return plan;
+  } else {
+    const { data, error } = await db.from('be_field_crop_plans').insert([{
+      field_crop_year_id: plan.field_crop_year_id,
+      seed_variety: plan.seed_variety,
+      seed_brand: plan.seed_brand,
+      seeding_rate: plan.seeding_rate,
+      fertilizer_plan_id: plan.fertilizer_plan_id || null,
+      fertilizer_plan_override: plan.fertilizer_plan_override || null,
+      herbicide_cost_override: plan.herbicide_cost_override || null,
+      notes: plan.notes
+    }]).select().single();
+    if (error) throw error;
+    return data;
+  }
+}
+
+async function deleteFieldCropPlan(id) {
+  const { error } = await db.from('be_field_crop_plans').update({ deleted_at: new Date().toISOString() }).eq('id', id);
+  if (error) throw error;
+}
+
+// Herbicide Passes for a field crop plan
+async function saveHerbicidePasses(fieldCropPlanId, passes) {
+  // Delete existing passes
+  await db.from('be_field_herbicide_passes').delete().eq('field_crop_plan_id', fieldCropPlanId);
+  // Insert new passes
+  if (passes.length > 0) {
+    const { error } = await db.from('be_field_herbicide_passes').insert(
+      passes.map((p, i) => ({
+        field_crop_plan_id: fieldCropPlanId,
+        herbicide_plan_id: p.herbicide_plan_id,
+        pass_name: p.pass_name,
+        planned_date: p.planned_date || null,
+        sort_order: i
+      }))
+    );
+    if (error) throw error;
+  }
+}
+
+// Get Spray-Suite tank mixes (for linking herbicide plans)
+async function getTankMixes() {
+  const { data, error } = await db.from('tank_mixes').select('id, name, commodities(name)').eq('active', true).order('name');
+  return error ? [] : (data || []).map(t => ({ ...t, commodity_name: t.commodities?.name }));
 }
 
 // ============================================================================
@@ -352,6 +479,8 @@ const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: 'layout-dashboard' },
   { id: 'overhead', label: 'Overhead', icon: 'building' },
   { id: 'inputs', label: 'Inputs', icon: 'package' },
+  { id: 'crop-plans', label: 'Crop Plans', icon: 'layers' },
+  { id: 'field-assignments', label: 'Field Assignments', icon: 'map-pin' },
   { id: 'breakeven', label: 'Breakeven', icon: 'target' },
   { id: 'settings', label: 'Settings', icon: 'settings' }
 ];
@@ -1034,12 +1163,555 @@ function RentModal({ rent, cropYear, fields, onClose, onSave }) {
 }
 
 // ============================================================================
+// CROP PLANS PAGE
+// ============================================================================
+function CropPlansPage({ cropYear, onYearChange }) {
+  const [activeTab, setActiveTab] = useState('herbicide');
+  const [herbPlans, setHerbPlans] = useState([]);
+  const [fertPlans, setFertPlans] = useState([]);
+  const [tankMixes, setTankMixes] = useState([]);
+  const [commodities, setCommodities] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showModal, setShowModal] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const { addToast } = useToast();
+
+  const loadData = async () => {
+    setLoading(true);
+    const [hp, fp, tm, c] = await Promise.all([
+      getHerbicidePlans(),
+      getFertilizerPlans(),
+      getTankMixes(),
+      getCommodities()
+    ]);
+    setHerbPlans(hp);
+    setFertPlans(fp);
+    setTankMixes(tm);
+    setCommodities(c);
+    setLoading(false);
+  };
+
+  useEffect(() => { loadData(); }, []);
+
+  const handleDelete = async () => {
+    try {
+      await deleteHerbicidePlan(deleteConfirm.id);
+      addToast('Plan deleted', { type: 'success' });
+      setDeleteConfirm(null);
+      loadData();
+    } catch (e) {
+      addToast('Failed to delete: ' + e.message, { type: 'error' });
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Crop Plans</h1>
+          <p className="text-sm text-gray-500">Herbicide and fertilizer plan templates</p>
+        </div>
+      </div>
+
+      <div className="flex gap-2 border-b">
+        <button onClick={() => setActiveTab('herbicide')} className={`px-4 py-2 font-medium ${activeTab === 'herbicide' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500'}`}>Herbicide Plans</button>
+        <button onClick={() => setActiveTab('fertilizer')} className={`px-4 py-2 font-medium ${activeTab === 'fertilizer' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500'}`}>Fertilizer Plans</button>
+      </div>
+
+      {activeTab === 'herbicide' && (
+        <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
+          <div className="p-4 border-b flex items-center justify-between">
+            <h2 className="font-semibold">Herbicide Plans</h2>
+            <button onClick={() => { setEditing(null); setShowModal(true); }} className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">
+              <Icon name="plus" size={16} /> Add Plan
+            </button>
+          </div>
+          <div className="p-4 bg-amber-50 border-b text-sm text-amber-800">
+            <Icon name="link" size={16} className="inline mr-2" />
+            Link plans to <a href="/spray/manager" className="underline font-medium">Spray-Suite tank mixes</a> to pull actual FIFO costs, or set estimated cost manually.
+          </div>
+          {loading ? (
+            <div className="p-8 text-center"><Icon name="loader" className="animate-spin text-blue-600 mx-auto" size={32} /></div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-3 text-left">Plan Name</th>
+                  <th className="px-4 py-3 text-left">Commodity</th>
+                  <th className="px-4 py-3 text-left">Linked Tank Mix</th>
+                  <th className="px-4 py-3 text-right">Est. Cost/Acre</th>
+                  <th className="px-4 py-3 text-center">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {herbPlans.length === 0 ? (
+                  <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-500">No herbicide plans. Create one to get started.</td></tr>
+                ) : herbPlans.map(p => (
+                  <tr key={p.id} className="hover:bg-gray-50">
+                    <td className="px-4 py-3">
+                      <div className="font-medium">{p.name}</div>
+                      {p.description && <div className="text-xs text-gray-500">{p.description}</div>}
+                    </td>
+                    <td className="px-4 py-3">{p.commodity_name || 'All'}</td>
+                    <td className="px-4 py-3">
+                      {p.tank_mix_id ? (
+                        <span className="text-green-600 flex items-center gap-1"><Icon name="link" size={14} /> Linked</span>
+                      ) : (
+                        <span className="text-gray-400">Manual</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-right">{formatCurrency(p.estimated_cost_per_acre)}</td>
+                    <td className="px-4 py-3 text-center">
+                      <button onClick={() => { setEditing(p); setShowModal(true); }} className="p-1 hover:bg-gray-100 rounded"><Icon name="pencil" size={16} /></button>
+                      <button onClick={() => setDeleteConfirm(p)} className="p-1 hover:bg-red-100 rounded text-red-600"><Icon name="trash-2" size={16} /></button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'fertilizer' && (
+        <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
+          <div className="p-4 border-b flex items-center justify-between">
+            <h2 className="font-semibold">Fertilizer Plans</h2>
+            <a href="/portal/fertilizer" className="flex items-center gap-2 px-3 py-1.5 bg-green-600 text-white rounded-lg text-sm hover:bg-green-700">
+              <Icon name="flask-conical" size={16} /> Manage in Fertilizer App
+            </a>
+          </div>
+          <div className="p-4 bg-green-50 border-b text-sm text-green-800">
+            <Icon name="link" size={16} className="inline mr-2" />
+            Fertilizer plans are managed in the <a href="/portal/fertilizer" className="underline font-medium">Fertilizer App</a>. They appear here for assignment.
+          </div>
+          {loading ? (
+            <div className="p-8 text-center"><Icon name="loader" className="animate-spin text-blue-600 mx-auto" size={32} /></div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-3 text-left">Plan Name</th>
+                  <th className="px-4 py-3 text-left">Commodity</th>
+                  <th className="px-4 py-3 text-left">Products</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {fertPlans.length === 0 ? (
+                  <tr><td colSpan={3} className="px-4 py-8 text-center text-gray-500">No fertilizer plans. Create them in the Fertilizer App.</td></tr>
+                ) : fertPlans.map(p => (
+                  <tr key={p.id} className="hover:bg-gray-50">
+                    <td className="px-4 py-3">
+                      <div className="font-medium">{p.name}</div>
+                      {p.description && <div className="text-xs text-gray-500">{p.description}</div>}
+                    </td>
+                    <td className="px-4 py-3">{p.commodity_name || 'All'}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex flex-wrap gap-1">
+                        {p.products.slice(0, 3).map((prod, i) => (
+                          <span key={i} className="px-2 py-0.5 bg-gray-100 rounded text-xs">{prod.fert_products?.name}</span>
+                        ))}
+                        {p.products.length > 3 && <span className="text-xs text-gray-500">+{p.products.length - 3} more</span>}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {showModal && (
+        <HerbicidePlanModal
+          plan={editing}
+          commodities={commodities}
+          tankMixes={tankMixes}
+          onClose={() => setShowModal(false)}
+          onSave={() => { setShowModal(false); loadData(); }}
+        />
+      )}
+
+      <ConfirmModal
+        isOpen={!!deleteConfirm}
+        title="Delete Plan"
+        message={`Are you sure you want to delete "${deleteConfirm?.name}"?`}
+        onConfirm={handleDelete}
+        onCancel={() => setDeleteConfirm(null)}
+      />
+    </div>
+  );
+}
+
+function HerbicidePlanModal({ plan, commodities, tankMixes, onClose, onSave }) {
+  const [form, setForm] = useState({
+    name: plan?.name || '',
+    commodity_id: plan?.commodity_id || '',
+    description: plan?.description || '',
+    tank_mix_id: plan?.tank_mix_id || '',
+    estimated_cost_per_acre: plan?.estimated_cost_per_acre || ''
+  });
+  const [saving, setSaving] = useState(false);
+  const { addToast } = useToast();
+
+  const handleSave = async () => {
+    if (!form.name.trim()) {
+      addToast('Plan name is required', { type: 'error' });
+      return;
+    }
+    setSaving(true);
+    try {
+      await saveHerbicidePlan({ ...form, id: plan?.id });
+      addToast('Plan saved', { type: 'success' });
+      onSave();
+    } catch (e) {
+      addToast('Failed to save: ' + e.message, { type: 'error' });
+    }
+    setSaving(false);
+  };
+
+  return (
+    <Modal isOpen={true} onClose={onClose} title={plan ? 'Edit Herbicide Plan' : 'Add Herbicide Plan'}>
+      <div className="space-y-4">
+        <div>
+          <label className="block text-sm font-medium mb-1">Plan Name *</label>
+          <input type="text" value={form.name} onChange={(e) => setForm(f => ({ ...f, name: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" placeholder="Burndown, Post-emerge Corn..." />
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Commodity</label>
+          <select value={form.commodity_id} onChange={(e) => setForm(f => ({ ...f, commodity_id: e.target.value }))} className="w-full px-3 py-2 border rounded-lg">
+            <option value="">All Commodities</option>
+            {commodities.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Link to Tank Mix (optional)</label>
+          <select value={form.tank_mix_id} onChange={(e) => setForm(f => ({ ...f, tank_mix_id: e.target.value }))} className="w-full px-3 py-2 border rounded-lg">
+            <option value="">No link - use manual cost</option>
+            {tankMixes.map(t => <option key={t.id} value={t.id}>{t.name} {t.commodity_name ? `(${t.commodity_name})` : ''}</option>)}
+          </select>
+          <p className="text-xs text-gray-500 mt-1">Link to a Spray-Suite tank mix to use actual FIFO costs</p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Estimated Cost/Acre</label>
+          <input type="number" step="0.01" value={form.estimated_cost_per_acre} onChange={(e) => setForm(f => ({ ...f, estimated_cost_per_acre: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" placeholder="25.00" />
+          <p className="text-xs text-gray-500 mt-1">Used for planning if no tank mix linked</p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Description</label>
+          <textarea value={form.description} onChange={(e) => setForm(f => ({ ...f, description: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" rows={2} placeholder="Notes about this plan..." />
+        </div>
+        <div className="flex justify-end gap-3 pt-4 border-t">
+          <button onClick={onClose} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
+          <button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
+            {saving ? 'Saving...' : 'Save Plan'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ============================================================================
+// FIELD ASSIGNMENTS PAGE
+// ============================================================================
+function FieldAssignmentsPage({ cropYear, onYearChange }) {
+  const [fieldCropYears, setFieldCropYears] = useState([]);
+  const [fieldPlans, setFieldPlans] = useState([]);
+  const [fertPlans, setFertPlans] = useState([]);
+  const [herbPlans, setHerbPlans] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showModal, setShowModal] = useState(false);
+  const [selectedField, setSelectedField] = useState(null);
+  const [filterCommodity, setFilterCommodity] = useState('');
+  const [commodities, setCommodities] = useState([]);
+  const { addToast } = useToast();
+  const currentYear = new Date().getFullYear();
+  const cropYears = [currentYear - 1, currentYear, currentYear + 1];
+
+  const loadData = async () => {
+    setLoading(true);
+    const [fcy, fp, fertP, herbP, c] = await Promise.all([
+      getFieldCropYears(cropYear),
+      getFieldCropPlans(cropYear),
+      getFertilizerPlans(),
+      getHerbicidePlans(),
+      getCommodities()
+    ]);
+    setFieldCropYears(fcy);
+    setFieldPlans(fp);
+    setFertPlans(fertP);
+    setHerbPlans(herbP);
+    setCommodities(c);
+    setLoading(false);
+  };
+
+  useEffect(() => { loadData(); }, [cropYear]);
+
+  // Match field crop years with their plans
+  const fieldsWithPlans = fieldCropYears.map(fcy => {
+    const plan = fieldPlans.find(p => p.field_crop_year_id === fcy.id);
+    return {
+      ...fcy,
+      plan: plan || null,
+      hasPlan: !!plan
+    };
+  });
+
+  const filteredFields = filterCommodity
+    ? fieldsWithPlans.filter(f => f.commodity_id === filterCommodity)
+    : fieldsWithPlans;
+
+  const uniqueCommodities = [...new Set(fieldCropYears.map(f => f.commodity_id))];
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Field Assignments</h1>
+          <p className="text-sm text-gray-500">Assign crop plans to fields for {cropYear}</p>
+        </div>
+        <div className="flex gap-3">
+          <select value={filterCommodity} onChange={(e) => setFilterCommodity(e.target.value)} className="px-4 py-2 border rounded-lg">
+            <option value="">All Commodities</option>
+            {commodities.filter(c => uniqueCommodities.includes(c.id)).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          <select value={cropYear} onChange={(e) => onYearChange(parseInt(e.target.value))} className="px-4 py-2 border rounded-lg">
+            {cropYears.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
+        <div className="p-4 border-b">
+          <div className="flex items-center justify-between">
+            <h2 className="font-semibold">Field Crop Plans</h2>
+            <div className="text-sm text-gray-500">
+              {fieldsWithPlans.filter(f => f.hasPlan).length} of {fieldsWithPlans.length} fields have plans assigned
+            </div>
+          </div>
+        </div>
+        {loading ? (
+          <div className="p-8 text-center"><Icon name="loader" className="animate-spin text-blue-600 mx-auto" size={32} /></div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left">Field</th>
+                <th className="px-4 py-3 text-left">Crop</th>
+                <th className="px-4 py-3 text-right">Acres</th>
+                <th className="px-4 py-3 text-left">Landlord Split</th>
+                <th className="px-4 py-3 text-left">Fert Plan</th>
+                <th className="px-4 py-3 text-left">Herb Passes</th>
+                <th className="px-4 py-3 text-center">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {filteredFields.length === 0 ? (
+                <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-500">No fields for {cropYear}. Add production in GrainTrack first.</td></tr>
+              ) : filteredFields.map(f => (
+                <tr key={f.id} className={`hover:bg-gray-50 ${!f.hasPlan ? 'bg-amber-50' : ''}`}>
+                  <td className="px-4 py-3">
+                    <div className="font-medium">{f.field_name}</div>
+                    <div className="text-xs text-gray-500">{f.farm_name}</div>
+                  </td>
+                  <td className="px-4 py-3">{f.commodity_name}</td>
+                  <td className="px-4 py-3 text-right">{formatNumber(f.planted_acres)}</td>
+                  <td className="px-4 py-3">
+                    {f.plan?.tenant_share && f.plan.tenant_share < 1 ? (
+                      <span className="px-2 py-0.5 bg-purple-100 text-purple-800 rounded text-xs">
+                        {((1 - f.plan.tenant_share) * 100).toFixed(0)}% to {f.plan?.landlord || 'Landlord'}
+                      </span>
+                    ) : (
+                      <span className="text-gray-400 text-xs">100% Tenant</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3">
+                    {f.plan?.fert_plan_name ? (
+                      <span className="px-2 py-0.5 bg-green-100 text-green-800 rounded text-xs">{f.plan.fert_plan_name}</span>
+                    ) : f.plan?.fertilizer_plan_override ? (
+                      <span className="text-gray-600">{formatCurrency(f.plan.fertilizer_plan_override)}/ac override</span>
+                    ) : (
+                      <span className="text-gray-400">Not set</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3">
+                    {f.plan?.herbicide_passes?.length > 0 ? (
+                      <div className="flex flex-wrap gap-1">
+                        {f.plan.herbicide_passes.map((p, i) => (
+                          <span key={i} className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded text-xs">{p.pass_name || p.be_herbicide_plans?.name}</span>
+                        ))}
+                      </div>
+                    ) : f.plan?.herbicide_cost_override ? (
+                      <span className="text-gray-600">{formatCurrency(f.plan.herbicide_cost_override)}/ac override</span>
+                    ) : (
+                      <span className="text-gray-400">Not set</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-center">
+                    <button onClick={() => { setSelectedField(f); setShowModal(true); }}
+                      className={`px-3 py-1 rounded text-sm ${f.hasPlan ? 'bg-gray-100 hover:bg-gray-200' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
+                      {f.hasPlan ? 'Edit' : 'Assign'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {showModal && selectedField && (
+        <FieldPlanModal
+          fieldCropYear={selectedField}
+          existingPlan={selectedField.plan}
+          fertPlans={fertPlans}
+          herbPlans={herbPlans}
+          onClose={() => setShowModal(false)}
+          onSave={() => { setShowModal(false); loadData(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function FieldPlanModal({ fieldCropYear, existingPlan, fertPlans, herbPlans, onClose, onSave }) {
+  const [form, setForm] = useState({
+    fertilizer_plan_id: existingPlan?.fertilizer_plan_id || '',
+    fertilizer_plan_override: existingPlan?.fertilizer_plan_override || '',
+    herbicide_cost_override: existingPlan?.herbicide_cost_override || '',
+    notes: existingPlan?.notes || ''
+  });
+  const [herbPasses, setHerbPasses] = useState(
+    existingPlan?.herbicide_passes?.map(p => ({
+      herbicide_plan_id: p.herbicide_plan_id,
+      pass_name: p.pass_name || ''
+    })) || []
+  );
+  const [saving, setSaving] = useState(false);
+  const { addToast } = useToast();
+
+  const commodityHerbPlans = herbPlans.filter(p => !p.commodity_id || p.commodity_id === fieldCropYear.commodity_id);
+  const commodityFertPlans = fertPlans.filter(p => !p.commodity_id || p.commodity_id === fieldCropYear.commodity_id);
+
+  const addHerbPass = () => {
+    setHerbPasses([...herbPasses, { herbicide_plan_id: '', pass_name: '' }]);
+  };
+
+  const removeHerbPass = (index) => {
+    setHerbPasses(herbPasses.filter((_, i) => i !== index));
+  };
+
+  const updateHerbPass = (index, field, value) => {
+    const updated = [...herbPasses];
+    updated[index] = { ...updated[index], [field]: value };
+    setHerbPasses(updated);
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const planData = {
+        id: existingPlan?.id,
+        field_crop_year_id: fieldCropYear.id,
+        fertilizer_plan_id: form.fertilizer_plan_id || null,
+        fertilizer_plan_override: form.fertilizer_plan_override || null,
+        herbicide_cost_override: form.herbicide_cost_override || null,
+        notes: form.notes
+      };
+      const savedPlan = await saveFieldCropPlan(planData);
+
+      // Save herbicide passes
+      const validPasses = herbPasses.filter(p => p.herbicide_plan_id);
+      if (validPasses.length > 0 || existingPlan?.herbicide_passes?.length > 0) {
+        await saveHerbicidePasses(savedPlan.id || existingPlan.id, validPasses);
+      }
+
+      addToast('Field plan saved', { type: 'success' });
+      onSave();
+    } catch (e) {
+      addToast('Failed to save: ' + e.message, { type: 'error' });
+    }
+    setSaving(false);
+  };
+
+  return (
+    <Modal isOpen={true} onClose={onClose} title={`${fieldCropYear.field_name} - ${fieldCropYear.commodity_name}`} size="lg">
+      <div className="space-y-6">
+        <div className="grid grid-cols-2 gap-4 p-4 bg-gray-50 rounded-lg">
+          <div><span className="text-gray-500">Farm:</span> {fieldCropYear.farm_name}</div>
+          <div><span className="text-gray-500">Acres:</span> {formatNumber(fieldCropYear.planted_acres)}</div>
+        </div>
+
+        <div>
+          <h3 className="font-medium mb-3 flex items-center gap-2"><Icon name="flask-conical" size={18} className="text-green-600" /> Fertilizer</h3>
+          <div className="space-y-3">
+            <div>
+              <label className="block text-sm font-medium mb-1">Fertilizer Plan</label>
+              <select value={form.fertilizer_plan_id} onChange={(e) => setForm(f => ({ ...f, fertilizer_plan_id: e.target.value }))} className="w-full px-3 py-2 border rounded-lg">
+                <option value="">Select plan or use override</option>
+                {commodityFertPlans.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Or Cost Override ($/ac)</label>
+              <input type="number" step="0.01" value={form.fertilizer_plan_override} onChange={(e) => setForm(f => ({ ...f, fertilizer_plan_override: e.target.value }))}
+                className="w-full px-3 py-2 border rounded-lg" placeholder="Override planned cost" disabled={!!form.fertilizer_plan_id} />
+              <p className="text-xs text-gray-500 mt-1">All fertilizer costs are split with landlord at their grain share %</p>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <h3 className="font-medium mb-3 flex items-center gap-2"><Icon name="spray-can" size={18} className="text-purple-600" /> Herbicide Passes</h3>
+          <div className="space-y-3">
+            {herbPasses.map((pass, i) => (
+              <div key={i} className="flex gap-3 items-center">
+                <input type="text" value={pass.pass_name} onChange={(e) => updateHerbPass(i, 'pass_name', e.target.value)}
+                  className="w-32 px-3 py-2 border rounded-lg" placeholder="Pass name" />
+                <select value={pass.herbicide_plan_id} onChange={(e) => updateHerbPass(i, 'herbicide_plan_id', e.target.value)} className="flex-1 px-3 py-2 border rounded-lg">
+                  <option value="">Select herbicide plan</option>
+                  {commodityHerbPlans.map(p => <option key={p.id} value={p.id}>{p.name} - {formatCurrency(p.estimated_cost_per_acre)}/ac</option>)}
+                </select>
+                <button onClick={() => removeHerbPass(i)} className="p-2 text-red-600 hover:bg-red-50 rounded"><Icon name="trash-2" size={16} /></button>
+              </div>
+            ))}
+            <button onClick={addHerbPass} className="flex items-center gap-2 px-3 py-2 text-blue-600 hover:bg-blue-50 rounded-lg text-sm">
+              <Icon name="plus" size={16} /> Add Herbicide Pass
+            </button>
+            <div>
+              <label className="block text-sm font-medium mb-1">Or Cost Override ($/ac)</label>
+              <input type="number" step="0.01" value={form.herbicide_cost_override} onChange={(e) => setForm(f => ({ ...f, herbicide_cost_override: e.target.value }))}
+                className="w-full px-3 py-2 border rounded-lg" placeholder="Override planned cost" disabled={herbPasses.length > 0} />
+              <p className="text-xs text-gray-500 mt-1">Chemical costs split with landlord IF split toggle is on in Spray-Suite</p>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium mb-1">Notes</label>
+          <textarea value={form.notes} onChange={(e) => setForm(f => ({ ...f, notes: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" rows={2} />
+        </div>
+
+        <div className="flex justify-end gap-3 pt-4 border-t">
+          <button onClick={onClose} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
+          <button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
+            {saving ? 'Saving...' : 'Save Plan'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ============================================================================
 // BREAKEVEN PAGE
 // ============================================================================
 function BreakevenPage({ cropYear, onYearChange }) {
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [viewMode, setViewMode] = useState('byField');
+  const [viewMode, setViewMode] = useState('tenant'); // 'tenant' or 'total'
   const currentYear = new Date().getFullYear();
   const cropYears = [currentYear - 1, currentYear, currentYear + 1];
 
@@ -1066,24 +1738,56 @@ function BreakevenPage({ cropYear, onYearChange }) {
         const seed = seedMap[fcy.id] || 0;
         const rentPerAcre = rentMap[fcy.field_id] || 0;
         const rent = rentPerAcre * (fcy.planted_acres || 0);
-        const fert = fertCosts[fcy.field_id] || 0;
-        const herb = herbCosts[fcy.field_id] || 0;
-        const total = overhead + seed + rent + fert + herb;
-        const bushels = fcy.actual_production || ((fcy.planted_acres || 0) * (fcy.estimated_yield || 0));
-        const breakeven = bushels > 0 ? total / bushels : null;
-        const costPerAcre = fcy.planted_acres > 0 ? total / fcy.planted_acres : 0;
+        const fertTotal = fertCosts[fcy.field_id] || 0;
+        const herbTotal = herbCosts[fcy.field_id] || 0;
+
+        // Split calculations
+        const tenantShare = fcy.tenant_share || 1;
+        const landlordShare = 1 - tenantShare;
+
+        // Fertilizer: ALWAYS split at grain share %
+        const fertTenant = fertTotal * tenantShare;
+        const fertLandlord = fertTotal * landlordShare;
+
+        // Herbicide: Also split at grain share % (TODO: check split toggle in Spray-Suite)
+        const herbTenant = herbTotal * tenantShare;
+        const herbLandlord = herbTotal * landlordShare;
+
+        // Overhead, seed, rent: 100% tenant costs
+        const totalAll = overhead + seed + rent + fertTotal + herbTotal;
+        const totalTenant = overhead + seed + rent + fertTenant + herbTenant;
+        const totalLandlord = fertLandlord + herbLandlord;
+
+        // Bushels also split by share
+        const bushelsAll = fcy.actual_production || ((fcy.planted_acres || 0) * (fcy.estimated_yield || 0));
+        const bushelsTenant = bushelsAll * tenantShare;
+
+        const breakevenAll = bushelsAll > 0 ? totalAll / bushelsAll : null;
+        const breakevenTenant = bushelsTenant > 0 ? totalTenant / bushelsTenant : null;
+        const costPerAcreAll = fcy.planted_acres > 0 ? totalAll / fcy.planted_acres : 0;
+        const costPerAcreTenant = fcy.planted_acres > 0 ? totalTenant / fcy.planted_acres : 0;
 
         return {
           ...fcy,
           overhead,
           seed,
           rent,
-          fert,
-          herb,
-          total,
-          bushels,
-          breakeven,
-          costPerAcre
+          fertTotal,
+          fertTenant,
+          fertLandlord,
+          herbTotal,
+          herbTenant,
+          herbLandlord,
+          totalAll,
+          totalTenant,
+          totalLandlord,
+          bushelsAll,
+          bushelsTenant,
+          breakevenAll,
+          breakevenTenant,
+          costPerAcreAll,
+          costPerAcreTenant,
+          hasLandlord: landlordShare > 0
         };
       });
 
@@ -1094,19 +1798,28 @@ function BreakevenPage({ cropYear, onYearChange }) {
   }, [cropYear]);
 
   const exportCSV = () => {
-    const headers = ['Field', 'Farm', 'Commodity', 'Acres', 'Overhead', 'Seed', 'Rent', 'Fertilizer', 'Herbicide', 'Total Cost', 'Bushels', 'Breakeven'];
-    const rows = data.map(d => [d.field_name, d.farm_name, d.commodity_name, d.planted_acres, d.overhead.toFixed(2), d.seed.toFixed(2), d.rent.toFixed(2), d.fert.toFixed(2), d.herb.toFixed(2), d.total.toFixed(2), d.bushels.toFixed(0), d.breakeven?.toFixed(4) || '']);
+    const headers = ['Field', 'Farm', 'Commodity', 'Acres', 'Landlord', 'Split %', 'Overhead', 'Seed', 'Rent', 'Fertilizer', 'Herbicide', 'Total Cost', 'Bushels', 'Breakeven'];
+    const rows = data.map(d => {
+      const fert = viewMode === 'tenant' ? d.fertTenant : d.fertTotal;
+      const herb = viewMode === 'tenant' ? d.herbTenant : d.herbTotal;
+      const total = viewMode === 'tenant' ? d.totalTenant : d.totalAll;
+      const bushels = viewMode === 'tenant' ? d.bushelsTenant : d.bushelsAll;
+      const breakeven = viewMode === 'tenant' ? d.breakevenTenant : d.breakevenAll;
+      return [d.field_name, d.farm_name, d.commodity_name, d.planted_acres, d.landlord || '', d.hasLandlord ? ((1 - d.tenant_share) * 100).toFixed(0) + '%' : '', d.overhead.toFixed(2), d.seed.toFixed(2), d.rent.toFixed(2), fert.toFixed(2), herb.toFixed(2), total.toFixed(2), bushels.toFixed(0), breakeven?.toFixed(4) || ''];
+    });
     const csv = [headers, ...rows].map(r => r.join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `breakeven-${cropYear}.csv`;
+    a.download = `breakeven-${viewMode}-${cropYear}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
   if (loading) return <div className="flex items-center justify-center h-64"><Icon name="loader" className="animate-spin text-blue-600" size={32} /></div>;
+
+  const hasAnyLandlord = data.some(d => d.hasLandlord);
 
   return (
     <div className="space-y-6">
@@ -1116,6 +1829,16 @@ function BreakevenPage({ cropYear, onYearChange }) {
           <p className="text-sm text-gray-500">Per-field cost breakdown and breakeven prices</p>
         </div>
         <div className="flex gap-3">
+          {hasAnyLandlord && (
+            <div className="flex items-center bg-gray-100 rounded-lg p-1">
+              <button onClick={() => setViewMode('tenant')} className={`px-3 py-1.5 rounded text-sm font-medium ${viewMode === 'tenant' ? 'bg-white shadow text-blue-600' : 'text-gray-600'}`}>
+                Tenant Share
+              </button>
+              <button onClick={() => setViewMode('total')} className={`px-3 py-1.5 rounded text-sm font-medium ${viewMode === 'total' ? 'bg-white shadow text-blue-600' : 'text-gray-600'}`}>
+                Total Costs
+              </button>
+            </div>
+          )}
           <select value={cropYear} onChange={(e) => onYearChange(parseInt(e.target.value))} className="px-4 py-2 border rounded-lg">
             {cropYears.map(y => <option key={y} value={y}>{y}</option>)}
           </select>
@@ -1124,6 +1847,12 @@ function BreakevenPage({ cropYear, onYearChange }) {
           </button>
         </div>
       </div>
+
+      {viewMode === 'tenant' && hasAnyLandlord && (
+        <div className="bg-purple-50 border border-purple-200 rounded-lg p-4 text-sm text-purple-800">
+          <strong>Tenant Share View:</strong> Shows YOUR costs only. Fertilizer and herbicide are split at the landlord's grain share %. Overhead, seed, and rent are 100% tenant responsibility.
+        </div>
+      )}
 
       <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
         <div className="overflow-x-auto">
@@ -1146,24 +1875,34 @@ function BreakevenPage({ cropYear, onYearChange }) {
             <tbody className="divide-y">
               {data.length === 0 ? (
                 <tr><td colSpan={11} className="px-4 py-8 text-center text-gray-500">No field data for {cropYear}</td></tr>
-              ) : data.map(d => (
-                <tr key={d.id} className="hover:bg-gray-50">
-                  <td className="px-4 py-3">
-                    <div className="font-medium">{d.field_name}</div>
-                    <div className="text-xs text-gray-500">{d.farm_name}</div>
-                  </td>
-                  <td className="px-4 py-3">{d.commodity_name}</td>
-                  <td className="px-4 py-3 text-right">{formatNumber(d.planted_acres)}</td>
-                  <td className="px-4 py-3 text-right">{formatCurrency(d.overhead)}</td>
-                  <td className="px-4 py-3 text-right">{formatCurrency(d.seed)}</td>
-                  <td className="px-4 py-3 text-right">{formatCurrency(d.rent)}</td>
-                  <td className="px-4 py-3 text-right">{formatCurrency(d.fert)}</td>
-                  <td className="px-4 py-3 text-right">{formatCurrency(d.herb)}</td>
-                  <td className="px-4 py-3 text-right font-semibold">{formatCurrency(d.total)}</td>
-                  <td className="px-4 py-3 text-right">{formatCurrency(d.costPerAcre)}</td>
-                  <td className="px-4 py-3 text-right font-bold text-blue-600">{d.breakeven ? formatPrice(d.breakeven) : '-'}</td>
-                </tr>
-              ))}
+              ) : data.map(d => {
+                const fert = viewMode === 'tenant' ? d.fertTenant : d.fertTotal;
+                const herb = viewMode === 'tenant' ? d.herbTenant : d.herbTotal;
+                const total = viewMode === 'tenant' ? d.totalTenant : d.totalAll;
+                const costPerAcre = viewMode === 'tenant' ? d.costPerAcreTenant : d.costPerAcreAll;
+                const breakeven = viewMode === 'tenant' ? d.breakevenTenant : d.breakevenAll;
+                return (
+                  <tr key={d.id} className="hover:bg-gray-50">
+                    <td className="px-4 py-3">
+                      <div className="font-medium">{d.field_name}</div>
+                      <div className="text-xs text-gray-500">{d.farm_name}</div>
+                      {d.hasLandlord && (
+                        <div className="text-xs text-purple-600">{d.landlord} ({((1 - d.tenant_share) * 100).toFixed(0)}%)</div>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">{d.commodity_name}</td>
+                    <td className="px-4 py-3 text-right">{formatNumber(d.planted_acres)}</td>
+                    <td className="px-4 py-3 text-right">{formatCurrency(d.overhead)}</td>
+                    <td className="px-4 py-3 text-right">{formatCurrency(d.seed)}</td>
+                    <td className="px-4 py-3 text-right">{formatCurrency(d.rent)}</td>
+                    <td className="px-4 py-3 text-right">{formatCurrency(fert)}</td>
+                    <td className="px-4 py-3 text-right">{formatCurrency(herb)}</td>
+                    <td className="px-4 py-3 text-right font-semibold">{formatCurrency(total)}</td>
+                    <td className="px-4 py-3 text-right">{formatCurrency(costPerAcre)}</td>
+                    <td className="px-4 py-3 text-right font-bold text-blue-600">{breakeven ? formatPrice(breakeven) : '-'}</td>
+                  </tr>
+                );
+              })}
             </tbody>
             <tfoot className="bg-gray-100">
               <tr className="font-semibold">
@@ -1173,9 +1912,9 @@ function BreakevenPage({ cropYear, onYearChange }) {
                 <td className="px-4 py-3 text-right">{formatCurrency(data.reduce((s, d) => s + d.overhead, 0))}</td>
                 <td className="px-4 py-3 text-right">{formatCurrency(data.reduce((s, d) => s + d.seed, 0))}</td>
                 <td className="px-4 py-3 text-right">{formatCurrency(data.reduce((s, d) => s + d.rent, 0))}</td>
-                <td className="px-4 py-3 text-right">{formatCurrency(data.reduce((s, d) => s + d.fert, 0))}</td>
-                <td className="px-4 py-3 text-right">{formatCurrency(data.reduce((s, d) => s + d.herb, 0))}</td>
-                <td className="px-4 py-3 text-right font-bold">{formatCurrency(data.reduce((s, d) => s + d.total, 0))}</td>
+                <td className="px-4 py-3 text-right">{formatCurrency(data.reduce((s, d) => s + (viewMode === 'tenant' ? d.fertTenant : d.fertTotal), 0))}</td>
+                <td className="px-4 py-3 text-right">{formatCurrency(data.reduce((s, d) => s + (viewMode === 'tenant' ? d.herbTenant : d.herbTotal), 0))}</td>
+                <td className="px-4 py-3 text-right font-bold">{formatCurrency(data.reduce((s, d) => s + (viewMode === 'tenant' ? d.totalTenant : d.totalAll), 0))}</td>
                 <td></td>
                 <td></td>
               </tr>
@@ -1293,6 +2032,8 @@ function App() {
       case 'dashboard': return <DashboardPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
       case 'overhead': return <OverheadPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
       case 'inputs': return <InputsPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
+      case 'crop-plans': return <CropPlansPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
+      case 'field-assignments': return <FieldAssignmentsPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
       case 'breakeven': return <BreakevenPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
       case 'settings': return <SettingsPage isConnected={isConnected} />;
       default: return <DashboardPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
@@ -1310,7 +2051,11 @@ function App() {
             <span className="font-bold text-gray-900">Breakeven</span>
           </div>
         </div>
-        <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : isConnected === false ? 'bg-red-500' : 'bg-gray-300'}`} />
+        <div className="flex items-center gap-1">
+          <a href="/portal/grain" className="p-2 hover:bg-gray-100 rounded-lg" title="GrainTrack"><Icon name="wheat" size={18} className="text-amber-600" /></a>
+          <a href="/portal/fertilizer" className="p-2 hover:bg-gray-100 rounded-lg" title="Fertilizer"><Icon name="flask-conical" size={18} className="text-green-600" /></a>
+          <a href="/spray/manager" className="p-2 hover:bg-gray-100 rounded-lg" title="Spray-Suite"><Icon name="spray-can" size={18} className="text-purple-600" /></a>
+        </div>
       </div>
 
       {/* Mobile sidebar overlay */}
@@ -1342,11 +2087,18 @@ function App() {
         {/* Desktop sidebar */}
         <div className="hidden lg:block w-64 min-h-screen bg-white border-r">
           <div className="p-4 border-b">
-            <div className="flex items-center gap-2">
-              <Icon name="target" size={28} className="text-blue-600" />
-              <div>
-                <div className="font-bold text-gray-900">Breakeven Calculator</div>
-                <div className="text-xs text-gray-500">v1.0.0</div>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Icon name="target" size={28} className="text-blue-600" />
+                <div>
+                  <div className="font-bold text-gray-900">Breakeven Calculator</div>
+                  <div className="text-xs text-gray-500">v1.0.0</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-1">
+                <a href="/portal/grain" className="p-2 hover:bg-gray-100 rounded-lg" title="GrainTrack"><Icon name="wheat" size={18} className="text-amber-600" /></a>
+                <a href="/portal/fertilizer" className="p-2 hover:bg-gray-100 rounded-lg" title="Fertilizer"><Icon name="flask-conical" size={18} className="text-green-600" /></a>
+                <a href="/spray/manager" className="p-2 hover:bg-gray-100 rounded-lg" title="Spray-Suite"><Icon name="spray-can" size={18} className="text-purple-600" /></a>
               </div>
             </div>
           </div>
