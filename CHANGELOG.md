@@ -4,6 +4,47 @@ All notable changes to the Farm Management Suite applications.
 
 ---
 
+## Breakeven Calculator [2.0.0] - 2026-01-24 (In Progress)
+
+### Redesign - Comprehensive Cost Planning Hub
+
+Major redesign to make Breakeven the central cost planning application.
+
+**Phase 1: Bug Fixes & Overhead Enhancement**
+- Fix duplicate overhead category tabs
+- Add entry_mode (TOTAL vs PER_ACRE) to overhead expenses
+- Calculate totals from per-acre amounts
+
+**Phase 2-3: Comprehensive Crop Plans**
+- New crop plan templates containing ALL costs:
+  - Seed (hybrid, seeds/bag, price, planting rate)
+  - Custom costs (tillage, custom hire, drying)
+  - Fertilizer passes (multiple applications with products/rates)
+  - Chemical passes (multiple applications with products/rates)
+- Link to Spray-Suite tank_mixes
+
+**Phase 4: Field Assignments**
+- Assign crop plans to individual fields
+- Override seed hybrid/rate per field
+- Bulk assignment feature
+
+**Phase 5: Misc Income**
+- Track government payments (ARC-CO, PLC, MFP)
+- Track conservation payments (CRP, EQIP, CSP)
+- Income offsets reduce breakeven price
+
+**Phase 6: Planned vs Actual**
+- Track planned costs from crop plans
+- Pull actual costs from Spray-Suite and Fertilizer App
+- Variance analysis (planned - actual)
+
+**Phase 7-8: Dashboard & Reports**
+- Updated dashboard with planned/actual comparison
+- Variance alerts
+- Enhanced landlord reports with income offset
+
+---
+
 ## Breakeven Calculator [1.1.0] - 2026-01-24
 
 ### Added - Landlord Reports & GrainTrack Integration
