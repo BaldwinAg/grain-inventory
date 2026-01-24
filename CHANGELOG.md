@@ -39,20 +39,42 @@ Major redesign to make Breakeven the central cost planning application.
 - Summary cards showing assignment progress
 - Database: be_field_plan_assignments table
 
-**Phase 5: Misc Income** (Pending)
+**Phase 5: Special Categories & Field Expenses** ✅ COMPLETE
+- **Family Living Category**
+  - Special overhead category for personal draw/salary
+  - Toggle on dashboard to include/exclude from breakeven
+  - `is_family_living` flag in database
+- **Debt Service Category**
+  - Track loan payments spread across all acres
+  - `is_debt_service` flag in database
+- **Field-Level Expenses**
+  - New `SPECIFIC_FIELD` allocation type
+  - Assign expenses to individual fields (conservation, taxes, tile)
+  - Field expenses average across all acres in farm reports
+- **Overhead Expense UX Improvements**
+  - "Add Another" checkbox to quickly add multiple expenses
+  - Quick-add button at bottom of expense table
+  - Active category tab pre-selected in modal
+- **Database & Security**
+  - Added RLS policies for authenticated users on overhead tables
+  - Fixed base overhead categories insertion
+  - Migration includes all required categories
+
+**Phase 6: Misc Income** (Pending)
 - Track government payments (ARC-CO, PLC, MFP)
 - Track conservation payments (CRP, EQIP, CSP)
 - Income offsets reduce breakeven price
 
-**Phase 6: Planned vs Actual** (Pending)
+**Phase 7: Planned vs Actual** (Pending)
 - Track planned costs from crop plans
 - Pull actual costs from Spray-Suite and Fertilizer App
 - Variance analysis (planned - actual)
 
-**Phase 7-8: Dashboard & Reports** (Pending)
+**Phase 8: Dashboard & Reports** (Pending)
 - Updated dashboard with planned/actual comparison
 - Variance alerts
 - Enhanced landlord reports with income offset
+- Dedicated reports page with filters
 
 ---
 
