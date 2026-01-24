@@ -844,10 +844,34 @@ async function saveHerbicidePasses(fieldCropPlanId, passes) {
   }
 }
 
-// Get Spray-Suite tank mixes (for linking herbicide plans)
+// Get Spray-Suite tank mixes with products (for linking herbicide plans)
 async function getTankMixes() {
-  const { data, error } = await db.from('tank_mixes').select('id, name, commodities(name)').eq('active', true).order('name');
-  return error ? [] : (data || []).map(t => ({ ...t, commodity_name: t.commodities?.name }));
+  const { data, error } = await db.from('tank_mixes')
+    .select(`
+      id, name, description,
+      commodities(name),
+      tank_mix_products(
+        id, rate, rate_unit, cost_per_acre,
+        products(id, name, unit, cost_per_unit)
+      )
+    `)
+    .eq('active', true)
+    .order('name');
+
+  if (error) return [];
+
+  return (data || []).map(t => ({
+    ...t,
+    commodity_name: t.commodities?.name,
+    products: (t.tank_mix_products || []).map(tmp => ({
+      product_id: tmp.products?.id,
+      product_name: tmp.products?.name || 'Unknown',
+      rate: tmp.rate,
+      rate_unit: tmp.rate_unit || 'oz/acre',
+      price_per_unit: tmp.products?.cost_per_unit || tmp.cost_per_acre / (tmp.rate || 1) || 0
+    })),
+    total_cost: (t.tank_mix_products || []).reduce((sum, tmp) => sum + (tmp.cost_per_acre || 0), 0)
+  }));
 }
 
 // ============================================================================
@@ -2798,6 +2822,31 @@ function ChemicalPassesEditor({ passes, onChange, tankMixes }) {
     onChange(updated);
   };
 
+  // When tank mix is selected, populate products from that mix
+  const selectTankMix = (passIndex, tankMixId) => {
+    const updated = [...passes];
+    updated[passIndex].tank_mix_id = tankMixId;
+
+    if (tankMixId) {
+      const mix = tankMixes.find(tm => tm.id === tankMixId);
+      if (mix && mix.products && mix.products.length > 0) {
+        // Auto-populate products from the selected tank mix
+        updated[passIndex].products = mix.products.map(p => ({
+          product_name: p.product_name,
+          rate: p.rate,
+          rate_unit: p.rate_unit || 'oz/acre',
+          price_per_unit: p.price_per_unit || 0
+        }));
+        // Also set pass name from tank mix name if empty
+        if (!updated[passIndex].pass_name) {
+          updated[passIndex].pass_name = mix.name;
+        }
+      }
+    }
+
+    onChange(updated);
+  };
+
   const removePass = (index) => {
     onChange(passes.filter((_, i) => i !== index));
   };
@@ -2826,6 +2875,24 @@ function ChemicalPassesEditor({ passes, onChange, tankMixes }) {
     }, 0);
   }, 0);
 
+  // Add a pass directly from a tank mix
+  const addPassFromMix = (tankMix) => {
+    const newPass = {
+      pass_name: tankMix.name,
+      timing: '',
+      tank_mix_id: tankMix.id,
+      application_method: 'Ground',
+      notes: '',
+      products: tankMix.products.map(p => ({
+        product_name: p.product_name,
+        rate: p.rate,
+        rate_unit: p.rate_unit || 'oz/acre',
+        price_per_unit: p.price_per_unit || 0
+      }))
+    };
+    onChange([...passes, newPass]);
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -2836,17 +2903,36 @@ function ChemicalPassesEditor({ passes, onChange, tankMixes }) {
         </div>
       </div>
 
+      {/* Quick-add from Spray-Suite tank mixes */}
+      {tankMixes.length > 0 && (
+        <div className="bg-amber-50 rounded-lg p-3">
+          <div className="text-xs font-medium text-amber-800 mb-2">Quick add from Spray-Suite:</div>
+          <div className="flex flex-wrap gap-2">
+            {tankMixes.slice(0, 8).map(tm => (
+              <button key={tm.id} onClick={() => addPassFromMix(tm)}
+                className="px-3 py-1.5 text-sm bg-white border border-amber-300 rounded-full hover:bg-amber-100 text-amber-800">
+                + {tm.name}
+              </button>
+            ))}
+            {tankMixes.length > 8 && (
+              <span className="text-xs text-amber-600 self-center">+{tankMixes.length - 8} more in dropdown</span>
+            )}
+          </div>
+        </div>
+      )}
+
       {passes.length === 0 ? (
         <div className="text-center py-8 text-gray-500">
           <Icon name="spray-can" size={32} className="mx-auto mb-2 text-gray-300" />
           <p>No chemical passes added</p>
+          <p className="text-xs mt-1">Click a button above to import from Spray-Suite</p>
         </div>
       ) : (
         <div className="space-y-4">
           {passes.map((pass, pi) => (
             <div key={pi} className="border rounded-lg overflow-hidden">
               <div className="bg-amber-50 px-4 py-3 flex items-center justify-between">
-                <div className="flex gap-3 items-center flex-1">
+                <div className="flex gap-3 items-center flex-1 flex-wrap">
                   <input type="text" value={pass.pass_name} onChange={(e) => updatePass(pi, 'pass_name', e.target.value)} className="px-2 py-1 border rounded font-medium bg-white" placeholder="Pass name (e.g., Burndown)" />
                   <select value={pass.timing || ''} onChange={(e) => updatePass(pi, 'timing', e.target.value)} className="px-2 py-1 border rounded text-sm bg-white">
                     <option value="">Timing...</option>
@@ -2856,12 +2942,21 @@ function ChemicalPassesEditor({ passes, onChange, tankMixes }) {
                     <option value="Layby">Layby</option>
                     <option value="Fungicide">Fungicide</option>
                   </select>
-                  <select value={pass.tank_mix_id || ''} onChange={(e) => updatePass(pi, 'tank_mix_id', e.target.value)} className="px-2 py-1 border rounded text-sm bg-white">
-                    <option value="">Link tank mix...</option>
-                    {tankMixes.map(tm => <option key={tm.id} value={tm.id}>{tm.name}</option>)}
+                  <select value={pass.tank_mix_id || ''} onChange={(e) => selectTankMix(pi, e.target.value)} className="px-2 py-1 border rounded text-sm bg-white min-w-48">
+                    <option value="">Import from Spray-Suite...</option>
+                    {tankMixes.map(tm => (
+                      <option key={tm.id} value={tm.id}>
+                        {tm.name} {tm.total_cost ? `(${formatCurrency(tm.total_cost)}/ac)` : ''}
+                      </option>
+                    ))}
                   </select>
+                  {pass.tank_mix_id && (
+                    <span className="px-2 py-0.5 bg-green-100 text-green-800 rounded text-xs flex items-center gap-1">
+                      <Icon name="link" size={12} /> Linked to Spray-Suite
+                    </span>
+                  )}
                 </div>
-                <button onClick={() => removePass(pi)} className="p-1 text-red-500 hover:bg-red-100 rounded">
+                <button onClick={() => removePass(pi)} className="p-1 text-red-500 hover:bg-red-100 rounded ml-2">
                   <Icon name="trash-2" size={16} />
                 </button>
               </div>
