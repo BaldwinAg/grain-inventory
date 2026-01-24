@@ -188,10 +188,17 @@ async function getFieldCropYears(cropYear) {
   });
 }
 
-// Overhead Categories
+// Overhead Categories - deduplicate by name to handle duplicate records
 async function getOverheadCategories() {
   const { data, error } = await db.from('be_overhead_categories').select('*').eq('active', true).is('deleted_at', null).order('sort_order');
-  return error ? [] : data || [];
+  if (error) return [];
+  // Deduplicate by name (keep first occurrence)
+  const seen = new Set();
+  return (data || []).filter(cat => {
+    if (seen.has(cat.name)) return false;
+    seen.add(cat.name);
+    return true;
+  });
 }
 
 // Overhead Expenses
@@ -201,8 +208,18 @@ async function getOverheadExpenses(cropYear) {
 }
 
 async function saveOverheadExpense(expense, allocations = []) {
+  const expenseData = {
+    name: expense.name,
+    category_id: expense.category_id,
+    amount: expense.amount,
+    allocation_type: expense.allocation_type,
+    entry_mode: expense.entry_mode || 'TOTAL',
+    per_acre_amount: expense.per_acre_amount || null,
+    notes: expense.notes
+  };
+
   if (expense.id) {
-    const { error } = await db.from('be_overhead_expenses').update({ name: expense.name, category_id: expense.category_id, amount: expense.amount, allocation_type: expense.allocation_type, notes: expense.notes, updated_at: new Date().toISOString() }).eq('id', expense.id);
+    const { error } = await db.from('be_overhead_expenses').update({ ...expenseData, updated_at: new Date().toISOString() }).eq('id', expense.id);
     if (error) throw error;
     await db.from('be_overhead_allocations').delete().eq('expense_id', expense.id);
     if (allocations.length > 0) {
@@ -210,7 +227,7 @@ async function saveOverheadExpense(expense, allocations = []) {
     }
     return expense;
   } else {
-    const { data, error } = await db.from('be_overhead_expenses').insert([{ name: expense.name, category_id: expense.category_id, crop_year: expense.crop_year, amount: expense.amount, allocation_type: expense.allocation_type, notes: expense.notes }]).select().single();
+    const { data, error } = await db.from('be_overhead_expenses').insert([{ ...expenseData, crop_year: expense.crop_year }]).select().single();
     if (error) throw error;
     if (allocations.length > 0) {
       await db.from('be_overhead_allocations').insert(allocations.map(a => ({ expense_id: data.id, commodity_id: a.commodity_id, practice_type: a.practice_type || null })));
@@ -829,6 +846,7 @@ function OverheadPage({ cropYear, onYearChange }) {
   const [expenses, setExpenses] = useState([]);
   const [categories, setCategories] = useState([]);
   const [commodities, setCommodities] = useState([]);
+  const [fieldCropYears, setFieldCropYears] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [showCopyModal, setShowCopyModal] = useState(false);
@@ -839,12 +857,16 @@ function OverheadPage({ cropYear, onYearChange }) {
   const currentYear = new Date().getFullYear();
   const cropYears = [currentYear - 1, currentYear, currentYear + 1];
 
+  // Calculate total acres for per-acre expense calculations
+  const totalAcres = fieldCropYears.reduce((sum, fcy) => sum + (fcy.planted_acres || 0), 0);
+
   const loadData = async () => {
     setLoading(true);
-    const [exp, cats, coms] = await Promise.all([getOverheadExpenses(cropYear), getOverheadCategories(), getCommodities()]);
+    const [exp, cats, coms, fcy] = await Promise.all([getOverheadExpenses(cropYear), getOverheadCategories(), getCommodities(), getFieldCropYears(cropYear)]);
     setExpenses(exp);
     setCategories(cats);
     setCommodities(coms);
+    setFieldCropYears(fcy);
     if (!activeCategory && cats.length > 0) setActiveCategory(cats[0].id);
     setLoading(false);
   };
@@ -957,7 +979,12 @@ function OverheadPage({ cropYear, onYearChange }) {
                       <div className="font-medium">{exp.name}</div>
                       {exp.notes && <div className="text-xs text-gray-500">{exp.notes}</div>}
                     </td>
-                    <td className="px-4 py-3 text-right font-medium">{formatCurrency(exp.amount)}</td>
+                    <td className="px-4 py-3 text-right">
+                      <div className="font-medium">{formatCurrency(exp.amount)}</div>
+                      {exp.entry_mode === 'PER_ACRE' && exp.per_acre_amount && (
+                        <div className="text-xs text-gray-500">{formatCurrency(exp.per_acre_amount)}/acre</div>
+                      )}
+                    </td>
                     <td className="px-4 py-3">
                       {exp.allocation_type === 'ALL_ACRES' ? (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-100 text-green-700 rounded text-xs font-medium">
@@ -995,7 +1022,7 @@ function OverheadPage({ cropYear, onYearChange }) {
         )}
       </div>
 
-      {showModal && <OverheadModal expense={editingItem} cropYear={cropYear} categories={categories} commodities={commodities} onClose={() => setShowModal(false)} onSave={() => { setShowModal(false); loadData(); }} />}
+      {showModal && <OverheadModal expense={editingItem} cropYear={cropYear} categories={categories} commodities={commodities} totalAcres={totalAcres} onClose={() => setShowModal(false)} onSave={() => { setShowModal(false); loadData(); }} />}
       {showCopyModal && (
         <Modal isOpen={true} onClose={() => setShowCopyModal(false)} title="Copy Overhead from Another Year">
           <div className="space-y-4">
@@ -1029,8 +1056,8 @@ function OverheadPage({ cropYear, onYearChange }) {
   );
 }
 
-function OverheadModal({ expense, cropYear, categories, commodities, onClose, onSave }) {
-  const [form, setForm] = useState({ name: '', category_id: categories[0]?.id || '', amount: '', allocation_type: 'ALL_ACRES', notes: '', crop_year: cropYear });
+function OverheadModal({ expense, cropYear, categories, commodities, onClose, onSave, totalAcres = 0 }) {
+  const [form, setForm] = useState({ name: '', category_id: categories[0]?.id || '', amount: '', entry_mode: 'TOTAL', per_acre_amount: '', allocation_type: 'ALL_ACRES', notes: '', crop_year: cropYear });
   const [allocations, setAllocations] = useState([]);
   const [saving, setSaving] = useState(false);
   const { addToast } = useToast();
@@ -1069,7 +1096,8 @@ function OverheadModal({ expense, cropYear, categories, commodities, onClose, on
   };
 
   const handleSave = async () => {
-    if (!form.name || !form.amount) {
+    const hasAmount = form.entry_mode === 'TOTAL' ? form.amount : form.per_acre_amount;
+    if (!form.name || !hasAmount) {
       addToast('Please fill required fields', { type: 'error' });
       return;
     }
@@ -1079,7 +1107,22 @@ function OverheadModal({ expense, cropYear, categories, commodities, onClose, on
     }
     setSaving(true);
     try {
-      await saveOverheadExpense({ ...form, amount: parseFloat(form.amount), id: expense?.id }, form.allocation_type === 'SPECIFIC_CROPS' ? allocations : []);
+      // Calculate amount based on entry mode
+      let finalAmount = 0;
+      let perAcre = null;
+      if (form.entry_mode === 'TOTAL') {
+        finalAmount = parseFloat(form.amount);
+      } else {
+        perAcre = parseFloat(form.per_acre_amount);
+        finalAmount = perAcre * totalAcres; // Will be recalculated during allocation
+      }
+      await saveOverheadExpense({
+        ...form,
+        amount: finalAmount,
+        per_acre_amount: perAcre,
+        entry_mode: form.entry_mode,
+        id: expense?.id
+      }, form.allocation_type === 'SPECIFIC_CROPS' ? allocations : []);
       addToast('Expense saved', { type: 'success' });
       onSave();
     } catch (e) {
@@ -1095,18 +1138,59 @@ function OverheadModal({ expense, cropYear, categories, commodities, onClose, on
           <label className="block text-sm font-medium mb-1">Expense Name *</label>
           <input type="text" value={form.name} onChange={(e) => setForm(f => ({ ...f, name: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" placeholder="e.g., Planter Payment" />
         </div>
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium mb-1">Category</label>
-            <select value={form.category_id} onChange={(e) => setForm(f => ({ ...f, category_id: e.target.value }))} className="w-full px-3 py-2 border rounded-lg">
-              {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium mb-1">Amount *</label>
-            <input type="number" step="0.01" value={form.amount} onChange={(e) => setForm(f => ({ ...f, amount: e.target.value }))} className="w-full px-3 py-2 border rounded-lg" />
+        <div>
+          <label className="block text-sm font-medium mb-1">Category</label>
+          <select value={form.category_id} onChange={(e) => setForm(f => ({ ...f, category_id: e.target.value }))} className="w-full px-3 py-2 border rounded-lg">
+            {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium mb-2">Entry Mode</label>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => setForm(f => ({ ...f, entry_mode: 'TOTAL' }))}
+              className={`p-3 rounded-lg border-2 text-left transition-all ${form.entry_mode === 'TOTAL' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'}`}
+            >
+              <div className="font-medium">Total Amount</div>
+              <div className="text-xs text-gray-500">Enter fixed annual cost</div>
+            </button>
+            <button
+              type="button"
+              onClick={() => setForm(f => ({ ...f, entry_mode: 'PER_ACRE' }))}
+              className={`p-3 rounded-lg border-2 text-left transition-all ${form.entry_mode === 'PER_ACRE' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'}`}
+            >
+              <div className="font-medium">Per Acre Cost</div>
+              <div className="text-xs text-gray-500">Enter cost per acre</div>
+            </button>
           </div>
         </div>
+
+        {form.entry_mode === 'TOTAL' ? (
+          <div>
+            <label className="block text-sm font-medium mb-1">Total Amount *</label>
+            <div className="relative">
+              <span className="absolute left-3 top-2 text-gray-500">$</span>
+              <input type="number" step="0.01" value={form.amount} onChange={(e) => setForm(f => ({ ...f, amount: e.target.value }))} className="w-full pl-7 pr-3 py-2 border rounded-lg" placeholder="e.g., 45000" />
+            </div>
+            {form.amount && totalAcres > 0 && (
+              <div className="text-xs text-gray-500 mt-1">= {formatCurrency(parseFloat(form.amount) / totalAcres)}/acre ({totalAcres.toLocaleString()} acres)</div>
+            )}
+          </div>
+        ) : (
+          <div>
+            <label className="block text-sm font-medium mb-1">Cost Per Acre *</label>
+            <div className="relative">
+              <span className="absolute left-3 top-2 text-gray-500">$</span>
+              <input type="number" step="0.01" value={form.per_acre_amount} onChange={(e) => setForm(f => ({ ...f, per_acre_amount: e.target.value }))} className="w-full pl-7 pr-16 py-2 border rounded-lg" placeholder="e.g., 12.50" />
+              <span className="absolute right-3 top-2 text-gray-500">/acre</span>
+            </div>
+            {form.per_acre_amount && totalAcres > 0 && (
+              <div className="text-xs text-gray-500 mt-1">= {formatCurrency(parseFloat(form.per_acre_amount) * totalAcres)} total ({totalAcres.toLocaleString()} acres)</div>
+            )}
+          </div>
+        )}
         <div>
           <label className="block text-sm font-medium mb-1">Allocation Method</label>
           <div className="grid grid-cols-2 gap-2">
