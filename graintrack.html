@@ -2775,40 +2775,29 @@ function DashboardPage({ cropYear, onYearChange }) {
           .filter((c, i, arr) => arr.findIndex(x => x.commodity_id === c.commodity_id) === i)
           .filter(c => c.current_market_price);
 
-        // Signal detection function
+        // Signal detection function - requires BOTH RSI and Stoch to confirm
         const getSignal = (c) => {
           const rsi = c.market_rsi;
           const stochK = c.market_stoch_k;
           const stochD = c.market_stoch_d;
-          const trend = c.market_trend?.toLowerCase() || '';
+          const stoch = Math.max(stochK || 0, stochD || 0); // Use higher of K or D for overbought
+          const stochLow = Math.min(stochK || 100, stochD || 100); // Use lower for oversold
 
-          const triggers = [];
+          // SELL signal: RSI > 70 AND Stoch > 80 (both must confirm)
+          const isSell = rsi > 70 && stoch > 80;
 
-          // Sell signals (overbought)
-          if (rsi > 70) triggers.push({ type: 'sell', indicator: 'RSI', value: rsi.toFixed(0) });
-          if (stochK > 80) triggers.push({ type: 'sell', indicator: 'Stoch K', value: stochK.toFixed(0) });
-          if (stochD > 80) triggers.push({ type: 'sell', indicator: 'Stoch D', value: stochD.toFixed(0) });
-          if (trend.includes('sell') || trend.includes('bearish')) triggers.push({ type: 'sell', indicator: 'Trend', value: c.market_trend });
+          // BUY signal: RSI < 30 AND Stoch < 20 (both must confirm)
+          const isBuy = rsi > 0 && rsi < 30 && stochLow > 0 && stochLow < 20;
 
-          // Buy signals (oversold)
-          if (rsi < 30 && rsi > 0) triggers.push({ type: 'buy', indicator: 'RSI', value: rsi.toFixed(0) });
-          if (stochK < 20 && stochK > 0) triggers.push({ type: 'buy', indicator: 'Stoch K', value: stochK.toFixed(0) });
-          if (stochD < 20 && stochD > 0) triggers.push({ type: 'buy', indicator: 'Stoch D', value: stochD.toFixed(0) });
-          if (trend.includes('buy') || trend.includes('bullish')) triggers.push({ type: 'buy', indicator: 'Trend', value: c.market_trend });
-
-          // Determine overall signal (sell takes priority if both exist)
-          const sellTriggers = triggers.filter(t => t.type === 'sell');
-          const buyTriggers = triggers.filter(t => t.type === 'buy');
-
-          if (sellTriggers.length > 0) return { signal: 'sell', triggers: sellTriggers };
-          if (buyTriggers.length > 0) return { signal: 'buy', triggers: buyTriggers };
-          return { signal: 'neutral', triggers: [] };
+          if (isSell) return { signal: 'sell' };
+          if (isBuy) return { signal: 'buy' };
+          return { signal: 'neutral' };
         };
 
         return (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {commoditiesWithMarket.map(c => {
-              const { signal, triggers } = getSignal(c);
+              const { signal } = getSignal(c);
               const bgColor = signal === 'sell' ? 'bg-green-100 border-green-400'
                             : signal === 'buy' ? 'bg-red-100 border-red-400'
                             : 'bg-white border-gray-200';
@@ -2822,6 +2811,14 @@ function DashboardPage({ cropYear, onYearChange }) {
               const cashPrice = c.reference_basis !== null
                 ? c.current_market_price + c.reference_basis
                 : null;
+
+              // Determine indicator status colors
+              const rsiColor = c.market_rsi > 70 ? 'text-green-600 font-semibold'
+                             : c.market_rsi < 30 && c.market_rsi > 0 ? 'text-red-600 font-semibold'
+                             : 'text-gray-500';
+              const stochColor = (c.market_stoch_k > 80 || c.market_stoch_d > 80) ? 'text-green-600 font-semibold'
+                               : (c.market_stoch_k < 20 || c.market_stoch_d < 20) ? 'text-red-600 font-semibold'
+                               : 'text-gray-500';
 
               return (
                 <div key={c.commodity_id} className={`rounded-xl shadow-sm border-2 p-4 ${bgColor}`}>
@@ -2868,14 +2865,18 @@ function DashboardPage({ cropYear, onYearChange }) {
                     </span>
                   </div>
 
-                  {/* Signal triggers */}
-                  {triggers.length > 0 && (
-                    <div className={`mt-2 text-xs ${labelColor}`}>
-                      {triggers.map((t, i) => (
-                        <span key={i} className="mr-2">{t.indicator}: {t.value}</span>
-                      ))}
-                    </div>
-                  )}
+                  {/* Technical Indicators - always shown */}
+                  <div className="mt-2 pt-2 border-t border-gray-200 text-xs grid grid-cols-2 gap-1">
+                    <span className={rsiColor}>
+                      RSI: {c.market_rsi ? c.market_rsi.toFixed(0) : '--'}
+                    </span>
+                    <span className={stochColor}>
+                      Stoch: {c.market_stoch_k ? c.market_stoch_k.toFixed(0) : '--'}/{c.market_stoch_d ? c.market_stoch_d.toFixed(0) : '--'}
+                    </span>
+                    <span className="text-gray-500 col-span-2">
+                      Signal: {c.market_trend || '--'}
+                    </span>
+                  </div>
                 </div>
               );
             })}
