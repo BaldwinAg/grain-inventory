@@ -1459,25 +1459,36 @@ async function upsertInsuranceSetting(setting) {
   }
 }
 
+// New crop contract month codes
+const NEW_CROP_MONTHS = {
+  'Corn': 'Z',        // December
+  'Soybeans': 'X',    // November
+  'Wheat': 'N',       // July
+  'Milo': 'Z',        // December (follows corn)
+  'Grain Sorghum': 'Z'
+};
+
 // Market Prices - Enhanced with Barchart integration
-async function getLatestMarketPrices() {
+async function getLatestMarketPrices(cropYear = null) {
   // First, get all commodities to build the mapping
   const { data: commodities } = await db
     .from('commodities')
     .select('id, name')
     .eq('active', true);
-  
+
   if (!commodities) return {};
-  
+
   const prices = {};
-  
+  const currentYear = new Date().getFullYear();
+  const isNewCrop = cropYear && cropYear >= currentYear;
+
   // Try to get Barchart technicals (auto-updated from emails)
   const { data: barchartData, error: barchartError } = await db
     .from('barchart_technicals')
     .select('symbol, name, latest_price, rsi_14d, stoch_14d_pct_d, stoch_9d_pct_k, trend_signal, support_1, resistance_1, expiration_date, data_timestamp')
     .order('expiration_date', { ascending: true });
 
-  // Process Barchart data - find the front month contract for each commodity
+  // Process Barchart data - find the appropriate contract for each commodity
   if (barchartData && !barchartError) {
     // Group by commodity prefix to find contracts (exclude options which have | in symbol)
     const byPrefix = {};
@@ -1505,10 +1516,35 @@ async function getLatestMarketPrices() {
       const prefix = BARCHART_COMMODITY_MAP[commodity.name];
       if (!prefix || !byPrefix[prefix]) continue;
 
-      // Use the first contract (front month - sorted by expiration_date)
       const contracts = byPrefix[prefix];
-      if (contracts.length > 0) {
-        const front = contracts[0];
+      let selected = null;
+
+      if (isNewCrop && NEW_CROP_MONTHS[commodity.name]) {
+        // New crop: find contract with specific month code for the crop year
+        const monthCode = NEW_CROP_MONTHS[commodity.name];
+        const targetYear = cropYear % 100; // e.g., 2026 -> 26
+
+        // Look for contract matching month code and year (e.g., ZCZ26 for Dec 2026 corn)
+        selected = contracts.find(c => {
+          const symbolMonth = c.symbol.charAt(2);
+          const symbolYear = c.symbol.substring(3);
+          return symbolMonth === monthCode &&
+                 (symbolYear === String(targetYear) || symbolYear === String(targetYear).padStart(2, '0'));
+        });
+
+        // Fallback to front month if new crop contract not found
+        if (!selected && contracts.length > 0) {
+          selected = contracts[0];
+        }
+      } else {
+        // Old crop: use front month (first by expiration)
+        if (contracts.length > 0) {
+          selected = contracts[0];
+        }
+      }
+
+      if (selected) {
+        const front = selected;
         // Barchart grain prices are in CENTS - divide by 100 for dollars
         // e.g., 449.75 cents = $4.4975
         const priceInDollars = front.latest_price / 100;
@@ -2372,7 +2408,7 @@ async function getDashboardData(cropYear, detailMode = 'combined') {
       getProductionSummary(cropYear, byPractice),
       getContractsSummary(cropYear),
       getInsuranceSettings(cropYear),
-      getLatestMarketPrices(),
+      getLatestMarketPrices(cropYear),
       getReferenceBasis(cropYear)
     ]);
 
