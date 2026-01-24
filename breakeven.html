@@ -897,30 +897,45 @@ async function saveHerbicidePasses(fieldCropPlanId, passes) {
 async function getTankMixes() {
   const { data, error } = await db.from('tank_mixes')
     .select(`
-      id, name, description,
-      commodities(name),
+      id, name,
       tank_mix_products(
-        id, rate, rate_unit, cost_per_acre,
+        id, rate, unit, method, split,
         products(id, name, unit, cost_per_unit)
       )
     `)
     .eq('active', true)
     .order('name');
 
-  if (error) return [];
+  if (error) {
+    console.error('Error loading tank mixes:', error);
+    return [];
+  }
 
-  return (data || []).map(t => ({
-    ...t,
-    commodity_name: t.commodities?.name,
-    products: (t.tank_mix_products || []).map(tmp => ({
-      product_id: tmp.products?.id,
-      product_name: tmp.products?.name || 'Unknown',
-      rate: tmp.rate,
-      rate_unit: tmp.rate_unit || 'oz/acre',
-      price_per_unit: tmp.products?.cost_per_unit || tmp.cost_per_acre / (tmp.rate || 1) || 0
-    })),
-    total_cost: (t.tank_mix_products || []).reduce((sum, tmp) => sum + (tmp.cost_per_acre || 0), 0)
-  }));
+  console.log('Loaded tank mixes:', data);
+
+  return (data || []).map(t => {
+    // Calculate costs from products
+    const products = (t.tank_mix_products || []).map(tmp => {
+      const costPerUnit = tmp.products?.cost_per_unit || 0;
+      // Calculate cost per acre based on rate and product cost
+      const costPerAcre = costPerUnit * (tmp.rate || 0);
+      return {
+        product_id: tmp.products?.id,
+        product_name: tmp.products?.name || 'Unknown',
+        rate: tmp.rate,
+        rate_unit: tmp.unit || 'oz/acre',
+        price_per_unit: costPerUnit,
+        cost_per_acre: costPerAcre,
+        split: tmp.split === 'Y'
+      };
+    });
+
+    return {
+      ...t,
+      products,
+      total_cost: products.reduce((sum, p) => sum + (p.cost_per_acre || 0), 0)
+    };
+  });
 }
 
 // ============================================================================

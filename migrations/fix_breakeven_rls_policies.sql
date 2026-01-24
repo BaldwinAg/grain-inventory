@@ -438,11 +438,43 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- ============================================================================
+-- SPRAY-SUITE TABLES (tank_mixes, products)
+-- These are used by Breakeven for chemical cost planning
+-- ============================================================================
+
+-- tank_mixes
+DO $$ BEGIN
+  CREATE POLICY "Allow authenticated read tank_mixes" ON tank_mixes FOR SELECT TO authenticated USING (true);
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_table THEN NULL; END $$;
+
+DO $$ BEGIN
+  CREATE POLICY "Allow anon read tank_mixes" ON tank_mixes FOR SELECT TO anon USING (true);
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_table THEN NULL; END $$;
+
+-- tank_mix_products
+DO $$ BEGIN
+  CREATE POLICY "Allow authenticated read tank_mix_products" ON tank_mix_products FOR SELECT TO authenticated USING (true);
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_table THEN NULL; END $$;
+
+DO $$ BEGIN
+  CREATE POLICY "Allow anon read tank_mix_products" ON tank_mix_products FOR SELECT TO anon USING (true);
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_table THEN NULL; END $$;
+
+-- products (spray-suite)
+DO $$ BEGIN
+  CREATE POLICY "Allow authenticated read products" ON products FOR SELECT TO authenticated USING (true);
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_table THEN NULL; END $$;
+
+DO $$ BEGIN
+  CREATE POLICY "Allow anon read products" ON products FOR SELECT TO anon USING (true);
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_table THEN NULL; END $$;
+
+-- ============================================================================
 -- VERIFICATION
 -- ============================================================================
 
 -- List all policies on breakeven tables
 SELECT schemaname, tablename, policyname, permissive, roles, cmd
 FROM pg_policies
-WHERE tablename LIKE 'be_%'
+WHERE tablename LIKE 'be_%' OR tablename IN ('tank_mixes', 'tank_mix_products', 'products')
 ORDER BY tablename, cmd;
