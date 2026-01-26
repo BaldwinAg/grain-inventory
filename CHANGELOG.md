@@ -4,9 +4,34 @@ All notable changes to the Farm Management Suite applications.
 
 ---
 
-## Breakeven Calculator [2.0.0] - 2026-01-24 (In Progress)
+## Breakeven Calculator [2.2.0] - 2026-01-24
 
-### Redesign - Comprehensive Cost Planning Hub
+### GrainTrack Integration - Marketing & Profit/Loss
+
+**Real Profit/Loss Tracking**
+- Pull contracted bushels and blended average price from GrainTrack contracts
+- Calculate contracted vs uncontracted bushels per commodity
+- Set target prices for uncontracted bushels
+- Real-time profit/loss calculation: (Revenue - Costs)
+- Display on dashboard commodity cards with marketing position breakdown
+- Database: `be_target_prices` table for storing target prices
+
+**What-If Yield Analysis**
+- Edit yields directly on dashboard commodity cards
+- Instant recalculation of breakeven price when yield changes
+- Test scenarios: "What if yield is 10% higher/lower?"
+- Non-destructive - doesn't modify actual production data
+
+**Dashboard Profit/Loss Display**
+- Marketing Position section on each commodity card
+- Shows: Contracted bushels @ blended avg, Uncontracted bushels @ target price
+- Estimated Profit/Loss with per-bushel breakdown
+- Color-coded: Green for profit, Red for loss
+- "Set Target" button for quick price adjustments
+
+## Breakeven Calculator [2.1.0] - 2026-01-24
+
+### Phase 7: Dashboard & Analysis Charts
 
 Major redesign to make Breakeven the central cost planning application.
 
@@ -82,21 +107,56 @@ Major redesign to make Breakeven the central cost planning application.
   - Fixed 403 errors for authenticated users
 - **Future: Seed Calculator Standalone App** (noted in ROADMAP)
 
-**Phase 7: Misc Income** (Pending)
+**Phase 5: Misc Income** ✅ COMPLETE (Note: This was completed earlier)
 - Track government payments (ARC-CO, PLC, MFP)
 - Track conservation payments (CRP, EQIP, CSP)
-- Income offsets reduce breakeven price
+- Income allocation logic
+- Net cost calculation (costs - income)
 
-**Phase 8: Planned vs Actual** (Pending)
-- Track planned costs from crop plans
-- Pull actual costs from Spray-Suite and Fertilizer App
-- Variance analysis (planned - actual)
+**Phase 6: Planned vs Actual & Visibility** ✅ COMPLETE (Note: This was completed earlier)
+- Added cost_type column for planned/actual tracking
+- Pull actual chemical costs from Spray-Suite applications
+- Be_field_settings table for visibility control
+- Field Visibility settings UI in Settings page
+- Cascading report filters (Farm → Landlord → Fields)
+- Field multi-select in reports
+- Cost view toggle (Planned/Actual/Variance)
+- Variance report with category breakdown
+- Profitability pricing configuration
+- Price source selection (Market/Insurance/Manual)
+- Profit calculations in reports
+- Migration: `breakeven_phase3_planned_actual.sql`
 
-**Phase 9: Dashboard & Reports** (Pending)
-- Updated dashboard with planned/actual comparison
-- Variance alerts
-- Enhanced landlord reports with income offset
-- Dedicated reports page with filters
+**Phase 7: Dashboard & Analysis** ✅ COMPLETE
+- **Dashboard Enhancements**
+  - Planned/Actual/Variance toggle for cost view modes
+  - Summary cards update dynamically based on selected view
+  - Variance alert banner for commodities over budget by >10%
+  - Overall budget status card showing total variance
+  - Variance badges on commodity cards showing percentage over/under budget
+  - Color-coded variance indicators (red = over, green = under, yellow = minor variance)
+- **Commodity Cards**
+  - Display planned costs, actual costs, or variance based on toggle
+  - Per-acre variance calculations
+  - Budget status badges with percentage variance
+  - Contextual cost breakdown by view mode
+- **Analysis Page Enhancements**
+  - NEW: Charts tab with interactive visualizations using Chart.js
+  - NEW: Planned vs Actual bar chart comparing costs by commodity
+  - NEW: Variance chart showing over/under budget by commodity
+  - NEW: Cost breakdown doughnut charts for each commodity
+  - NEW: Overall cost allocation pie charts (planned vs actual)
+  - Existing: Variance by Commodity table with detailed metrics
+  - Existing: Field Detail table with crop plan assignments
+  - Highlighting for fields with >10% variance
+
+**Phase 8: Reports & Polish** ✅ PARTIALLY COMPLETE
+- [x] Profit/Loss integration with GrainTrack contracts
+- [x] What-if yield scenarios
+- [x] Target price management for uncontracted bushels
+- [ ] Update Landlord Report with income (deferred)
+- [ ] Field Cost Summary PDF (deferred)
+- [ ] Export functionality enhancements (deferred)
 
 ---
 

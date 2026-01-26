@@ -1,5 +1,5 @@
 <!--
-  Breakeven Calculator v1.0.0
+  Breakeven Calculator v2.2.0
   Cost aggregation and breakeven analysis
   Part of the Farm Management Suite
 -->
@@ -8,7 +8,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Breakeven Calculator v1.0.0</title>
+  <title>Breakeven Calculator v2.2.0</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -17,6 +17,7 @@
   <script src="https://unpkg.com/lucide@latest"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; }
     @media print {
@@ -58,7 +59,9 @@ const ICON_FALLBACKS = {
   'spray-can': '💨', 'calendar': '📅', 'dollar-sign': '$', 'user': '👤',
   'log-out': '→', 'loader': '⟳', 'target': '🎯', 'building': '🏢',
   'tractor': '🚜', 'sprout': '🌱', 'land-plot': '📐', 'layers': '📚',
-  'pie-chart': '🥧', 'bar-chart-3': '📊', 'trending-up': '📈'
+  'pie-chart': '🥧', 'bar-chart-3': '📊', 'trending-up': '📈',
+  'file-text': '📄', 'users': '👥', 'alert-triangle': '⚠️', 'info': 'ℹ️',
+  'alert-circle': '⚠️', 'check-circle': '✓', 'external-link': '↗', 'map': '🗺️'
 };
 
 function Icon({ name, size = 20, className = '' }) {
@@ -437,6 +440,98 @@ async function getFields() {
 }
 
 // ============================================================================
+// GRAINTRACK INTEGRATION - Contracts & Marketing
+// ============================================================================
+
+// Get contracted bushels and blended average prices from GrainTrack
+async function getContractedPositions(cropYear) {
+  // Query contracts from GrainTrack (CASH, FORWARD, SPOT, HTA types)
+  // Try with minimal columns first in case some don't exist
+  const { data: contracts, error } = await db.from('contracts')
+    .select('commodity_id, contract_type, bushels, price')
+    .eq('crop_year', cropYear)
+    .in('contract_type', ['CASH', 'FORWARD', 'SPOT', 'HTA'])
+    .is('deleted_at', null);
+
+  if (error) {
+    console.error('Error fetching contracts:', error);
+    return {};
+  }
+
+  // Calculate blended average and total contracted bushels per commodity
+  const positions = {};
+  (contracts || []).forEach(c => {
+    if (!positions[c.commodity_id]) {
+      positions[c.commodity_id] = {
+        contracted_bushels: 0,
+        total_revenue: 0,
+        blended_avg_price: 0
+      };
+    }
+
+    const bushels = c.bushels || 0;
+    const price = c.price || 0;
+    const revenue = bushels * price;
+
+    positions[c.commodity_id].contracted_bushels += bushels;
+    positions[c.commodity_id].total_revenue += revenue;
+  });
+
+  // Calculate weighted average price
+  Object.keys(positions).forEach(commodityId => {
+    const pos = positions[commodityId];
+    if (pos.contracted_bushels > 0) {
+      pos.blended_avg_price = pos.total_revenue / pos.contracted_bushels;
+    }
+  });
+
+  return positions;
+}
+
+// Get or create target prices for uncontracted bushels
+async function getTargetPrices(cropYear) {
+  const { data, error } = await db.from('be_target_prices')
+    .select('*')
+    .eq('crop_year', cropYear)
+    .is('deleted_at', null);
+
+  if (error) {
+    console.log('Target prices not available (feature may not be set up yet):', error.message);
+    return [];
+  }
+
+  return data || [];
+}
+
+// Save target price for uncontracted bushels
+async function saveTargetPrice(cropYear, commodityId, targetPrice) {
+  const { data: existing } = await db.from('be_target_prices')
+    .select('id')
+    .eq('crop_year', cropYear)
+    .eq('commodity_id', commodityId)
+    .is('deleted_at', null)
+    .maybeSingle();
+
+  const priceData = {
+    crop_year: cropYear,
+    commodity_id: commodityId,
+    target_price: targetPrice,
+    updated_at: new Date().toISOString()
+  };
+
+  if (existing) {
+    const { error } = await db.from('be_target_prices')
+      .update(priceData)
+      .eq('id', existing.id);
+    if (error) throw error;
+  } else {
+    const { error } = await db.from('be_target_prices')
+      .insert([priceData]);
+    if (error) throw error;
+  }
+}
+
+// ============================================================================
 // COMPREHENSIVE CROP PLANS (Phase 2)
 // ============================================================================
 
@@ -692,7 +787,10 @@ async function getFieldPlanAssignments(cropYear) {
     `)
     .is('deleted_at', null);
 
-  if (error) return [];
+  if (error) {
+    console.log('Field plan assignments not available (table may not exist yet):', error.message);
+    return [];
+  }
 
   // Filter by crop year from field_crop_years
   return (data || []).filter(a =>
@@ -900,7 +998,7 @@ async function getTankMixes() {
       id, name,
       tank_mix_products(
         id, rate, unit, method, split,
-        products(id, name, unit, cost_per_unit)
+        products(id, commercial_name, unit_of_measure, default_price)
       )
     `)
     .eq('active', true)
@@ -916,12 +1014,12 @@ async function getTankMixes() {
   return (data || []).map(t => {
     // Calculate costs from products
     const products = (t.tank_mix_products || []).map(tmp => {
-      const costPerUnit = tmp.products?.cost_per_unit || 0;
+      const costPerUnit = tmp.products?.default_price || 0;
       // Calculate cost per acre based on rate and product cost
       const costPerAcre = costPerUnit * (tmp.rate || 0);
       return {
         product_id: tmp.products?.id,
-        product_name: tmp.products?.name || 'Unknown',
+        product_name: tmp.products?.commercial_name || 'Unknown',
         rate: tmp.rate,
         rate_unit: tmp.unit || 'oz/acre',
         price_per_unit: costPerUnit,
@@ -963,7 +1061,11 @@ async function getMiscIncome(cropYear) {
     .eq('crop_year', cropYear)
     .is('deleted_at', null)
     .order('name');
-  return error ? [] : (data || []).map(i => ({
+  if (error) {
+    console.log('Misc income not available (table may not exist yet):', error.message);
+    return [];
+  }
+  return (data || []).map(i => ({
     ...i,
     category_name: i.be_misc_income_categories?.name,
     commodity_name: i.commodities?.name,
@@ -1163,6 +1265,287 @@ async function pullFertilizerActuals(fieldId, cropYear) {
 }
 
 // ============================================================================
+// PHASE 3: FIELD VISIBILITY & PLANNED VS ACTUAL
+// ============================================================================
+
+// Get field settings for breakeven visibility
+async function getFieldSettings() {
+  const { data, error } = await db.from('be_field_settings')
+    .select('*');
+  if (error) {
+    console.error('Error loading field settings:', error);
+    return [];
+  }
+  return data || [];
+}
+
+// Save field settings
+async function saveFieldSetting(fieldId, isActiveForBreakeven, notes = null) {
+  const { data: existing } = await db.from('be_field_settings')
+    .select('id')
+    .eq('field_id', fieldId)
+    .single();
+
+  if (existing) {
+    const { error } = await db.from('be_field_settings')
+      .update({ is_active_for_breakeven: isActiveForBreakeven, notes, updated_at: new Date().toISOString() })
+      .eq('id', existing.id);
+    if (error) throw error;
+  } else {
+    const { error } = await db.from('be_field_settings')
+      .insert([{ field_id: fieldId, is_active_for_breakeven: isActiveForBreakeven, notes }]);
+    if (error) throw error;
+  }
+}
+
+// Get visible fields for breakeven (applies visibility settings)
+async function getVisibleFields() {
+  // Get fields where:
+  // 1. Farm is active AND has adams_grain_share > 0
+  // 2. Field is active
+  // 3. be_field_settings.is_active_for_breakeven = true (or no setting exists)
+
+  const { data: fields, error } = await db.from('fields')
+    .select(`
+      id, name, acres, farm_id, tenant_share, landlord, active,
+      farms!inner(id, name, active, adams_grain_share),
+      be_field_settings(is_active_for_breakeven)
+    `)
+    .eq('active', true)
+    .eq('farms.active', true)
+    .gt('farms.adams_grain_share', 0);
+
+  if (error) {
+    console.error('Error loading visible fields:', error);
+    return [];
+  }
+
+  // Filter out fields with is_active_for_breakeven = false
+  return (fields || []).filter(f =>
+    !f.be_field_settings?.[0] ||
+    f.be_field_settings[0].is_active_for_breakeven !== false
+  ).map(f => ({
+    ...f,
+    farm_name: f.farms?.name,
+    adams_grain_share: f.farms?.adams_grain_share,
+    effective_share: (f.tenant_share || 1) * (f.farms?.adams_grain_share || 1)
+  }));
+}
+
+// Get actual chemical costs from Spray-Suite for a crop year
+async function getActualChemicalCosts(cropYear) {
+  const startDate = `${cropYear - 1}-09-01`;
+  const endDate = `${cropYear}-08-31`;
+
+  const { data, error } = await db.from('applications')
+    .select(`
+      id, field_id, date, total_acres, total_cost,
+      application_products(
+        product_id, rate, unit, unit_cost, total_cost, split,
+        products(commercial_name)
+      )
+    `)
+    .gte('date', startDate)
+    .lte('date', endDate);
+
+  if (error) {
+    console.error('Error fetching actual chemical costs:', error);
+    return { byField: {}, lastSynced: new Date().toISOString() };
+  }
+
+  // Aggregate by field_id
+  const byField = {};
+  (data || []).forEach(app => {
+    if (!byField[app.field_id]) {
+      byField[app.field_id] = {
+        total: 0,
+        splitCost: 0,
+        nonSplitCost: 0,
+        applications: [],
+        products: []
+      };
+    }
+
+    const products = app.application_products || [];
+    let appTotal = 0;
+    let appSplit = 0;
+    let appNonSplit = 0;
+
+    products.forEach(p => {
+      const cost = p.total_cost || 0;
+      const isSplit = p.split === 'Y';
+      appTotal += cost;
+      if (isSplit) {
+        appSplit += cost;
+      } else {
+        appNonSplit += cost;
+      }
+      byField[app.field_id].products.push({
+        product_name: p.products?.commercial_name || 'Unknown',
+        rate: p.rate,
+        unit: p.unit,
+        cost: cost,
+        is_split: isSplit,
+        date: app.date
+      });
+    });
+
+    // Fallback if no product detail
+    if (products.length === 0) {
+      appTotal = app.total_cost || 0;
+      appNonSplit = appTotal;
+    }
+
+    byField[app.field_id].total += appTotal;
+    byField[app.field_id].splitCost += appSplit;
+    byField[app.field_id].nonSplitCost += appNonSplit;
+    byField[app.field_id].applications.push({
+      id: app.id,
+      date: app.date,
+      acres: app.total_acres,
+      total_cost: appTotal
+    });
+  });
+
+  return { byField, lastSynced: new Date().toISOString() };
+}
+
+// Get profitability price settings for a crop year
+async function getProfitabilityPrices(cropYear, commodities) {
+  // Get saved price preferences
+  const { data: savedPrices } = await db.from('be_profitability_prices')
+    .select('*')
+    .eq('crop_year', cropYear);
+
+  // Get insurance settings for reference prices
+  const { data: insuranceSettings } = await db.from('insurance_settings')
+    .select('commodity_id, price_election')
+    .eq('crop_year', cropYear);
+
+  // Get latest market prices from GrainTrack (barchart_technicals or market_prices)
+  const { data: marketPrices } = await db.from('market_prices')
+    .select('commodity_id, price, updated_at')
+    .order('updated_at', { ascending: false });
+
+  // Build price map by commodity
+  const prices = {};
+  const savedMap = {};
+  (savedPrices || []).forEach(sp => { savedMap[sp.commodity_id] = sp; });
+
+  const insuranceMap = {};
+  (insuranceSettings || []).forEach(is => { insuranceMap[is.commodity_id] = is.price_election; });
+
+  // Get unique latest market prices per commodity
+  const marketMap = {};
+  (marketPrices || []).forEach(mp => {
+    if (!marketMap[mp.commodity_id]) {
+      marketMap[mp.commodity_id] = mp.price;
+    }
+  });
+
+  commodities.forEach(c => {
+    const saved = savedMap[c.id];
+    const marketPrice = marketMap[c.id] ? marketMap[c.id] / 100 : null; // Prices stored in cents
+    const insurancePrice = insuranceMap[c.id] || null;
+
+    let effectivePrice = null;
+    const priceSource = saved?.price_source || 'insurance';
+
+    if (priceSource === 'market' && marketPrice) {
+      effectivePrice = marketPrice;
+    } else if (priceSource === 'insurance' && insurancePrice) {
+      effectivePrice = insurancePrice;
+    } else if (priceSource === 'manual' && saved?.manual_price) {
+      effectivePrice = parseFloat(saved.manual_price);
+    } else {
+      // Fallback priority: insurance > market
+      effectivePrice = insurancePrice || marketPrice || null;
+    }
+
+    prices[c.id] = {
+      commodity_id: c.id,
+      commodity_name: c.name,
+      market_price: marketPrice,
+      insurance_price: insurancePrice,
+      manual_price: saved?.manual_price ? parseFloat(saved.manual_price) : null,
+      price_source: priceSource,
+      effective_price: effectivePrice
+    };
+  });
+
+  return prices;
+}
+
+// Save profitability price setting
+async function saveProfitabilityPrice(cropYear, commodityId, priceSource, manualPrice = null) {
+  const { data: existing } = await db.from('be_profitability_prices')
+    .select('id')
+    .eq('crop_year', cropYear)
+    .eq('commodity_id', commodityId)
+    .single();
+
+  const priceData = {
+    crop_year: cropYear,
+    commodity_id: commodityId,
+    price_source: priceSource,
+    manual_price: priceSource === 'manual' ? manualPrice : null,
+    updated_at: new Date().toISOString()
+  };
+
+  if (existing) {
+    const { error } = await db.from('be_profitability_prices')
+      .update(priceData)
+      .eq('id', existing.id);
+    if (error) throw error;
+  } else {
+    const { error } = await db.from('be_profitability_prices')
+      .insert([priceData]);
+    if (error) throw error;
+  }
+}
+
+// Calculate variance between planned and actual costs
+function calculateVariance(planned, actual) {
+  const calcVar = (p, a) => ({
+    planned: p || 0,
+    actual: a || 0,
+    variance: (a || 0) - (p || 0),
+    pctChange: p > 0 ? (((a || 0) - p) / p * 100) : 0
+  });
+
+  return {
+    seed: calcVar(planned.seed, actual.seed),
+    fertilizer: calcVar(planned.fertilizer, actual.fertilizer),
+    chemicals: calcVar(planned.chemicals, actual.chemicals),
+    overhead: calcVar(planned.overhead, actual.overhead),
+    rent: calcVar(planned.rent, actual.rent),
+    total: calcVar(planned.total, actual.total)
+  };
+}
+
+// Calculate profitability for a field
+function calculateProfitability(fieldData, prices) {
+  return fieldData.map(f => {
+    const priceInfo = prices[f.commodity_id];
+    const price = priceInfo?.effective_price || 0;
+    const bushels = f.actual_production || (f.planted_acres * (f.expected_yield || 0));
+    const revenue = bushels * price;
+    const profit = revenue - f.totalCost;
+    const profitPerAcre = f.planted_acres > 0 ? profit / f.planted_acres : 0;
+
+    return {
+      ...f,
+      price_used: price,
+      price_source: priceInfo?.price_source || 'none',
+      gross_revenue: revenue,
+      profit,
+      profitPerAcre,
+      isProfitable: profit > 0
+    };
+  });
+}
+
+// ============================================================================
 // CALCULATION HELPERS
 // ============================================================================
 
@@ -1240,19 +1623,27 @@ function DashboardPage({ cropYear, onYearChange }) {
     totalIncome: 0,
     netCost: 0,
     breakdown: { overhead: 0, seed: 0, rent: 0, fertilizer: 0, herbicide: 0 },
-    familyLivingTotal: 0
+    familyLivingTotal: 0,
+    totalPlannedCost: 0,
+    totalVariance: 0,
+    hasOverages: false
   });
   const [loading, setLoading] = useState(true);
   const [includeFamilyLiving, setIncludeFamilyLiving] = useState(true);
+  const [costView, setCostView] = useState('actual'); // 'planned', 'actual', 'variance'
   const [rawData, setRawData] = useState(null); // Store raw data for recalculation
+  const [showTargetPriceModal, setShowTargetPriceModal] = useState(false);
+  const [editingTargetPrice, setEditingTargetPrice] = useState(null);
+  const [yieldOverrides, setYieldOverrides] = useState({}); // { commodity_id: new_yield_per_acre }
   const currentYear = new Date().getFullYear();
   const cropYears = [currentYear - 1, currentYear, currentYear + 1];
+  const { addToast } = useToast();
 
   // Load raw data from database
   useEffect(() => {
     async function loadRawData() {
       setLoading(true);
-      const [fcys, expenses, categories, seeds, rents, fertCosts, herbCosts, commodities, miscIncome] = await Promise.all([
+      const [fcys, expenses, categories, seeds, rents, fertCosts, herbCosts, commodities, miscIncome, cropPlans, assignments, contractedPositions, targetPrices] = await Promise.all([
         getFieldCropYears(cropYear),
         getOverheadExpenses(cropYear),
         getOverheadCategories(),
@@ -1261,9 +1652,13 @@ function DashboardPage({ cropYear, onYearChange }) {
         getFertilizerCosts(cropYear),
         getHerbicideCosts(cropYear),
         getCommodities(),
-        getMiscIncome(cropYear)
+        getMiscIncome(cropYear),
+        getCropPlans(cropYear),
+        getFieldPlanAssignments(cropYear),
+        getContractedPositions(cropYear),
+        getTargetPrices(cropYear)
       ]);
-      setRawData({ fcys, expenses, categories, seeds, rents, fertCosts, herbCosts, commodities, miscIncome });
+      setRawData({ fcys, expenses, categories, seeds, rents, fertCosts, herbCosts, commodities, miscIncome, cropPlans, assignments, contractedPositions, targetPrices });
     }
     loadRawData();
   }, [cropYear]);
@@ -1272,7 +1667,13 @@ function DashboardPage({ cropYear, onYearChange }) {
   useEffect(() => {
     if (!rawData) return;
 
-    const { fcys, expenses, categories, seeds, rents, fertCosts, herbCosts, miscIncome } = rawData;
+    const { fcys, expenses, categories, seeds, rents, fertCosts, herbCosts, miscIncome, cropPlans, assignments, contractedPositions, targetPrices } = rawData;
+
+    // Build target price map
+    const targetPriceMap = {};
+    (targetPrices || []).forEach(tp => {
+      targetPriceMap[tp.commodity_id] = tp.target_price;
+    });
 
     // Find family living category IDs
     const familyLivingCategoryIds = categories
@@ -1296,12 +1697,14 @@ function DashboardPage({ cropYear, onYearChange }) {
     rents.forEach(r => { rentMap[r.field_id] = r.rent_per_acre || 0; });
 
     let totalCost = 0;
+    let totalPlannedCost = 0;
     let totalAcres = 0;
     let totalIncome = 0;
     const breakdown = { overhead: 0, seed: 0, rent: 0, fertilizer: 0, herbicide: 0 };
     const byCommodity = {};
 
     fcys.forEach(fcy => {
+      // Actual costs
       const overhead = overheadAlloc[fcy.id] || 0;
       const seed = seedMap[fcy.id] || 0;
       const rentPerAcre = rentMap[fcy.field_id] || 0;
@@ -1311,9 +1714,21 @@ function DashboardPage({ cropYear, onYearChange }) {
       const herb = typeof herbData === 'object' ? herbData.total : herbData;
       const fieldTotal = overhead + seed + rent + fert + herb;
       const income = incomeAlloc[fcy.id] || 0;
-      const bushels = fcy.actual_production || ((fcy.planted_acres || 0) * (fcy.estimated_yield || 0));
+
+      // Check for yield override
+      const yieldPerAcre = yieldOverrides[fcy.commodity_id] !== undefined
+        ? yieldOverrides[fcy.commodity_id]
+        : (fcy.estimated_yield || 0);
+      const bushels = fcy.actual_production || ((fcy.planted_acres || 0) * yieldPerAcre);
+
+      // Planned costs
+      const assignment = assignments.find(a => a.field_crop_year_id === fcy.id);
+      const plan = assignment ? cropPlans.find(p => p.id === assignment.crop_plan_id) : null;
+      const plannedCostPerAcre = plan ? calculateCropPlanCost(plan) : 0;
+      const plannedFieldTotal = (plannedCostPerAcre + overhead + rent) * (fcy.planted_acres || 0);
 
       totalCost += fieldTotal;
+      totalPlannedCost += plannedFieldTotal;
       totalAcres += fcy.planted_acres || 0;
       totalIncome += income;
       breakdown.overhead += overhead;
@@ -1326,6 +1741,7 @@ function DashboardPage({ cropYear, onYearChange }) {
         byCommodity[fcy.commodity_id] = {
           name: fcy.commodity_name,
           cost: 0,
+          plannedCost: 0,
           acres: 0,
           bushels: 0,
           income: 0,
@@ -1337,6 +1753,7 @@ function DashboardPage({ cropYear, onYearChange }) {
         };
       }
       byCommodity[fcy.commodity_id].cost += fieldTotal;
+      byCommodity[fcy.commodity_id].plannedCost += plannedFieldTotal;
       byCommodity[fcy.commodity_id].acres += fcy.planted_acres || 0;
       byCommodity[fcy.commodity_id].bushels += bushels;
       byCommodity[fcy.commodity_id].income += income;
@@ -1347,26 +1764,73 @@ function DashboardPage({ cropYear, onYearChange }) {
       byCommodity[fcy.commodity_id].herbicide += herb;
     });
 
-    const commoditySummary = Object.values(byCommodity).map(c => ({
-      ...c,
-      netCost: c.cost - c.income,
-      breakeven: c.bushels > 0 ? c.cost / c.bushels : null,
-      netBreakeven: c.bushels > 0 ? (c.cost - c.income) / c.bushels : null,
-      costPerAcre: c.acres > 0 ? c.cost / c.acres : 0,
-      netCostPerAcre: c.acres > 0 ? (c.cost - c.income) / c.acres : 0
-    }));
+    const commoditySummary = Object.values(byCommodity).map(c => {
+      const variance = c.cost - c.plannedCost;
+      const variancePct = c.plannedCost > 0 ? ((c.cost - c.plannedCost) / c.plannedCost) * 100 : null;
+
+      // Get marketing position for this commodity
+      const commodityId = Object.keys(byCommodity).find(key => byCommodity[key] === c);
+      const position = (contractedPositions || {})[commodityId] || { contracted_bushels: 0, blended_avg_price: 0 };
+      const targetPrice = targetPriceMap[commodityId] || 0;
+
+      // Store commodity_id for use in render
+      c.commodity_id = commodityId;
+
+      // Calculate contracted vs uncontracted
+      const contractedBu = position.contracted_bushels || 0;
+      const uncontractedBu = Math.max(0, c.bushels - contractedBu);
+      const blendedAvgPrice = position.blended_avg_price || 0;
+
+      // Calculate revenue
+      const contractedRevenue = contractedBu * blendedAvgPrice;
+      const uncontractedRevenue = uncontractedBu * targetPrice;
+      const totalRevenue = contractedRevenue + uncontractedRevenue;
+
+      // Calculate profit/loss
+      const netCost = c.cost - c.income;
+      const profitLoss = totalRevenue - netCost;
+      const profitPerBu = c.bushels > 0 ? profitLoss / c.bushels : 0;
+
+      return {
+        ...c,
+        variance,
+        variancePct,
+        netCost,
+        breakeven: c.bushels > 0 ? c.cost / c.bushels : null,
+        netBreakeven: c.bushels > 0 ? netCost / c.bushels : null,
+        costPerAcre: c.acres > 0 ? c.cost / c.acres : 0,
+        netCostPerAcre: c.acres > 0 ? netCost / c.acres : 0,
+        plannedCostPerAcre: c.acres > 0 ? c.plannedCost / c.acres : 0,
+        // Marketing data
+        contractedBu,
+        uncontractedBu,
+        blendedAvgPrice,
+        targetPrice,
+        contractedRevenue,
+        uncontractedRevenue,
+        totalRevenue,
+        profitLoss,
+        profitPerBu
+      };
+    });
+
+    const totalVariance = totalCost - totalPlannedCost;
+    const hasOverages = commoditySummary.some(c => c.variancePct != null && c.variancePct > 10);
 
     setData({
       commodities: commoditySummary,
       totalCost,
+      totalPlannedCost,
+      totalVariance,
       totalAcres,
       totalIncome,
       netCost: totalCost - totalIncome,
       breakdown,
-      familyLivingTotal
+      familyLivingTotal,
+      hasOverages
     });
     setLoading(false);
-  }, [rawData, includeFamilyLiving]);
+  }, [rawData, includeFamilyLiving, yieldOverrides]);
 
   const commodityColors = {
     'Corn': { bg: 'bg-amber-500', light: 'bg-amber-100', text: 'text-amber-700', border: 'border-amber-200' },
@@ -1412,15 +1876,109 @@ function DashboardPage({ cropYear, onYearChange }) {
         </div>
       </div>
 
+      {/* Cost View Toggle */}
+      <div className="flex items-center justify-between bg-white rounded-xl shadow-sm border p-4">
+        <div className="flex items-center gap-2">
+          <Icon name="bar-chart-3" size={20} className="text-gray-400" />
+          <span className="font-medium text-gray-700">Cost View:</span>
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setCostView('planned')}
+            className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+              costView === 'planned'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+            }`}
+          >
+            Planned
+          </button>
+          <button
+            onClick={() => setCostView('actual')}
+            className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+              costView === 'actual'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+            }`}
+          >
+            Actual
+          </button>
+          <button
+            onClick={() => setCostView('variance')}
+            className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+              costView === 'variance'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+            }`}
+          >
+            Variance
+          </button>
+        </div>
+      </div>
+
+      {/* Variance Alert Banner */}
+      {data.hasOverages && (
+        <div className="bg-red-50 border-l-4 border-red-500 rounded-lg p-4 flex items-start gap-3">
+          <Icon name="alert-triangle" size={20} className="text-red-500 mt-0.5" />
+          <div className="flex-1">
+            <h3 className="font-semibold text-red-800">Budget Variance Alert</h3>
+            <p className="text-sm text-red-700 mt-1">
+              One or more commodities are over budget by more than 10%. Review the Analysis page for detailed variance breakdown.
+            </p>
+          </div>
+          <a href="#" onClick={(e) => { e.preventDefault(); /* Navigate to analysis page */ }} className="text-red-600 hover:text-red-800 font-medium text-sm whitespace-nowrap">
+            View Details →
+          </a>
+        </div>
+      )}
+
+      {/* Budget Status Summary (when variance view selected) */}
+      {costView === 'variance' && data.totalPlannedCost > 0 && (
+        <div className={`rounded-xl shadow-sm border p-6 ${
+          data.totalVariance > 0 ? 'bg-red-50 border-red-200' : 'bg-green-50 border-green-200'
+        }`}>
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="font-semibold text-lg text-gray-900">Overall Budget Status</h3>
+              <p className="text-sm text-gray-600 mt-1">
+                {data.totalVariance > 0 ? 'Over budget' : data.totalVariance < 0 ? 'Under budget' : 'On track'}
+              </p>
+            </div>
+            <div className="text-right">
+              <div className={`text-3xl font-bold ${data.totalVariance > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                {data.totalVariance > 0 ? '+' : ''}{formatCurrency(data.totalVariance)}
+              </div>
+              <div className="text-sm text-gray-500">
+                {data.totalPlannedCost > 0 ? `${((data.totalVariance / data.totalPlannedCost) * 100).toFixed(1)}%` : '-'} variance
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl shadow-lg p-6 text-white">
           <div className="flex items-center gap-3 mb-2">
             <Icon name="dollar-sign" size={24} />
-            <span className="text-blue-100">Total Cost</span>
+            <span className="text-blue-100">
+              {costView === 'planned' ? 'Planned Cost' : costView === 'variance' ? 'Variance' : 'Total Cost'}
+            </span>
           </div>
-          <div className="text-3xl font-bold">{formatCurrency(data.totalCost)}</div>
-          <div className="text-sm text-blue-100 mt-1">{formatNumber(data.totalAcres)} acres</div>
+          <div className="text-3xl font-bold">
+            {costView === 'planned'
+              ? formatCurrency(data.totalPlannedCost)
+              : costView === 'variance'
+                ? (data.totalVariance > 0 ? '+' : '') + formatCurrency(data.totalVariance)
+                : formatCurrency(data.totalCost)
+            }
+          </div>
+          <div className="text-sm text-blue-100 mt-1">
+            {costView === 'variance' && data.totalPlannedCost > 0
+              ? `${((data.totalVariance / data.totalPlannedCost) * 100).toFixed(1)}% ${data.totalVariance > 0 ? 'over' : 'under'} budget`
+              : `${formatNumber(data.totalAcres)} acres`
+            }
+          </div>
         </div>
         <div className="bg-gradient-to-br from-emerald-500 to-emerald-600 rounded-xl shadow-lg p-6 text-white">
           <div className="flex items-center gap-3 mb-2">
@@ -1435,7 +1993,12 @@ function DashboardPage({ cropYear, onYearChange }) {
             <Icon name="target" size={24} />
             <span className="text-amber-100">Net Cost</span>
           </div>
-          <div className="text-3xl font-bold">{formatCurrency(data.netCost)}</div>
+          <div className="text-3xl font-bold">
+            {costView === 'planned'
+              ? formatCurrency(data.totalPlannedCost - data.totalIncome)
+              : formatCurrency(data.netCost)
+            }
+          </div>
           <div className="text-sm text-amber-100 mt-1">After income offset</div>
         </div>
         <div className="bg-gradient-to-br from-purple-500 to-purple-600 rounded-xl shadow-lg p-6 text-white">
@@ -1443,8 +2006,21 @@ function DashboardPage({ cropYear, onYearChange }) {
             <Icon name="map" size={24} />
             <span className="text-purple-100">Avg Cost/Acre</span>
           </div>
-          <div className="text-3xl font-bold">{data.totalAcres > 0 ? formatCurrency(data.netCost / data.totalAcres) : '-'}</div>
-          <div className="text-sm text-purple-100 mt-1">Net after income</div>
+          <div className="text-3xl font-bold">
+            {data.totalAcres > 0
+              ? formatCurrency(
+                  costView === 'planned'
+                    ? (data.totalPlannedCost - data.totalIncome) / data.totalAcres
+                    : costView === 'variance'
+                      ? data.totalVariance / data.totalAcres
+                      : data.netCost / data.totalAcres
+                )
+              : '-'
+            }
+          </div>
+          <div className="text-sm text-purple-100 mt-1">
+            {costView === 'variance' ? 'Variance per acre' : 'Net after income'}
+          </div>
         </div>
       </div>
 
@@ -1504,41 +2080,131 @@ function DashboardPage({ cropYear, onYearChange }) {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {data.commodities.map(c => {
           const colors = commodityColors[c.name] || defaultColor;
+          const varianceColor = c.variance > 0 ? 'text-red-600' : c.variance < 0 ? 'text-green-600' : 'text-gray-600';
+          const varianceBadgeColor = c.variancePct != null && c.variancePct > 10
+            ? 'bg-red-100 text-red-700 border-red-300'
+            : c.variancePct != null && c.variancePct < -10
+              ? 'bg-green-100 text-green-700 border-green-300'
+              : c.variancePct != null
+                ? 'bg-yellow-100 text-yellow-700 border-yellow-300'
+                : 'bg-gray-100 text-gray-600 border-gray-300';
+
           return (
             <div key={c.name} className="bg-white rounded-xl shadow-sm border overflow-hidden">
-              <div className={`${colors.bg} px-6 py-4`}>
+              <div className={`${colors.bg} px-6 py-4 relative`}>
                 <h3 className="text-xl font-bold text-white">{c.name}</h3>
-                <div className="text-white/80 text-sm">{formatNumber(c.acres)} acres • {formatNumber(c.bushels)} bu</div>
+                <div className="text-white/80 text-sm flex items-center gap-2">
+                  <span>{formatNumber(c.acres)} acres • {formatNumber(c.bushels)} bu</span>
+                  {costView === 'actual' && (
+                    <button
+                      onClick={() => {
+                        const currentYield = c.acres > 0 ? c.bushels / c.acres : 0;
+                        const newYield = prompt(`Adjust yield for ${c.name} (current: ${currentYield.toFixed(1)} bu/ac):`, currentYield.toFixed(1));
+                        if (newYield && !isNaN(parseFloat(newYield))) {
+                          setYieldOverrides(prev => ({ ...prev, [c.commodity_id]: parseFloat(newYield) }));
+                        }
+                      }}
+                      className="text-white/60 hover:text-white text-xs"
+                      title="Edit yield for what-if scenario"
+                    >
+                      ✏️
+                    </button>
+                  )}
+                </div>
+
+                {/* Variance Badge */}
+                {c.variancePct != null && c.plannedCost > 0 && (
+                  <div className={`absolute top-4 right-4 px-2 py-1 rounded-lg border text-xs font-semibold ${varianceBadgeColor}`}>
+                    {c.variance > 0 ? '+' : ''}{c.variancePct.toFixed(1)}%
+                  </div>
+                )}
               </div>
               <div className="p-6">
                 <div className="flex items-baseline gap-2 mb-2">
-                  <span className="text-3xl font-bold text-gray-900">{c.netBreakeven ? formatPrice(c.netBreakeven) : '-'}</span>
-                  <span className="text-gray-500">net breakeven</span>
+                  <span className="text-3xl font-bold text-gray-900">
+                    {costView === 'variance'
+                      ? (c.variance > 0 ? '+' : '') + formatCurrency(c.variance)
+                      : c.netBreakeven
+                        ? formatPrice(c.netBreakeven)
+                        : '-'
+                    }
+                  </span>
+                  <span className="text-gray-500">
+                    {costView === 'variance' ? 'variance' : 'net breakeven'}
+                  </span>
                 </div>
-                {c.income > 0 && (
+                {c.income > 0 && costView !== 'variance' && (
                   <div className="text-xs text-gray-400 mb-4">
                     Gross: {c.breakeven ? formatPrice(c.breakeven) : '-'} | Income offset: {formatCurrency(c.income)}
                   </div>
                 )}
                 <div className="space-y-2 text-sm">
-                  <div className="flex justify-between py-1 border-b">
-                    <span className="text-gray-500">Gross Cost</span>
-                    <span className="font-semibold">{formatCurrency(c.cost)}</span>
-                  </div>
-                  {c.income > 0 && (
-                    <div className="flex justify-between py-1 border-b">
-                      <span className="text-green-600">- Misc Income</span>
-                      <span className="font-semibold text-green-600">-{formatCurrency(c.income)}</span>
-                    </div>
+                  {costView === 'planned' ? (
+                    <>
+                      <div className="flex justify-between py-1 border-b">
+                        <span className="text-gray-500">Planned Cost</span>
+                        <span className="font-semibold">{formatCurrency(c.plannedCost)}</span>
+                      </div>
+                      {c.income > 0 && (
+                        <div className="flex justify-between py-1 border-b">
+                          <span className="text-green-600">- Misc Income</span>
+                          <span className="font-semibold text-green-600">-{formatCurrency(c.income)}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between py-1 border-b">
+                        <span className="text-gray-500">Net Planned</span>
+                        <span className="font-bold">{formatCurrency(c.plannedCost - c.income)}</span>
+                      </div>
+                      <div className="flex justify-between py-1">
+                        <span className="text-gray-500">Planned $/Acre</span>
+                        <span className="font-semibold">{formatCurrency(c.plannedCostPerAcre)}</span>
+                      </div>
+                    </>
+                  ) : costView === 'variance' ? (
+                    <>
+                      <div className="flex justify-between py-1 border-b">
+                        <span className="text-gray-500">Planned Cost</span>
+                        <span className="font-semibold">{formatCurrency(c.plannedCost)}</span>
+                      </div>
+                      <div className="flex justify-between py-1 border-b">
+                        <span className="text-gray-500">Actual Cost</span>
+                        <span className="font-semibold">{formatCurrency(c.cost)}</span>
+                      </div>
+                      <div className="flex justify-between py-1 border-b">
+                        <span className="text-gray-500">Variance</span>
+                        <span className={`font-bold ${varianceColor}`}>
+                          {c.variance > 0 ? '+' : ''}{formatCurrency(c.variance)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between py-1">
+                        <span className="text-gray-500">Variance %</span>
+                        <span className={`font-semibold ${varianceColor}`}>
+                          {c.variancePct != null ? `${c.variancePct > 0 ? '+' : ''}${c.variancePct.toFixed(1)}%` : '-'}
+                        </span>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex justify-between py-1 border-b">
+                        <span className="text-gray-500">Gross Cost</span>
+                        <span className="font-semibold">{formatCurrency(c.cost)}</span>
+                      </div>
+                      {c.income > 0 && (
+                        <div className="flex justify-between py-1 border-b">
+                          <span className="text-green-600">- Misc Income</span>
+                          <span className="font-semibold text-green-600">-{formatCurrency(c.income)}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between py-1 border-b">
+                        <span className="text-gray-500">Net Cost</span>
+                        <span className="font-bold">{formatCurrency(c.netCost)}</span>
+                      </div>
+                      <div className="flex justify-between py-1">
+                        <span className="text-gray-500">Net $/Acre</span>
+                        <span className="font-semibold">{formatCurrency(c.netCostPerAcre)}</span>
+                      </div>
+                    </>
                   )}
-                  <div className="flex justify-between py-1 border-b">
-                    <span className="text-gray-500">Net Cost</span>
-                    <span className="font-bold">{formatCurrency(c.netCost)}</span>
-                  </div>
-                  <div className="flex justify-between py-1">
-                    <span className="text-gray-500">Net $/Acre</span>
-                    <span className="font-semibold">{formatCurrency(c.netCostPerAcre)}</span>
-                  </div>
                 </div>
 
                 {/* Mini breakdown */}
@@ -1559,6 +2225,53 @@ function DashboardPage({ cropYear, onYearChange }) {
                     <span>{((c.herbicide / c.cost) * 100).toFixed(0)}%</span>
                   </div>
                 </div>
+
+                {/* Marketing & P/L */}
+                {costView === 'actual' && (
+                  <div className="mt-4 pt-4 border-t">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-xs text-gray-500 uppercase tracking-wide">Marketing Position</div>
+                      {c.uncontractedBu > 0 && (
+                        <button
+                          onClick={() => {
+                            setEditingTargetPrice({ commodityId: c.commodity_id, name: c.name, currentPrice: c.targetPrice, uncontractedBu: c.uncontractedBu });
+                            setShowTargetPriceModal(true);
+                          }}
+                          className="text-xs text-blue-600 hover:text-blue-800"
+                        >
+                          Set Target
+                        </button>
+                      )}
+                    </div>
+                    <div className="space-y-1 text-sm">
+                      {c.contractedBu > 0 && (
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Contracted</span>
+                          <span className="font-medium">{formatNumber(c.contractedBu)} bu @ {formatPrice(c.blendedAvgPrice)}</span>
+                        </div>
+                      )}
+                      {c.uncontractedBu > 0 && (
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Uncontracted</span>
+                          <span className="font-medium">{formatNumber(c.uncontractedBu)} bu @ {c.targetPrice > 0 ? formatPrice(c.targetPrice) : '-'}</span>
+                        </div>
+                      )}
+                      {(c.contractedBu > 0 || c.targetPrice > 0) && (
+                        <>
+                          <div className="flex justify-between pt-2 border-t">
+                            <span className="font-semibold">Est. Profit/Loss</span>
+                            <span className={`font-bold ${c.profitLoss > 0 ? 'text-green-600' : c.profitLoss < 0 ? 'text-red-600' : 'text-gray-600'}`}>
+                              {c.profitLoss > 0 ? '+' : ''}{formatCurrency(c.profitLoss)}
+                            </span>
+                          </div>
+                          <div className="text-xs text-gray-500 text-right">
+                            {c.profitPerBu > 0 ? '+' : ''}{formatPrice(c.profitPerBu)}/bu
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           );
@@ -1575,7 +2288,109 @@ function DashboardPage({ cropYear, onYearChange }) {
           </a>
         </div>
       )}
+
+      {/* Target Price Modal */}
+      {showTargetPriceModal && editingTargetPrice && (
+        <TargetPriceModal
+          commodity={editingTargetPrice}
+          cropYear={cropYear}
+          onClose={() => {
+            setShowTargetPriceModal(false);
+            setEditingTargetPrice(null);
+          }}
+          onSave={async (commodityId, targetPrice) => {
+            try {
+              await saveTargetPrice(cropYear, commodityId, targetPrice);
+              addToast('Target price saved', { type: 'success' });
+              setShowTargetPriceModal(false);
+              setEditingTargetPrice(null);
+              // Reload data
+              const [fcys, expenses, categories, seeds, rents, fertCosts, herbCosts, commodities, miscIncome, cropPlans, assignments, contractedPositions, targetPrices] = await Promise.all([
+                getFieldCropYears(cropYear),
+                getOverheadExpenses(cropYear),
+                getOverheadCategories(),
+                getSeedCosts(cropYear),
+                getLandRent(cropYear),
+                getFertilizerCosts(cropYear),
+                getHerbicideCosts(cropYear),
+                getCommodities(),
+                getMiscIncome(cropYear),
+                getCropPlans(cropYear),
+                getFieldPlanAssignments(cropYear),
+                getContractedPositions(cropYear),
+                getTargetPrices(cropYear)
+              ]);
+              setRawData({ fcys, expenses, categories, seeds, rents, fertCosts, herbCosts, commodities, miscIncome, cropPlans, assignments, contractedPositions, targetPrices });
+            } catch (e) {
+              addToast('Failed to save: ' + e.message, { type: 'error' });
+            }
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+// Target Price Modal Component
+function TargetPriceModal({ commodity, cropYear, onClose, onSave }) {
+  const [targetPrice, setTargetPrice] = useState(commodity.currentPrice || '');
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    if (!targetPrice || parseFloat(targetPrice) <= 0) {
+      return;
+    }
+    setSaving(true);
+    await onSave(commodity.commodityId, parseFloat(targetPrice));
+    setSaving(false);
+  };
+
+  return (
+    <Modal isOpen={true} onClose={onClose} title={`Set Target Price - ${commodity.name}`}>
+      <div className="space-y-4">
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-blue-800">
+          <strong>Uncontracted Bushels:</strong> {formatNumber(commodity.uncontractedBu)} bu
+          <div className="text-xs text-blue-600 mt-1">
+            Set your expected/target price for these bushels to calculate estimated profit/loss
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium mb-1">Target Price ($/bu)</label>
+          <div className="relative">
+            <span className="absolute left-3 top-2.5 text-gray-500">$</span>
+            <input
+              type="number"
+              step="0.01"
+              value={targetPrice}
+              onChange={(e) => setTargetPrice(e.target.value)}
+              className="w-full pl-7 pr-3 py-2 border rounded-lg"
+              placeholder="4.50"
+              autoFocus
+            />
+          </div>
+          <div className="text-xs text-gray-500 mt-1">
+            This could be your target sale price, current market price, or expected future price
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-3 pt-4 border-t">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving || !targetPrice || parseFloat(targetPrice) <= 0}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+          >
+            {saving ? 'Saving...' : 'Save Target Price'}
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -3212,12 +4027,332 @@ function MiscIncomeModal({ income, cropYear, categories, commodities, onClose, o
 }
 
 // ============================================================================
+// CHART COMPONENTS
+// ============================================================================
+
+// Planned vs Actual Bar Chart Component
+function PlannedVsActualChart({ commodities }) {
+  const chartRef = React.useRef(null);
+  const chartInstance = React.useRef(null);
+
+  useEffect(() => {
+    if (!chartRef.current || commodities.length === 0) return;
+
+    // Destroy existing chart
+    if (chartInstance.current) {
+      chartInstance.current.destroy();
+    }
+
+    const ctx = chartRef.current.getContext('2d');
+    chartInstance.current = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: commodities.map(c => c.name),
+        datasets: [
+          {
+            label: 'Planned',
+            data: commodities.map(c => c.plannedTotal),
+            backgroundColor: 'rgba(59, 130, 246, 0.7)',
+            borderColor: 'rgba(59, 130, 246, 1)',
+            borderWidth: 1
+          },
+          {
+            label: 'Actual',
+            data: commodities.map(c => c.actualTotal),
+            backgroundColor: 'rgba(16, 185, 129, 0.7)',
+            borderColor: 'rgba(16, 185, 129, 1)',
+            borderWidth: 1
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        aspectRatio: 2.5,
+        plugins: {
+          legend: {
+            position: 'top',
+          },
+          tooltip: {
+            callbacks: {
+              label: function(context) {
+                return context.dataset.label + ': ' + formatCurrency(context.parsed.y);
+              }
+            }
+          }
+        },
+        scales: {
+          y: {
+            beginAtZero: true,
+            ticks: {
+              callback: function(value) {
+                return '$' + (value / 1000).toFixed(0) + 'k';
+              }
+            }
+          }
+        }
+      }
+    });
+
+    return () => {
+      if (chartInstance.current) {
+        chartInstance.current.destroy();
+      }
+    };
+  }, [commodities]);
+
+  if (commodities.length === 0) {
+    return <div className="text-center py-8 text-gray-500">No data available</div>;
+  }
+
+  return <canvas ref={chartRef}></canvas>;
+}
+
+// Variance Chart Component
+function VarianceChart({ commodities }) {
+  const chartRef = React.useRef(null);
+  const chartInstance = React.useRef(null);
+
+  useEffect(() => {
+    if (!chartRef.current || commodities.length === 0) return;
+
+    if (chartInstance.current) {
+      chartInstance.current.destroy();
+    }
+
+    const ctx = chartRef.current.getContext('2d');
+    chartInstance.current = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: commodities.map(c => c.name),
+        datasets: [{
+          label: 'Variance',
+          data: commodities.map(c => c.variance),
+          backgroundColor: commodities.map(c =>
+            c.variance > 0 ? 'rgba(239, 68, 68, 0.7)' : 'rgba(34, 197, 94, 0.7)'
+          ),
+          borderColor: commodities.map(c =>
+            c.variance > 0 ? 'rgba(239, 68, 68, 1)' : 'rgba(34, 197, 94, 1)'
+          ),
+          borderWidth: 1
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        aspectRatio: 2.5,
+        plugins: {
+          legend: {
+            display: false
+          },
+          tooltip: {
+            callbacks: {
+              label: function(context) {
+                const commodity = commodities[context.dataIndex];
+                const variance = formatCurrency(context.parsed.y);
+                const pct = commodity.variancePct != null ? ` (${commodity.variancePct.toFixed(1)}%)` : '';
+                return 'Variance: ' + (context.parsed.y > 0 ? '+' : '') + variance + pct;
+              }
+            }
+          }
+        },
+        scales: {
+          y: {
+            ticks: {
+              callback: function(value) {
+                return '$' + (value / 1000).toFixed(0) + 'k';
+              }
+            }
+          }
+        }
+      }
+    });
+
+    return () => {
+      if (chartInstance.current) {
+        chartInstance.current.destroy();
+      }
+    };
+  }, [commodities]);
+
+  if (commodities.length === 0) {
+    return <div className="text-center py-8 text-gray-500">No data available</div>;
+  }
+
+  return <canvas ref={chartRef}></canvas>;
+}
+
+// Cost Breakdown Pie Chart for Individual Commodity
+function CostBreakdownChart({ commodity }) {
+  const chartRef = React.useRef(null);
+  const chartInstance = React.useRef(null);
+
+  useEffect(() => {
+    if (!chartRef.current) return;
+
+    if (chartInstance.current) {
+      chartInstance.current.destroy();
+    }
+
+    const ctx = chartRef.current.getContext('2d');
+
+    // Aggregate cost by category
+    const overhead = commodity.overhead || 0;
+    const seed = commodity.seed || 0;
+    const rent = commodity.rent || 0;
+    const fertilizer = commodity.fertilizer || 0;
+    const herbicide = commodity.herbicide || 0;
+
+    chartInstance.current = new Chart(ctx, {
+      type: 'doughnut',
+      data: {
+        labels: ['Overhead', 'Seed', 'Rent', 'Fertilizer', 'Herbicide'],
+        datasets: [{
+          data: [overhead, seed, rent, fertilizer, herbicide],
+          backgroundColor: [
+            'rgba(100, 116, 139, 0.8)',
+            'rgba(251, 191, 36, 0.8)',
+            'rgba(34, 197, 94, 0.8)',
+            'rgba(59, 130, 246, 0.8)',
+            'rgba(168, 85, 247, 0.8)'
+          ],
+          borderColor: [
+            'rgba(100, 116, 139, 1)',
+            'rgba(251, 191, 36, 1)',
+            'rgba(34, 197, 94, 1)',
+            'rgba(59, 130, 246, 1)',
+            'rgba(168, 85, 247, 1)'
+          ],
+          borderWidth: 1
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        aspectRatio: 1.5,
+        plugins: {
+          legend: {
+            position: 'bottom',
+            labels: {
+              font: {
+                size: 11
+              }
+            }
+          },
+          tooltip: {
+            callbacks: {
+              label: function(context) {
+                const value = context.parsed;
+                const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                const pct = total > 0 ? ((value / total) * 100).toFixed(1) : 0;
+                return context.label + ': ' + formatCurrency(value) + ' (' + pct + '%)';
+              }
+            }
+          }
+        }
+      }
+    });
+
+    return () => {
+      if (chartInstance.current) {
+        chartInstance.current.destroy();
+      }
+    };
+  }, [commodity]);
+
+  return <canvas ref={chartRef}></canvas>;
+}
+
+// Overall Cost Allocation Chart
+function OverallCostChart({ data, type }) {
+  const chartRef = React.useRef(null);
+  const chartInstance = React.useRef(null);
+
+  useEffect(() => {
+    if (!chartRef.current || !data.commodities || data.commodities.length === 0) return;
+
+    if (chartInstance.current) {
+      chartInstance.current.destroy();
+    }
+
+    const ctx = chartRef.current.getContext('2d');
+
+    // Aggregate totals across all commodities
+    const totals = data.commodities.reduce((acc, c) => {
+      acc.overhead += c.overhead || 0;
+      acc.seed += c.seed || 0;
+      acc.rent += c.rent || 0;
+      acc.fertilizer += c.fertilizer || 0;
+      acc.herbicide += c.herbicide || 0;
+      return acc;
+    }, { overhead: 0, seed: 0, rent: 0, fertilizer: 0, herbicide: 0 });
+
+    chartInstance.current = new Chart(ctx, {
+      type: 'pie',
+      data: {
+        labels: ['Overhead', 'Seed', 'Rent', 'Fertilizer', 'Herbicide'],
+        datasets: [{
+          data: [totals.overhead, totals.seed, totals.rent, totals.fertilizer, totals.herbicide],
+          backgroundColor: [
+            'rgba(100, 116, 139, 0.8)',
+            'rgba(251, 191, 36, 0.8)',
+            'rgba(34, 197, 94, 0.8)',
+            'rgba(59, 130, 246, 0.8)',
+            'rgba(168, 85, 247, 0.8)'
+          ],
+          borderColor: [
+            'rgba(100, 116, 139, 1)',
+            'rgba(251, 191, 36, 1)',
+            'rgba(34, 197, 94, 1)',
+            'rgba(59, 130, 246, 1)',
+            'rgba(168, 85, 247, 1)'
+          ],
+          borderWidth: 1
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        aspectRatio: 1.2,
+        plugins: {
+          legend: {
+            position: 'bottom'
+          },
+          tooltip: {
+            callbacks: {
+              label: function(context) {
+                const value = context.parsed;
+                const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                const pct = total > 0 ? ((value / total) * 100).toFixed(1) : 0;
+                return context.label + ': ' + formatCurrency(value) + ' (' + pct + '%)';
+              }
+            }
+          }
+        }
+      }
+    });
+
+    return () => {
+      if (chartInstance.current) {
+        chartInstance.current.destroy();
+      }
+    };
+  }, [data, type]);
+
+  if (!data.commodities || data.commodities.length === 0) {
+    return <div className="text-center py-8 text-gray-500">No data available</div>;
+  }
+
+  return <canvas ref={chartRef}></canvas>;
+}
+
+// ============================================================================
 // ANALYSIS PAGE (Planned vs Actual, Variance, Trends)
 // ============================================================================
 function AnalysisPage({ cropYear, onYearChange }) {
   const [data, setData] = useState({ fields: [], commodities: [], totals: {} });
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState('variance');
+  const [activeTab, setActiveTab] = useState('charts');
   const currentYear = new Date().getFullYear();
   const cropYears = [currentYear - 1, currentYear, currentYear + 1];
 
@@ -3365,9 +4500,51 @@ function AnalysisPage({ cropYear, onYearChange }) {
 
       {/* Tabs */}
       <div className="flex gap-2 border-b">
+        <button onClick={() => setActiveTab('charts')} className={`px-4 py-2 font-medium ${activeTab === 'charts' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500'}`}>Charts</button>
         <button onClick={() => setActiveTab('variance')} className={`px-4 py-2 font-medium ${activeTab === 'variance' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500'}`}>Variance by Commodity</button>
         <button onClick={() => setActiveTab('fields')} className={`px-4 py-2 font-medium ${activeTab === 'fields' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500'}`}>Field Detail</button>
       </div>
+
+      {activeTab === 'charts' && (
+        <div className="space-y-6">
+          {/* Planned vs Actual Comparison Chart */}
+          <div className="bg-white rounded-xl shadow-sm border p-6">
+            <h3 className="text-lg font-semibold mb-4">Planned vs Actual Costs by Commodity</h3>
+            <PlannedVsActualChart commodities={data.commodities} />
+          </div>
+
+          {/* Variance Chart */}
+          <div className="bg-white rounded-xl shadow-sm border p-6">
+            <h3 className="text-lg font-semibold mb-4">Cost Variance by Commodity</h3>
+            <VarianceChart commodities={data.commodities} />
+          </div>
+
+          {/* Cost Breakdown Pie Charts by Commodity */}
+          <div className="bg-white rounded-xl shadow-sm border p-6">
+            <h3 className="text-lg font-semibold mb-4">Cost Breakdown by Category</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {data.commodities.map(c => (
+                <div key={c.name}>
+                  <h4 className="text-center font-medium mb-2">{c.name}</h4>
+                  <CostBreakdownChart commodity={c} />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Overall Cost Breakdown */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="bg-white rounded-xl shadow-sm border p-6">
+              <h3 className="text-lg font-semibold mb-4">Planned Cost Allocation</h3>
+              <OverallCostChart data={data} type="planned" />
+            </div>
+            <div className="bg-white rounded-xl shadow-sm border p-6">
+              <h3 className="text-lg font-semibold mb-4">Actual Cost Allocation</h3>
+              <OverallCostChart data={data} type="actual" />
+            </div>
+          </div>
+        </div>
+      )}
 
       {activeTab === 'variance' && (
         <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
@@ -3466,6 +4643,11 @@ function ReportsPage({ cropYear, onYearChange }) {
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [reportData, setReportData] = useState(null);
+  const [fieldCropYears, setFieldCropYears] = useState([]);
+  const [actualChemicalCosts, setActualChemicalCosts] = useState({ byField: {}, lastSynced: null });
+  const [profitabilityPrices, setProfitabilityPrices] = useState({});
+  const [showPriceConfig, setShowPriceConfig] = useState(false);
+  const { addToast } = useToast();
   const currentYear = new Date().getFullYear();
   const cropYears = [currentYear - 1, currentYear, currentYear + 1];
 
@@ -3477,7 +4659,8 @@ function ReportsPage({ cropYear, onYearChange }) {
     landlord: '',
     fields: [],
     includeFamilyLiving: true,
-    viewMode: 'per_acre' // 'per_acre' or 'total'
+    viewMode: 'per_acre', // 'per_acre' or 'total'
+    costView: 'actual' // 'planned', 'actual', 'variance'
   });
 
   // Report type
@@ -3487,40 +4670,136 @@ function ReportsPage({ cropYear, onYearChange }) {
   useEffect(() => {
     async function load() {
       setLoading(true);
-      const [farms, commodities, fields, landlords, categories] = await Promise.all([
-        db.from('farms').select('id, name').order('name').then(r => r.data || []),
+      const [farms, commodities, fields, landlords, categories, fcys] = await Promise.all([
+        db.from('farms').select('id, name, adams_grain_share').eq('active', true).gt('adams_grain_share', 0).order('name').then(r => r.data || []),
         getCommodities(),
-        getFields(),
+        getVisibleFields(),
         db.from('landlords').select('id, name').order('name').then(r => r.data || []),
-        getOverheadCategories()
+        getOverheadCategories(),
+        getFieldCropYears(cropYear)
       ]);
       setData({ farms, commodities, fields, landlords, categories });
+      setFieldCropYears(fcys);
+
+      // Load profitability prices
+      const prices = await getProfitabilityPrices(cropYear, commodities);
+      setProfitabilityPrices(prices);
+
       setLoading(false);
     }
     load();
-  }, []);
+  }, [cropYear]);
+
+  // Sync actual chemical costs from Spray-Suite
+  const syncChemicalCosts = async () => {
+    addToast('Syncing chemical costs from Spray-Suite...', { type: 'info' });
+    const result = await getActualChemicalCosts(cropYear);
+    setActualChemicalCosts(result);
+    addToast('Chemical costs synced', { type: 'success' });
+  };
+
+  // Auto-load chemical costs on mount
+  useEffect(() => {
+    if (!loading && data) {
+      syncChemicalCosts();
+    }
+  }, [loading, cropYear]);
+
+  // Cascading filter: filtered landlords based on farm selection
+  const filteredLandlords = useMemo(() => {
+    if (!data?.landlords || !data?.fields) return [];
+    if (!filters.farm) return data.landlords;
+
+    // Get landlords only from fields in selected farm
+    const farmFieldLandlordIds = new Set(
+      data.fields
+        .filter(f => f.farm_id === filters.farm && f.landlord)
+        .map(f => f.landlord)
+    );
+
+    return data.landlords.filter(l => farmFieldLandlordIds.has(l.id));
+  }, [filters.farm, data?.fields, data?.landlords]);
+
+  // Cascading filter: filtered fields based on farm, landlord, and commodity
+  const filteredFields = useMemo(() => {
+    if (!data?.fields) return [];
+    let result = data.fields;
+
+    if (filters.farm) {
+      result = result.filter(f => f.farm_id === filters.farm);
+    }
+    if (filters.landlord) {
+      result = result.filter(f => f.landlord === filters.landlord);
+    }
+    if (filters.commodity) {
+      // Filter by fields that have this commodity in field_crop_years
+      const fieldIdsWithCommodity = fieldCropYears
+        .filter(fcy => fcy.commodity_id === filters.commodity)
+        .map(fcy => fcy.field_id);
+      result = result.filter(f => fieldIdsWithCommodity.includes(f.id));
+    }
+
+    return result;
+  }, [filters.farm, filters.landlord, filters.commodity, data?.fields, fieldCropYears]);
+
+  // Clear dependent filters when parent changes
+  const handleFarmChange = (farmId) => {
+    setFilters(f => ({
+      ...f,
+      farm: farmId,
+      landlord: '', // Clear landlord when farm changes
+      fields: []    // Clear field selection
+    }));
+  };
+
+  const handleLandlordChange = (landlordId) => {
+    setFilters(f => ({
+      ...f,
+      landlord: landlordId,
+      fields: [] // Clear field selection
+    }));
+  };
+
+  // Save profitability price setting
+  const handlePriceSourceChange = async (commodityId, priceSource, manualPrice = null) => {
+    try {
+      await saveProfitabilityPrice(cropYear, commodityId, priceSource, manualPrice);
+      // Refresh prices
+      const prices = await getProfitabilityPrices(cropYear, data.commodities);
+      setProfitabilityPrices(prices);
+      addToast('Price setting saved', { type: 'success' });
+    } catch (err) {
+      addToast('Failed to save price setting', { type: 'error' });
+    }
+  };
 
   // Generate report
   const generateReport = async () => {
     setGenerating(true);
     try {
-      const [fcys, expenses, categories, seeds, rents, fertCosts, herbCosts, miscIncome] = await Promise.all([
+      const [fcys, expenses, categories, seeds, rents, fertCostsPlanned, herbCostsPlanned, miscIncome, cropPlans, fieldAssignments] = await Promise.all([
         getFieldCropYears(cropYear),
         getOverheadExpenses(cropYear),
         getOverheadCategories(),
         getSeedCosts(cropYear),
         getLandRent(cropYear),
-        getFertilizerCosts(cropYear),
-        getHerbicideCosts(cropYear),
-        getMiscIncome(cropYear)
+        getFertilizerCostsDetailed(cropYear), // Actual fertilizer from Fert App
+        getHerbicideCosts(cropYear), // Planned herbicide costs
+        getMiscIncome(cropYear),
+        getCropPlans(cropYear),
+        getFieldPlanAssignments(cropYear)
       ]);
 
-      // Get field and farm info
-      const fieldsWithFarms = await getFieldsWithFarms();
+      // Get field and farm info - only visible fields
+      const visibleFields = await getVisibleFields();
+      const visibleFieldIds = new Set(visibleFields.map(f => f.id));
       const fieldFarmMap = {};
-      fieldsWithFarms.forEach(f => {
-        fieldFarmMap[f.id] = { farmId: f.farm_id, farmName: f.farms?.name, landlordId: f.landlord };
+      visibleFields.forEach(f => {
+        fieldFarmMap[f.id] = { farmId: f.farm_id, farmName: f.farm_name, landlordId: f.landlord };
       });
+
+      // Filter fcys to only visible fields
+      const filteredFcys = fcys.filter(fcy => visibleFieldIds.has(fcy.field_id));
 
       // Find family living category IDs
       const familyLivingCategoryIds = categories
@@ -3532,26 +4811,67 @@ function ReportsPage({ cropYear, onYearChange }) {
         ? expenses
         : expenses.filter(e => !familyLivingCategoryIds.includes(e.category_id));
 
-      const overheadAlloc = allocateOverhead(filteredExpenses, fcys);
-      const incomeAlloc = allocateMiscIncome(miscIncome, fcys);
+      const overheadAlloc = allocateOverhead(filteredExpenses, filteredFcys);
+      const incomeAlloc = allocateMiscIncome(miscIncome, filteredFcys);
       const seedMap = {};
       seeds.forEach(s => { seedMap[s.field_crop_year_id] = s.total_cost || calculateSeedCost({ ...s, planted_acres: s.planted_acres }); });
       const rentMap = {};
       rents.forEach(r => { rentMap[r.field_id] = r.rent_per_acre || 0; });
 
+      // Build crop plan cost map (for planned costs)
+      const planCostMap = {};
+      cropPlans.forEach(p => { planCostMap[p.id] = calculateCropPlanCost(p); });
+
+      // Build field assignment map
+      const assignmentMap = {};
+      fieldAssignments.forEach(a => { assignmentMap[a.field_crop_year_id] = a; });
+
+      // Use actual chemical costs from Spray-Suite
+      const actualHerbCosts = actualChemicalCosts.byField;
+
       // Build field-level data
-      let fieldData = fcys.map(fcy => {
+      let fieldData = filteredFcys.map(fcy => {
         const fieldInfo = fieldFarmMap[fcy.field_id] || {};
+        const assignment = assignmentMap[fcy.id];
+        const planCost = assignment?.crop_plan_id ? planCostMap[assignment.crop_plan_id] || 0 : 0;
+
         const overhead = overheadAlloc[fcy.id] || 0;
         const seed = seedMap[fcy.id] || 0;
         const rentPerAcre = rentMap[fcy.field_id] || 0;
         const rent = rentPerAcre * (fcy.planted_acres || 0);
-        const fert = fertCosts[fcy.field_id] || 0;
-        const herbData = herbCosts[fcy.field_id] || { total: 0 };
-        const herb = typeof herbData === 'object' ? herbData.total : herbData;
+
+        // Actual costs from apps
+        const fertActualData = fertCostsPlanned[fcy.field_id] || { total: 0 };
+        const fertActual = typeof fertActualData === 'object' ? fertActualData.total : fertActualData;
+
+        const herbActualData = actualHerbCosts[fcy.field_id] || { total: 0 };
+        const herbActual = typeof herbActualData === 'object' ? herbActualData.total : herbActualData;
+
+        // Planned costs from crop plan (if assigned)
+        const herbPlannedData = herbCostsPlanned[fcy.field_id] || { total: 0 };
+        const herbPlanned = typeof herbPlannedData === 'object' ? herbPlannedData.total : herbPlannedData;
+
+        // Choose actual or planned based on view
+        const useActual = filters.costView !== 'planned';
+        const fert = fertActual; // Always actual from Fert App
+        const herb = useActual ? herbActual : (herbPlanned || herbActual);
+
         const totalCost = overhead + seed + rent + fert + herb;
+        const plannedTotal = overhead + seed + rent + fert + herbPlanned;
         const incomeOffset = incomeAlloc[fcy.id] || 0;
-        const bushels = fcy.actual_production || ((fcy.planted_acres || 0) * (fcy.estimated_yield || 0));
+        const bushels = fcy.actual_production || ((fcy.planted_acres || 0) * (fcy.expected_yield || 0));
+
+        // Variance calculation
+        const variance = calculateVariance(
+          { seed, fertilizer: fert, chemicals: herbPlanned, overhead, rent, total: plannedTotal },
+          { seed, fertilizer: fert, chemicals: herbActual, overhead, rent, total: overhead + seed + rent + fert + herbActual }
+        );
+
+        // Profitability calculation
+        const priceInfo = profitabilityPrices[fcy.commodity_id];
+        const price = priceInfo?.effective_price || 0;
+        const revenue = bushels * price;
+        const profit = revenue - totalCost;
 
         return {
           ...fcy,
@@ -3559,14 +4879,23 @@ function ReportsPage({ cropYear, onYearChange }) {
           farmName: fieldInfo.farmName,
           landlordId: fieldInfo.landlordId,
           overhead, seed, rent, fert, herb,
+          herbPlanned, herbActual,
           totalCost,
+          plannedTotal,
           incomeOffset,
           netCost: totalCost - incomeOffset,
           bushels,
           costPerAcre: fcy.planted_acres > 0 ? totalCost / fcy.planted_acres : 0,
           netCostPerAcre: fcy.planted_acres > 0 ? (totalCost - incomeOffset) / fcy.planted_acres : 0,
           breakeven: bushels > 0 ? totalCost / bushels : null,
-          netBreakeven: bushels > 0 ? (totalCost - incomeOffset) / bushels : null
+          netBreakeven: bushels > 0 ? (totalCost - incomeOffset) / bushels : null,
+          variance,
+          price,
+          priceSource: priceInfo?.price_source,
+          revenue,
+          profit,
+          profitPerAcre: fcy.planted_acres > 0 ? profit / fcy.planted_acres : 0,
+          isProfitable: profit > 0
         };
       });
 
@@ -3595,14 +4924,17 @@ function ReportsPage({ cropYear, onYearChange }) {
         fieldData.forEach(f => {
           if (!byCommodity[f.commodity_id]) {
             byCommodity[f.commodity_id] = {
+              id: f.commodity_id,
               name: f.commodity_name,
-              acres: 0, totalCost: 0, incomeOffset: 0, bushels: 0,
-              overhead: 0, seed: 0, rent: 0, fert: 0, herb: 0
+              acres: 0, totalCost: 0, plannedTotal: 0, incomeOffset: 0, bushels: 0,
+              overhead: 0, seed: 0, rent: 0, fert: 0, herb: 0, herbPlanned: 0, herbActual: 0,
+              revenue: 0, profit: 0
             };
           }
           const c = byCommodity[f.commodity_id];
           c.acres += f.planted_acres || 0;
           c.totalCost += f.totalCost;
+          c.plannedTotal += f.plannedTotal;
           c.incomeOffset += f.incomeOffset;
           c.bushels += f.bushels;
           c.overhead += f.overhead;
@@ -3610,36 +4942,93 @@ function ReportsPage({ cropYear, onYearChange }) {
           c.rent += f.rent;
           c.fert += f.fert;
           c.herb += f.herb;
+          c.herbPlanned += f.herbPlanned;
+          c.herbActual += f.herbActual;
+          c.revenue += f.revenue;
+          c.profit += f.profit;
         });
 
         report = {
           type: 'breakeven_summary',
-          commodities: Object.values(byCommodity).map(c => ({
-            ...c,
-            netCost: c.totalCost - c.incomeOffset,
-            costPerAcre: c.acres > 0 ? c.totalCost / c.acres : 0,
-            netCostPerAcre: c.acres > 0 ? (c.totalCost - c.incomeOffset) / c.acres : 0,
-            breakeven: c.bushels > 0 ? c.totalCost / c.bushels : null,
-            netBreakeven: c.bushels > 0 ? (c.totalCost - c.incomeOffset) / c.bushels : null
-          })),
+          commodities: Object.values(byCommodity).map(c => {
+            const variance = calculateVariance(
+              { seed: c.seed, fertilizer: c.fert, chemicals: c.herbPlanned, overhead: c.overhead, rent: c.rent, total: c.plannedTotal },
+              { seed: c.seed, fertilizer: c.fert, chemicals: c.herbActual, overhead: c.overhead, rent: c.rent, total: c.totalCost }
+            );
+            return {
+              ...c,
+              netCost: c.totalCost - c.incomeOffset,
+              costPerAcre: c.acres > 0 ? c.totalCost / c.acres : 0,
+              netCostPerAcre: c.acres > 0 ? (c.totalCost - c.incomeOffset) / c.acres : 0,
+              breakeven: c.bushels > 0 ? c.totalCost / c.bushels : null,
+              netBreakeven: c.bushels > 0 ? (c.totalCost - c.incomeOffset) / c.bushels : null,
+              variance,
+              profitPerAcre: c.acres > 0 ? c.profit / c.acres : 0,
+              isProfitable: c.profit > 0
+            };
+          }),
           totals: {
             acres: fieldData.reduce((s, f) => s + (f.planted_acres || 0), 0),
             totalCost: fieldData.reduce((s, f) => s + f.totalCost, 0),
+            plannedTotal: fieldData.reduce((s, f) => s + f.plannedTotal, 0),
             incomeOffset: fieldData.reduce((s, f) => s + f.incomeOffset, 0),
-            bushels: fieldData.reduce((s, f) => s + f.bushels, 0)
+            bushels: fieldData.reduce((s, f) => s + f.bushels, 0),
+            revenue: fieldData.reduce((s, f) => s + f.revenue, 0),
+            profit: fieldData.reduce((s, f) => s + f.profit, 0)
           }
         };
         report.totals.netCost = report.totals.totalCost - report.totals.incomeOffset;
+        report.totals.variance = calculateVariance(
+          { total: report.totals.plannedTotal },
+          { total: report.totals.totalCost }
+        );
       } else if (reportType === 'field_profitability') {
         report = {
           type: 'field_profitability',
-          fields: fieldData.sort((a, b) => (b.netBreakeven || 0) - (a.netBreakeven || 0))
+          fields: fieldData.sort((a, b) => (b.profitPerAcre || 0) - (a.profitPerAcre || 0))
+        };
+      } else if (reportType === 'variance') {
+        // Variance report by category
+        const totals = {
+          seed: { planned: 0, actual: 0 },
+          fertilizer: { planned: 0, actual: 0 },
+          chemicals: { planned: 0, actual: 0 },
+          overhead: { planned: 0, actual: 0 },
+          rent: { planned: 0, actual: 0 },
+          total: { planned: 0, actual: 0 }
+        };
+        fieldData.forEach(f => {
+          totals.seed.planned += f.seed;
+          totals.seed.actual += f.seed;
+          totals.fertilizer.planned += f.fert;
+          totals.fertilizer.actual += f.fert;
+          totals.chemicals.planned += f.herbPlanned;
+          totals.chemicals.actual += f.herbActual;
+          totals.overhead.planned += f.overhead;
+          totals.overhead.actual += f.overhead;
+          totals.rent.planned += f.rent;
+          totals.rent.actual += f.rent;
+          totals.total.planned += f.plannedTotal;
+          totals.total.actual += f.totalCost;
+        });
+
+        report = {
+          type: 'variance',
+          categories: Object.entries(totals).map(([key, val]) => ({
+            name: key.charAt(0).toUpperCase() + key.slice(1),
+            planned: val.planned,
+            actual: val.actual,
+            variance: val.actual - val.planned,
+            pctChange: val.planned > 0 ? ((val.actual - val.planned) / val.planned * 100) : 0
+          })),
+          fields: fieldData
         };
       }
 
       setReportData(report);
     } catch (e) {
       console.error('Report generation error:', e);
+      addToast('Error generating report', { type: 'error' });
     }
     setGenerating(false);
   };
@@ -3650,14 +5039,19 @@ function ReportsPage({ cropYear, onYearChange }) {
 
     let csv = '';
     if (reportData.type === 'breakeven_summary') {
-      csv = 'Commodity,Acres,Total Cost,Income Offset,Net Cost,Cost/Acre,Net Cost/Acre,Bushels,Breakeven,Net Breakeven\n';
+      csv = 'Commodity,Acres,Total Cost,Income Offset,Net Cost,Cost/Acre,Net Cost/Acre,Bushels,Net Breakeven,Revenue,Profit,Profit/Acre\n';
       reportData.commodities.forEach(c => {
-        csv += `"${c.name}",${c.acres},${c.totalCost.toFixed(2)},${c.incomeOffset.toFixed(2)},${c.netCost.toFixed(2)},${c.costPerAcre.toFixed(2)},${c.netCostPerAcre.toFixed(2)},${c.bushels.toFixed(0)},${c.breakeven?.toFixed(4) || ''},${c.netBreakeven?.toFixed(4) || ''}\n`;
+        csv += `"${c.name}",${c.acres},${c.totalCost.toFixed(2)},${c.incomeOffset.toFixed(2)},${c.netCost.toFixed(2)},${c.costPerAcre.toFixed(2)},${c.netCostPerAcre.toFixed(2)},${c.bushels.toFixed(0)},${c.netBreakeven?.toFixed(4) || ''},${(c.revenue || 0).toFixed(2)},${(c.profit || 0).toFixed(2)},${(c.profitPerAcre || 0).toFixed(2)}\n`;
       });
     } else if (reportData.type === 'field_profitability') {
-      csv = 'Field,Crop,Practice,Acres,Total Cost,Income Offset,Net Cost,Cost/Acre,Net Cost/Acre,Bushels,Net Breakeven\n';
+      csv = 'Field,Crop,Practice,Acres,Total Cost,Price,Revenue,Profit,Profit/Acre,Is Profitable\n';
       reportData.fields.forEach(f => {
-        csv += `"${f.field_name}","${f.commodity_name}","${f.practice_type || 'N/A'}",${f.planted_acres || 0},${f.totalCost.toFixed(2)},${f.incomeOffset.toFixed(2)},${f.netCost.toFixed(2)},${f.costPerAcre.toFixed(2)},${f.netCostPerAcre.toFixed(2)},${f.bushels.toFixed(0)},${f.netBreakeven?.toFixed(4) || ''}\n`;
+        csv += `"${f.field_name}","${f.commodity_name}","${f.practice_type || 'N/A'}",${f.planted_acres || 0},${f.totalCost.toFixed(2)},${(f.price || 0).toFixed(2)},${(f.revenue || 0).toFixed(2)},${(f.profit || 0).toFixed(2)},${(f.profitPerAcre || 0).toFixed(2)},${f.isProfitable ? 'Yes' : 'No'}\n`;
+      });
+    } else if (reportData.type === 'variance') {
+      csv = 'Category,Planned,Actual,Variance,% Change\n';
+      reportData.categories.forEach(cat => {
+        csv += `"${cat.name}",${cat.planned.toFixed(2)},${cat.actual.toFixed(2)},${cat.variance.toFixed(2)},${cat.pctChange.toFixed(1)}%\n`;
       });
     }
 
@@ -3692,7 +5086,7 @@ function ReportsPage({ cropYear, onYearChange }) {
             <label className="block text-sm font-medium mb-1">Farm</label>
             <select
               value={filters.farm}
-              onChange={(e) => setFilters(f => ({ ...f, farm: e.target.value }))}
+              onChange={(e) => handleFarmChange(e.target.value)}
               className="w-full px-3 py-2 border rounded-lg"
             >
               <option value="">All Farms</option>
@@ -3703,7 +5097,7 @@ function ReportsPage({ cropYear, onYearChange }) {
             <label className="block text-sm font-medium mb-1">Crop</label>
             <select
               value={filters.commodity}
-              onChange={(e) => setFilters(f => ({ ...f, commodity: e.target.value }))}
+              onChange={(e) => setFilters(f => ({ ...f, commodity: e.target.value, fields: [] }))}
               className="w-full px-3 py-2 border rounded-lg"
             >
               <option value="">All Crops</option>
@@ -3725,17 +5119,51 @@ function ReportsPage({ cropYear, onYearChange }) {
             </select>
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1">Landlord</label>
+            <label className="block text-sm font-medium mb-1">Landlord {filters.farm && `(${filteredLandlords.length})`}</label>
             <select
               value={filters.landlord}
-              onChange={(e) => setFilters(f => ({ ...f, landlord: e.target.value }))}
+              onChange={(e) => handleLandlordChange(e.target.value)}
               className="w-full px-3 py-2 border rounded-lg"
             >
               <option value="">All Landlords</option>
-              {data.landlords.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+              {filteredLandlords.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
             </select>
           </div>
         </div>
+
+        {/* Field multi-select */}
+        {filteredFields.length > 0 && (
+          <div className="mb-4">
+            <label className="block text-sm font-medium mb-1">Fields ({filters.fields.length} of {filteredFields.length} selected)</label>
+            <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto p-2 border rounded-lg bg-gray-50">
+              {filteredFields.map(f => (
+                <label key={f.id} className="flex items-center gap-1.5 px-2 py-1 bg-white border rounded text-sm cursor-pointer hover:bg-blue-50">
+                  <input
+                    type="checkbox"
+                    checked={filters.fields.includes(f.id)}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setFilters(prev => ({ ...prev, fields: [...prev.fields, f.id] }));
+                      } else {
+                        setFilters(prev => ({ ...prev, fields: prev.fields.filter(id => id !== f.id) }));
+                      }
+                    }}
+                    className="w-3.5 h-3.5 rounded border-gray-300 text-blue-600"
+                  />
+                  <span>{f.name}</span>
+                </label>
+              ))}
+            </div>
+            {filters.fields.length > 0 && (
+              <button
+                onClick={() => setFilters(f => ({ ...f, fields: [] }))}
+                className="text-xs text-blue-600 hover:underline mt-1"
+              >
+                Clear selection
+              </button>
+            )}
+          </div>
+        )}
 
         <div className="flex flex-wrap items-center gap-6 pt-4 border-t">
           <label className="flex items-center gap-2 cursor-pointer">
@@ -3765,8 +5193,130 @@ function ReportsPage({ cropYear, onYearChange }) {
               </button>
             </div>
           </div>
+
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-gray-600">Costs:</span>
+            <div className="flex rounded-lg border overflow-hidden">
+              <button
+                onClick={() => setFilters(f => ({ ...f, costView: 'actual' }))}
+                className={`px-3 py-1.5 text-sm ${filters.costView === 'actual' ? 'bg-green-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+              >
+                Actual
+              </button>
+              <button
+                onClick={() => setFilters(f => ({ ...f, costView: 'planned' }))}
+                className={`px-3 py-1.5 text-sm ${filters.costView === 'planned' ? 'bg-amber-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+              >
+                Planned
+              </button>
+              <button
+                onClick={() => setFilters(f => ({ ...f, costView: 'variance' }))}
+                className={`px-3 py-1.5 text-sm ${filters.costView === 'variance' ? 'bg-purple-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+              >
+                Variance
+              </button>
+            </div>
+          </div>
         </div>
       </div>
+
+      {/* Spray-Suite Sync & Profitability Pricing */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="bg-white rounded-xl shadow-sm border p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="font-medium text-gray-900">Chemical Costs (Spray-Suite)</h3>
+              <p className="text-xs text-gray-500">
+                {actualChemicalCosts.lastSynced
+                  ? `Last synced: ${formatDate(actualChemicalCosts.lastSynced)}`
+                  : 'Not synced yet'}
+              </p>
+            </div>
+            <button
+              onClick={syncChemicalCosts}
+              className="flex items-center gap-2 px-3 py-1.5 text-sm bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200"
+            >
+              <Icon name="refresh-cw" size={16} /> Sync
+            </button>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-xl shadow-sm border p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="font-medium text-gray-900">Profitability Pricing</h3>
+              <p className="text-xs text-gray-500">Configure prices for profit calculations</p>
+            </div>
+            <button
+              onClick={() => setShowPriceConfig(!showPriceConfig)}
+              className="flex items-center gap-2 px-3 py-1.5 text-sm bg-green-100 text-green-700 rounded-lg hover:bg-green-200"
+            >
+              <Icon name="dollar-sign" size={16} /> {showPriceConfig ? 'Hide' : 'Configure'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Profitability Price Configuration */}
+      {showPriceConfig && (
+        <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
+          <div className="p-4 bg-green-50 border-b">
+            <h3 className="font-semibold text-green-800">Profitability Pricing - {cropYear}</h3>
+            <p className="text-sm text-green-600">Select price source for each commodity</p>
+          </div>
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left">Commodity</th>
+                <th className="px-4 py-3 text-right">Market Price</th>
+                <th className="px-4 py-3 text-right">Insurance Price</th>
+                <th className="px-4 py-3 text-center">Use Price</th>
+                <th className="px-4 py-3 text-right">Effective Price</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {data.commodities.map(c => {
+                const priceInfo = profitabilityPrices[c.id] || {};
+                return (
+                  <tr key={c.id} className="hover:bg-gray-50">
+                    <td className="px-4 py-3 font-medium">{c.name}</td>
+                    <td className="px-4 py-3 text-right text-gray-600">
+                      {priceInfo.market_price ? `$${priceInfo.market_price.toFixed(2)}` : '-'}
+                    </td>
+                    <td className="px-4 py-3 text-right text-gray-600">
+                      {priceInfo.insurance_price ? `$${priceInfo.insurance_price.toFixed(2)}` : '-'}
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <select
+                        value={priceInfo.price_source || 'insurance'}
+                        onChange={(e) => handlePriceSourceChange(c.id, e.target.value)}
+                        className="px-2 py-1 border rounded text-sm"
+                      >
+                        <option value="market">Market</option>
+                        <option value="insurance">Insurance</option>
+                        <option value="manual">Manual</option>
+                      </select>
+                      {priceInfo.price_source === 'manual' && (
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={priceInfo.manual_price || ''}
+                          onChange={(e) => handlePriceSourceChange(c.id, 'manual', parseFloat(e.target.value))}
+                          className="ml-2 w-20 px-2 py-1 border rounded text-sm"
+                          placeholder="$0.00"
+                        />
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-right font-bold text-green-600">
+                      {priceInfo.effective_price ? `$${priceInfo.effective_price.toFixed(2)}` : '-'}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* Report Type & Generate */}
       <div className="bg-white rounded-xl shadow-sm border p-6">
@@ -3780,6 +5330,7 @@ function ReportsPage({ cropYear, onYearChange }) {
             >
               <option value="breakeven_summary">Breakeven Summary</option>
               <option value="field_profitability">Field Profitability</option>
+              <option value="variance">Variance Report</option>
             </select>
           </div>
           <div className="flex items-center gap-2">
@@ -3808,8 +5359,20 @@ function ReportsPage({ cropYear, onYearChange }) {
         <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
           {reportData.type === 'breakeven_summary' && (
             <>
-              <div className="p-4 bg-gray-50 border-b">
-                <h3 className="font-semibold">Breakeven Summary - {cropYear}</h3>
+              <div className="p-4 bg-gray-50 border-b flex items-center justify-between">
+                <div>
+                  <h3 className="font-semibold">Breakeven Summary - {cropYear}</h3>
+                  <p className="text-xs text-gray-500">
+                    {filters.costView === 'actual' && 'Showing actual costs from Spray-Suite & Fertilizer App'}
+                    {filters.costView === 'planned' && 'Showing planned costs from crop plans'}
+                    {filters.costView === 'variance' && 'Showing planned vs actual comparison'}
+                  </p>
+                </div>
+                {filters.costView === 'variance' && reportData.totals.variance && (
+                  <div className={`px-3 py-1 rounded-full text-sm font-medium ${reportData.totals.variance.total.variance < 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                    {reportData.totals.variance.total.variance < 0 ? 'Under Budget' : 'Over Budget'}: {formatCurrency(Math.abs(reportData.totals.variance.total.variance))}
+                  </div>
+                )}
               </div>
               <table className="w-full text-sm">
                 <thead className="bg-gray-50">
@@ -3817,22 +5380,35 @@ function ReportsPage({ cropYear, onYearChange }) {
                     <th className="px-4 py-3 text-left">Commodity</th>
                     <th className="px-4 py-3 text-right">Acres</th>
                     <th className="px-4 py-3 text-right">{filters.viewMode === 'per_acre' ? 'Cost/Acre' : 'Total Cost'}</th>
+                    {filters.costView === 'variance' && (
+                      <th className="px-4 py-3 text-right">Variance</th>
+                    )}
                     <th className="px-4 py-3 text-right">{filters.viewMode === 'per_acre' ? 'Income/Acre' : 'Income Offset'}</th>
                     <th className="px-4 py-3 text-right">{filters.viewMode === 'per_acre' ? 'Net Cost/Acre' : 'Net Cost'}</th>
                     <th className="px-4 py-3 text-right">Bushels</th>
                     <th className="px-4 py-3 text-right">Net Breakeven</th>
+                    <th className="px-4 py-3 text-right">{filters.viewMode === 'per_acre' ? 'Profit/Acre' : 'Profit'}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
                   {reportData.commodities.map(c => (
-                    <tr key={c.name} className="hover:bg-gray-50">
+                    <tr key={c.name} className={`hover:bg-gray-50 ${c.isProfitable === false ? 'bg-red-50' : ''}`}>
                       <td className="px-4 py-3 font-medium">{c.name}</td>
                       <td className="px-4 py-3 text-right">{formatNumber(c.acres)}</td>
                       <td className="px-4 py-3 text-right">{formatCurrency(filters.viewMode === 'per_acre' ? c.costPerAcre : c.totalCost)}</td>
+                      {filters.costView === 'variance' && c.variance && (
+                        <td className={`px-4 py-3 text-right font-medium ${c.variance.total.variance < 0 ? 'text-green-600' : c.variance.total.variance > 0 ? 'text-red-600' : ''}`}>
+                          {c.variance.total.variance !== 0 && (c.variance.total.variance > 0 ? '+' : '')}
+                          {formatCurrency(filters.viewMode === 'per_acre' ? (c.acres > 0 ? c.variance.total.variance / c.acres : 0) : c.variance.total.variance)}
+                        </td>
+                      )}
                       <td className="px-4 py-3 text-right text-green-600">{formatCurrency(filters.viewMode === 'per_acre' ? (c.acres > 0 ? c.incomeOffset / c.acres : 0) : c.incomeOffset)}</td>
                       <td className="px-4 py-3 text-right font-medium">{formatCurrency(filters.viewMode === 'per_acre' ? c.netCostPerAcre : c.netCost)}</td>
                       <td className="px-4 py-3 text-right">{formatNumber(c.bushels, 0)}</td>
                       <td className="px-4 py-3 text-right font-bold text-blue-600">{c.netBreakeven ? `$${c.netBreakeven.toFixed(4)}` : '-'}</td>
+                      <td className={`px-4 py-3 text-right font-bold ${c.isProfitable ? 'text-green-600' : 'text-red-600'}`}>
+                        {formatCurrency(filters.viewMode === 'per_acre' ? c.profitPerAcre : c.profit)}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -3841,10 +5417,19 @@ function ReportsPage({ cropYear, onYearChange }) {
                     <td className="px-4 py-3 font-bold">Total</td>
                     <td className="px-4 py-3 text-right font-bold">{formatNumber(reportData.totals.acres)}</td>
                     <td className="px-4 py-3 text-right font-bold">{formatCurrency(filters.viewMode === 'per_acre' ? (reportData.totals.acres > 0 ? reportData.totals.totalCost / reportData.totals.acres : 0) : reportData.totals.totalCost)}</td>
+                    {filters.costView === 'variance' && reportData.totals.variance && (
+                      <td className={`px-4 py-3 text-right font-bold ${reportData.totals.variance.total.variance < 0 ? 'text-green-600' : 'text-red-600'}`}>
+                        {reportData.totals.variance.total.variance !== 0 && (reportData.totals.variance.total.variance > 0 ? '+' : '')}
+                        {formatCurrency(filters.viewMode === 'per_acre' ? (reportData.totals.acres > 0 ? reportData.totals.variance.total.variance / reportData.totals.acres : 0) : reportData.totals.variance.total.variance)}
+                      </td>
+                    )}
                     <td className="px-4 py-3 text-right font-bold text-green-600">{formatCurrency(filters.viewMode === 'per_acre' ? (reportData.totals.acres > 0 ? reportData.totals.incomeOffset / reportData.totals.acres : 0) : reportData.totals.incomeOffset)}</td>
                     <td className="px-4 py-3 text-right font-bold">{formatCurrency(filters.viewMode === 'per_acre' ? (reportData.totals.acres > 0 ? reportData.totals.netCost / reportData.totals.acres : 0) : reportData.totals.netCost)}</td>
                     <td className="px-4 py-3 text-right font-bold">{formatNumber(reportData.totals.bushels, 0)}</td>
                     <td className="px-4 py-3 text-right font-bold text-blue-600">{reportData.totals.bushels > 0 ? `$${(reportData.totals.netCost / reportData.totals.bushels).toFixed(4)}` : '-'}</td>
+                    <td className={`px-4 py-3 text-right font-bold ${reportData.totals.profit > 0 ? 'text-green-600' : 'text-red-600'}`}>
+                      {formatCurrency(filters.viewMode === 'per_acre' ? (reportData.totals.acres > 0 ? reportData.totals.profit / reportData.totals.acres : 0) : reportData.totals.profit)}
+                    </td>
                   </tr>
                 </tfoot>
               </table>
@@ -3855,7 +5440,7 @@ function ReportsPage({ cropYear, onYearChange }) {
             <>
               <div className="p-4 bg-gray-50 border-b">
                 <h3 className="font-semibold">Field Profitability - {cropYear}</h3>
-                <p className="text-sm text-gray-500">Sorted by net breakeven (highest first)</p>
+                <p className="text-sm text-gray-500">Sorted by profit per acre (highest first)</p>
               </div>
               <table className="w-full text-sm">
                 <thead className="bg-gray-50">
@@ -3865,13 +5450,14 @@ function ReportsPage({ cropYear, onYearChange }) {
                     <th className="px-4 py-3 text-center">Practice</th>
                     <th className="px-4 py-3 text-right">Acres</th>
                     <th className="px-4 py-3 text-right">{filters.viewMode === 'per_acre' ? 'Cost/Acre' : 'Total Cost'}</th>
-                    <th className="px-4 py-3 text-right">{filters.viewMode === 'per_acre' ? 'Net/Acre' : 'Net Cost'}</th>
-                    <th className="px-4 py-3 text-right">Net Breakeven</th>
+                    <th className="px-4 py-3 text-right">Price</th>
+                    <th className="px-4 py-3 text-right">{filters.viewMode === 'per_acre' ? 'Revenue/Acre' : 'Revenue'}</th>
+                    <th className="px-4 py-3 text-right">{filters.viewMode === 'per_acre' ? 'Profit/Acre' : 'Profit'}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
                   {reportData.fields.map(f => (
-                    <tr key={f.id} className="hover:bg-gray-50">
+                    <tr key={f.id} className={`hover:bg-gray-50 ${f.isProfitable ? '' : 'bg-red-50'}`}>
                       <td className="px-4 py-3 font-medium">{f.field_name}</td>
                       <td className="px-4 py-3">{f.commodity_name}</td>
                       <td className="px-4 py-3 text-center">
@@ -3881,8 +5467,11 @@ function ReportsPage({ cropYear, onYearChange }) {
                       </td>
                       <td className="px-4 py-3 text-right">{formatNumber(f.planted_acres || 0)}</td>
                       <td className="px-4 py-3 text-right">{formatCurrency(filters.viewMode === 'per_acre' ? f.costPerAcre : f.totalCost)}</td>
-                      <td className="px-4 py-3 text-right font-medium">{formatCurrency(filters.viewMode === 'per_acre' ? f.netCostPerAcre : f.netCost)}</td>
-                      <td className="px-4 py-3 text-right font-bold text-blue-600">{f.netBreakeven ? `$${f.netBreakeven.toFixed(4)}` : '-'}</td>
+                      <td className="px-4 py-3 text-right text-gray-600">{f.price ? `$${f.price.toFixed(2)}` : '-'}</td>
+                      <td className="px-4 py-3 text-right text-blue-600">{formatCurrency(filters.viewMode === 'per_acre' ? (f.planted_acres > 0 ? f.revenue / f.planted_acres : 0) : f.revenue)}</td>
+                      <td className={`px-4 py-3 text-right font-bold ${f.isProfitable ? 'text-green-600' : 'text-red-600'}`}>
+                        {formatCurrency(filters.viewMode === 'per_acre' ? f.profitPerAcre : f.profit)}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -3890,6 +5479,53 @@ function ReportsPage({ cropYear, onYearChange }) {
               {reportData.fields.length === 0 && (
                 <div className="p-8 text-center text-gray-500">No fields match the selected filters</div>
               )}
+            </>
+          )}
+
+          {reportData.type === 'variance' && (
+            <>
+              <div className="p-4 bg-purple-50 border-b">
+                <h3 className="font-semibold text-purple-800">Planned vs Actual Variance - {cropYear}</h3>
+                <p className="text-sm text-purple-600">Chemical costs from Spray-Suite vs planned</p>
+              </div>
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-3 text-left">Category</th>
+                    <th className="px-4 py-3 text-right">Planned</th>
+                    <th className="px-4 py-3 text-right">Actual</th>
+                    <th className="px-4 py-3 text-right">Variance</th>
+                    <th className="px-4 py-3 text-right">% Change</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {reportData.categories.map(cat => (
+                    <tr key={cat.name} className={`hover:bg-gray-50 ${cat.name === 'Total' ? 'bg-gray-100 font-semibold' : ''}`}>
+                      <td className="px-4 py-3 font-medium">{cat.name}</td>
+                      <td className="px-4 py-3 text-right">{formatCurrency(cat.planned)}</td>
+                      <td className="px-4 py-3 text-right">{formatCurrency(cat.actual)}</td>
+                      <td className={`px-4 py-3 text-right font-medium ${cat.variance < 0 ? 'text-green-600' : cat.variance > 0 ? 'text-red-600' : ''}`}>
+                        {cat.variance !== 0 && (cat.variance > 0 ? '+' : '')}{formatCurrency(cat.variance)}
+                      </td>
+                      <td className={`px-4 py-3 text-right ${cat.pctChange < 0 ? 'text-green-600' : cat.pctChange > 0 ? 'text-red-600' : ''}`}>
+                        {cat.pctChange !== 0 && (cat.pctChange > 0 ? '+' : '')}{cat.pctChange.toFixed(1)}%
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="p-4 bg-gray-50 border-t">
+                <div className="flex items-center gap-4 text-sm">
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 rounded-full bg-green-500"></div>
+                    <span className="text-gray-600">Under Budget</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 rounded-full bg-red-500"></div>
+                    <span className="text-gray-600">Over Budget</span>
+                  </div>
+                </div>
+              </div>
             </>
           )}
         </div>
@@ -4702,11 +6338,16 @@ function ChemicalPassesEditor({ passes, onChange, tankMixes }) {
 
   // When tank mix is selected, populate products from that mix
   const selectTankMix = (passIndex, tankMixId) => {
+    console.log('selectTankMix called:', { passIndex, tankMixId, tankMixesCount: tankMixes.length });
+
     const updated = [...passes];
     updated[passIndex].tank_mix_id = tankMixId;
 
     if (tankMixId) {
-      const mix = tankMixes.find(tm => tm.id === tankMixId);
+      // Find the tank mix - compare as strings since select values are strings
+      const mix = tankMixes.find(tm => String(tm.id) === String(tankMixId));
+      console.log('Found tank mix:', mix);
+
       if (mix && mix.products && mix.products.length > 0) {
         // Auto-populate products from the selected tank mix
         updated[passIndex].products = mix.products.map(p => ({
@@ -4719,6 +6360,9 @@ function ChemicalPassesEditor({ passes, onChange, tankMixes }) {
         if (!updated[passIndex].pass_name) {
           updated[passIndex].pass_name = mix.name;
         }
+        console.log('Updated pass with products:', updated[passIndex]);
+      } else {
+        console.log('Mix not found or no products:', { mix, hasProducts: mix?.products?.length });
       }
     }
 
@@ -6137,6 +7781,77 @@ function LandlordReportPage({ cropYear, onYearChange }) {
 // ============================================================================
 function SettingsPage({ isConnected }) {
   const [activeTab, setActiveTab] = useState('hotlinks');
+  const [fields, setFields] = useState([]);
+  const [fieldSettings, setFieldSettings] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState({});
+  const { addToast } = useToast();
+
+  // Load fields and settings when visibility tab is active
+  useEffect(() => {
+    if (activeTab === 'visibility') {
+      loadFieldVisibilityData();
+    }
+  }, [activeTab]);
+
+  const loadFieldVisibilityData = async () => {
+    setLoading(true);
+    const [fieldsData, settingsData] = await Promise.all([
+      db.from('fields')
+        .select('id, name, acres, farm_id, active, farms(id, name, adams_grain_share)')
+        .eq('active', true)
+        .order('name')
+        .then(r => r.data || []),
+      getFieldSettings()
+    ]);
+
+    // Build settings map
+    const settingsMap = {};
+    settingsData.forEach(s => {
+      settingsMap[s.field_id] = s;
+    });
+
+    setFields(fieldsData);
+    setFieldSettings(settingsMap);
+    setLoading(false);
+  };
+
+  const handleToggleField = async (fieldId, currentValue) => {
+    setSaving(prev => ({ ...prev, [fieldId]: true }));
+    try {
+      await saveFieldSetting(fieldId, !currentValue);
+      setFieldSettings(prev => ({
+        ...prev,
+        [fieldId]: { ...prev[fieldId], is_active_for_breakeven: !currentValue }
+      }));
+      addToast('Field visibility updated', { type: 'success' });
+    } catch (err) {
+      console.error('Error saving field setting:', err);
+      addToast('Failed to update setting', { type: 'error' });
+    }
+    setSaving(prev => ({ ...prev, [fieldId]: false }));
+  };
+
+  // Group fields by farm
+  const fieldsByFarm = useMemo(() => {
+    const grouped = {};
+    fields.forEach(f => {
+      const farmName = f.farms?.name || 'Unknown Farm';
+      const farmId = f.farm_id;
+      const adamsShare = f.farms?.adams_grain_share ?? 1;
+      if (!grouped[farmId]) {
+        grouped[farmId] = {
+          name: farmName,
+          adamsShare,
+          fields: [],
+          isExcludedFarm: adamsShare === 0
+        };
+      }
+      grouped[farmId].fields.push(f);
+    });
+    // Sort farms by name
+    return Object.entries(grouped).sort((a, b) => a[1].name.localeCompare(b[1].name));
+  }, [fields]);
 
   return (
     <div className="space-y-6">
@@ -6147,6 +7862,7 @@ function SettingsPage({ isConnected }) {
 
       <div className="flex gap-2 border-b">
         <button onClick={() => setActiveTab('hotlinks')} className={`px-4 py-2 font-medium ${activeTab === 'hotlinks' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500'}`}>App Links</button>
+        <button onClick={() => setActiveTab('visibility')} className={`px-4 py-2 font-medium ${activeTab === 'visibility' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500'}`}>Field Visibility</button>
         <button onClick={() => setActiveTab('status')} className={`px-4 py-2 font-medium ${activeTab === 'status' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500'}`}>Status</button>
       </div>
 
@@ -6164,6 +7880,85 @@ function SettingsPage({ isConnected }) {
               </a>
             ))}
           </div>
+        </div>
+      )}
+
+      {activeTab === 'visibility' && (
+        <div className="bg-white rounded-xl shadow-sm border p-6">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="font-semibold">Field Visibility</h2>
+              <p className="text-sm text-gray-500">Control which fields appear in Breakeven reports</p>
+            </div>
+            <button
+              onClick={loadFieldVisibilityData}
+              className="flex items-center gap-2 px-3 py-1.5 text-sm bg-gray-100 rounded-lg hover:bg-gray-200"
+            >
+              <Icon name="refresh-cw" size={16} /> Refresh
+            </button>
+          </div>
+
+          {loading ? (
+            <div className="flex items-center justify-center py-12">
+              <Icon name="loader" className="animate-spin text-blue-600" size={32} />
+            </div>
+          ) : (
+            <div className="space-y-6">
+              <div className="p-4 bg-blue-50 rounded-lg">
+                <h3 className="font-medium text-blue-800 mb-2">Visibility Rules</h3>
+                <ul className="text-sm text-blue-700 space-y-1">
+                  <li>Fields with unchecked boxes are excluded from all Breakeven reports</li>
+                  <li>Farms with adams_grain_share = 0 (Dwight farms) are automatically excluded</li>
+                  <li>Use this to exclude cleanup fields, test fields, etc.</li>
+                </ul>
+              </div>
+
+              {fieldsByFarm.map(([farmId, farm]) => (
+                <div key={farmId} className={`border rounded-lg ${farm.isExcludedFarm ? 'border-gray-200 bg-gray-50' : 'border-gray-200'}`}>
+                  <div className={`px-4 py-3 border-b flex items-center justify-between ${farm.isExcludedFarm ? 'bg-gray-100' : 'bg-gray-50'}`}>
+                    <div className="flex items-center gap-2">
+                      <Icon name="building" size={18} className={farm.isExcludedFarm ? 'text-gray-400' : 'text-gray-600'} />
+                      <span className={`font-medium ${farm.isExcludedFarm ? 'text-gray-400' : ''}`}>{farm.name}</span>
+                      {farm.isExcludedFarm && (
+                        <span className="px-2 py-0.5 bg-gray-300 text-gray-600 text-xs rounded">Excluded (Share = 0%)</span>
+                      )}
+                    </div>
+                    <span className="text-sm text-gray-500">{farm.fields.length} fields</span>
+                  </div>
+                  <div className="divide-y">
+                    {farm.fields.map(field => {
+                      const setting = fieldSettings[field.id];
+                      const isActive = setting?.is_active_for_breakeven !== false;
+                      const isSaving = saving[field.id];
+                      const isDisabled = farm.isExcludedFarm;
+
+                      return (
+                        <div key={field.id} className={`px-4 py-3 flex items-center justify-between ${isDisabled ? 'opacity-50' : ''}`}>
+                          <div className="flex items-center gap-3">
+                            <input
+                              type="checkbox"
+                              checked={isActive && !isDisabled}
+                              onChange={() => !isDisabled && handleToggleField(field.id, isActive)}
+                              disabled={isSaving || isDisabled}
+                              className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
+                            />
+                            <div>
+                              <div className={`font-medium ${!isActive && !isDisabled ? 'text-gray-400 line-through' : ''}`}>{field.name}</div>
+                              <div className="text-xs text-gray-500">{formatNumber(field.acres)} acres</div>
+                            </div>
+                          </div>
+                          {isSaving && <Icon name="loader" className="animate-spin text-blue-600" size={16} />}
+                          {!isActive && !isDisabled && (
+                            <span className="px-2 py-0.5 bg-red-100 text-red-700 text-xs rounded">Excluded</span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -6296,7 +8091,7 @@ function App() {
 
       <div className="lg:flex">
         {/* Desktop sidebar */}
-        <div className="hidden lg:block w-64 min-h-screen bg-white border-r">
+        <div className="hidden lg:flex lg:flex-col w-64 min-h-screen bg-white border-r">
           <div className="p-4 border-b">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -6313,7 +8108,7 @@ function App() {
               </div>
             </div>
           </div>
-          <nav className="p-2">
+          <nav className="flex-1 p-2 overflow-y-auto">
             {navItems.map(item => (
               <button key={item.id} onClick={() => setCurrentPage(item.id)}
                 className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left mb-1 ${currentPage === item.id ? 'bg-blue-100 text-blue-900' : 'text-gray-600 hover:bg-gray-100'}`}>
@@ -6322,7 +8117,7 @@ function App() {
               </button>
             ))}
           </nav>
-          <div className="absolute bottom-0 left-0 w-64 p-4 border-t space-y-3">
+          <div className="p-4 border-t bg-white space-y-3 flex-shrink-0">
             {user && (
               <div className="flex items-center justify-between">
                 <span className="text-sm text-gray-700 truncate">{user.email}</span>
