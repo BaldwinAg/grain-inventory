@@ -1491,7 +1491,7 @@ async function upsertInsuranceSetting(setting) {
       .from('insurance_settings')
       .update({
         coverage_level: setting.coverage_level,
-        price_election: setting.price_election,
+        reference_price: setting.reference_price,
         policy_type: setting.policy_type,
         notes: setting.notes
       })
@@ -1509,7 +1509,7 @@ async function upsertInsuranceSetting(setting) {
         subcategory_id: null,
         practice_type: setting.practice_type || null,
         coverage_level: setting.coverage_level || 0.75,
-        price_election: setting.price_election || 0,
+        reference_price: setting.reference_price || 0,
         policy_type: setting.policy_type || 'RP',
         notes: setting.notes
       }])
@@ -5375,13 +5375,6 @@ function InsurancePage({ cropYear, onYearChange }) {
   const currentYear = new Date().getFullYear();
   const cropYears = [currentYear - 1, currentYear, currentYear + 1, currentYear + 2];
 
-  const commodityColors = {
-    'Corn': { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-700' },
-    'Soybeans': { bg: 'bg-emerald-50', border: 'border-emerald-200', text: 'text-emerald-700' },
-    'Wheat': { bg: 'bg-violet-50', border: 'border-violet-200', text: 'text-violet-700' },
-    'Milo': { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700' }
-  };
-
   const loadData = async () => {
     try {
       setLoading(true);
@@ -5561,148 +5554,180 @@ function InsurancePage({ cropYear, onYearChange }) {
       )}
 
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-blue-800">
-        <p><strong>Insurance Production</strong> is calculated as: <strong>APH Yield × Coverage Level × Acres</strong></p>
-        <p className="mt-1">• Set <strong>Reference Price</strong> and <strong>Policy Type</strong> once per commodity (applies to all fields)</p>
-        <p className="mt-1">• Set <strong>Coverage Level</strong> at commodity level or by practice (IR/DL or FS/DC)</p>
-        <p className="mt-1">• Set <strong>APH Yields</strong> per field on the Production page</p>
+        <p><strong>Insurance Production</strong> = APH Yield × Coverage Level × Acres</p>
+        <p className="mt-1">Set Reference Price and Policy Type per commodity. Choose coverage by commodity level or by practice (IR/DL or FS/DC).</p>
       </div>
 
-      {/* Commodity Cards */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {commodities.map(commodity => {
-          const setting = commoditySettings[commodity.id];
-          if (!setting) return null;
+      {/* Insurance Settings Table */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th className="text-left px-4 py-3 font-semibold text-gray-700">Commodity</th>
+                <th className="text-right px-4 py-3 font-semibold text-gray-700 w-32">Reference Price</th>
+                <th className="text-center px-4 py-3 font-semibold text-gray-700 w-28">Policy Type</th>
+                <th className="text-center px-4 py-3 font-semibold text-gray-700 w-40">Coverage Level By</th>
+                <th className="text-center px-4 py-3 font-semibold text-gray-700 w-32">Coverage</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {commodities.map(commodity => {
+                const setting = commoditySettings[commodity.id];
+                if (!setting) return null;
 
-          const colors = commodityColors[commodity.name] || { bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700' };
-          const isCorn = commodity.name === 'Corn';
+                const isCorn = commodity.name === 'Corn';
+                const showPractice = setting.insurance_level !== 'commodity';
 
-          return (
-            <div key={commodity.id} className={`${colors.bg} border ${colors.border} rounded-xl p-5 ${setting.isModified ? 'ring-2 ring-amber-400' : ''}`}>
-              {/* Header */}
-              <div className="flex items-center gap-3 mb-4">
-                <Icon name="shield" size={24} className={colors.text} />
-                <h3 className={`text-xl font-bold ${colors.text}`}>{commodity.name}</h3>
-              </div>
+                return (
+                  <React.Fragment key={commodity.id}>
+                    <tr className={setting.isModified ? 'bg-yellow-50' : ''}>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <Icon name="shield" size={16} className="text-amber-500" />
+                          <span className="font-medium text-gray-900">{commodity.name}</span>
+                        </div>
+                      </td>
+                      <td className="px-2 py-3">
+                        <div className="flex items-center justify-end">
+                          <span className="text-gray-500 mr-1">$</span>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={setting.reference_price || ''}
+                            onChange={(e) => handleChange(commodity.id, 'reference_price', parseFloat(e.target.value) || 0)}
+                            className="w-24 px-2 py-1.5 text-right border border-gray-300 rounded focus:ring-2 focus:ring-amber-500"
+                            placeholder="0.00"
+                          />
+                        </div>
+                      </td>
+                      <td className="px-2 py-3">
+                        <select
+                          value={setting.policy_type}
+                          onChange={(e) => handleChange(commodity.id, 'policy_type', e.target.value)}
+                          className="w-full px-2 py-1.5 border border-gray-300 rounded text-center focus:ring-2 focus:ring-amber-500"
+                        >
+                          <option value="RP">RP</option>
+                          <option value="RP-HPE">RP-HPE</option>
+                          <option value="YP">YP</option>
+                        </select>
+                      </td>
+                      <td className="px-2 py-3">
+                        <select
+                          value={setting.insurance_level}
+                          onChange={(e) => handleChange(commodity.id, 'insurance_level', e.target.value)}
+                          className="w-full px-2 py-1.5 border border-gray-300 rounded text-center focus:ring-2 focus:ring-amber-500"
+                        >
+                          <option value="commodity">Commodity Level</option>
+                          <option value="irrigation">By Practice: IR/DL</option>
+                          {!isCorn && <option value="season">By Practice: FS/DC</option>}
+                        </select>
+                      </td>
+                      <td className="px-2 py-3">
+                        {!showPractice ? (
+                          <select
+                            value={setting.coverage_commodity}
+                            onChange={(e) => handleChange(commodity.id, 'coverage_commodity', parseFloat(e.target.value))}
+                            className="w-full px-2 py-1.5 border border-gray-300 rounded text-center focus:ring-2 focus:ring-amber-500 font-semibold"
+                          >
+                            {[0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85].map(v => (
+                              <option key={v} value={v}>{(v * 100).toFixed(0)}%</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span className="text-gray-400 text-xs">See below ↓</span>
+                        )}
+                      </td>
+                    </tr>
 
-              {/* Reference Price & Policy Type */}
-              <div className="grid grid-cols-2 gap-4 mb-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Reference Price ($/bu)</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={setting.reference_price || ''}
-                    onChange={(e) => handleChange(commodity.id, 'reference_price', parseFloat(e.target.value) || 0)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500"
-                    placeholder="0.00"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Policy Type</label>
-                  <select
-                    value={setting.policy_type}
-                    onChange={(e) => handleChange(commodity.id, 'policy_type', e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500"
-                  >
-                    <option value="RP">RP (Revenue Protection)</option>
-                    <option value="RP-HPE">RP-HPE (Harvest Price Exclusion)</option>
-                    <option value="YP">YP (Yield Protection)</option>
-                  </select>
-                </div>
-              </div>
+                    {/* Practice rows */}
+                    {setting.insurance_level === 'irrigation' && (
+                      <>
+                        <tr className={`bg-blue-50 ${setting.isModified ? 'bg-yellow-100' : ''}`}>
+                          <td className="px-4 py-2 pl-12 text-sm text-gray-600">
+                            <Icon name="droplet" size={14} className="inline mr-1" />
+                            Irrigated (IR)
+                          </td>
+                          <td colSpan="3"></td>
+                          <td className="px-2 py-2">
+                            <select
+                              value={setting.coverage_ir}
+                              onChange={(e) => handleChange(commodity.id, 'coverage_ir', parseFloat(e.target.value))}
+                              className="w-full px-2 py-1.5 border border-gray-300 rounded text-center focus:ring-2 focus:ring-amber-500 font-semibold bg-white"
+                            >
+                              {[0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85].map(v => (
+                                <option key={v} value={v}>{(v * 100).toFixed(0)}%</option>
+                              ))}
+                            </select>
+                          </td>
+                        </tr>
+                        <tr className={`bg-blue-50 ${setting.isModified ? 'bg-yellow-100' : ''}`}>
+                          <td className="px-4 py-2 pl-12 text-sm text-gray-600">
+                            <Icon name="sun" size={14} className="inline mr-1" />
+                            Dryland (DL)
+                          </td>
+                          <td colSpan="3"></td>
+                          <td className="px-2 py-2">
+                            <select
+                              value={setting.coverage_dl}
+                              onChange={(e) => handleChange(commodity.id, 'coverage_dl', parseFloat(e.target.value))}
+                              className="w-full px-2 py-1.5 border border-gray-300 rounded text-center focus:ring-2 focus:ring-amber-500 font-semibold bg-white"
+                            >
+                              {[0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85].map(v => (
+                                <option key={v} value={v}>{(v * 100).toFixed(0)}%</option>
+                              ))}
+                            </select>
+                          </td>
+                        </tr>
+                      </>
+                    )}
 
-              {/* Insurance Level Selector */}
-              <div className="mb-4">
-                <label className="block text-sm font-medium text-gray-700 mb-2">Coverage Level By:</label>
-                <select
-                  value={setting.insurance_level}
-                  onChange={(e) => handleChange(commodity.id, 'insurance_level', e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 font-medium"
-                >
-                  <option value="commodity">Commodity Level (same for all fields)</option>
-                  <option value="irrigation">By Practice: IR / DL</option>
-                  {!isCorn && <option value="season">By Practice: FS / DC</option>}
-                </select>
-              </div>
-
-              {/* Coverage Inputs */}
-              <div className="bg-white rounded-lg p-4 border border-gray-200">
-                {setting.insurance_level === 'commodity' && (
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Coverage Level</label>
-                    <select
-                      value={setting.coverage_commodity}
-                      onChange={(e) => handleChange(commodity.id, 'coverage_commodity', parseFloat(e.target.value))}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 text-lg font-semibold"
-                    >
-                      {[0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85].map(v => (
-                        <option key={v} value={v}>{(v * 100).toFixed(0)}%</option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-
-                {setting.insurance_level === 'irrigation' && (
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">Irrigated (IR)</label>
-                      <select
-                        value={setting.coverage_ir}
-                        onChange={(e) => handleChange(commodity.id, 'coverage_ir', parseFloat(e.target.value))}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 font-semibold"
-                      >
-                        {[0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85].map(v => (
-                          <option key={v} value={v}>{(v * 100).toFixed(0)}%</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">Dryland (DL)</label>
-                      <select
-                        value={setting.coverage_dl}
-                        onChange={(e) => handleChange(commodity.id, 'coverage_dl', parseFloat(e.target.value))}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 font-semibold"
-                      >
-                        {[0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85].map(v => (
-                          <option key={v} value={v}>{(v * 100).toFixed(0)}%</option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-                )}
-
-                {setting.insurance_level === 'season' && (
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">Full Season (FS)</label>
-                      <select
-                        value={setting.coverage_fs}
-                        onChange={(e) => handleChange(commodity.id, 'coverage_fs', parseFloat(e.target.value))}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 font-semibold"
-                      >
-                        {[0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85].map(v => (
-                          <option key={v} value={v}>{(v * 100).toFixed(0)}%</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">Double Crop (DC)</label>
-                      <select
-                        value={setting.coverage_dc}
-                        onChange={(e) => handleChange(commodity.id, 'coverage_dc', parseFloat(e.target.value))}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 font-semibold"
-                      >
-                        {[0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85].map(v => (
-                          <option key={v} value={v}>{(v * 100).toFixed(0)}%</option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })}
+                    {setting.insurance_level === 'season' && (
+                      <>
+                        <tr className={`bg-green-50 ${setting.isModified ? 'bg-yellow-100' : ''}`}>
+                          <td className="px-4 py-2 pl-12 text-sm text-gray-600">
+                            <Icon name="calendar" size={14} className="inline mr-1" />
+                            Full Season (FS)
+                          </td>
+                          <td colSpan="3"></td>
+                          <td className="px-2 py-2">
+                            <select
+                              value={setting.coverage_fs}
+                              onChange={(e) => handleChange(commodity.id, 'coverage_fs', parseFloat(e.target.value))}
+                              className="w-full px-2 py-1.5 border border-gray-300 rounded text-center focus:ring-2 focus:ring-amber-500 font-semibold bg-white"
+                            >
+                              {[0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85].map(v => (
+                                <option key={v} value={v}>{(v * 100).toFixed(0)}%</option>
+                              ))}
+                            </select>
+                          </td>
+                        </tr>
+                        <tr className={`bg-green-50 ${setting.isModified ? 'bg-yellow-100' : ''}`}>
+                          <td className="px-4 py-2 pl-12 text-sm text-gray-600">
+                            <Icon name="repeat" size={14} className="inline mr-1" />
+                            Double Crop (DC)
+                          </td>
+                          <td colSpan="3"></td>
+                          <td className="px-2 py-2">
+                            <select
+                              value={setting.coverage_dc}
+                              onChange={(e) => handleChange(commodity.id, 'coverage_dc', parseFloat(e.target.value))}
+                              className="w-full px-2 py-1.5 border border-gray-300 rounded text-center focus:ring-2 focus:ring-amber-500 font-semibold bg-white"
+                            >
+                              {[0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85].map(v => (
+                                <option key={v} value={v}>{(v * 100).toFixed(0)}%</option>
+                              ))}
+                            </select>
+                          </td>
+                        </tr>
+                      </>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
