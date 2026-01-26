@@ -11,7 +11,18 @@ ALTER TABLE field_crop_years ADD COLUMN IF NOT EXISTS aph_yield DECIMAL(10,2) DE
 
 -- Update insurance_settings table to handle reference price and commodity-level vs practice-level coverage
 -- Existing columns: commodity_id, crop_year, practice_type, coverage_level, policy_type
--- Add reference_price column
+-- Rename price_election to reference_price (preserves existing data)
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'insurance_settings' AND column_name = 'price_election'
+  ) THEN
+    ALTER TABLE insurance_settings RENAME COLUMN price_election TO reference_price;
+  END IF;
+END $$;
+
+-- If reference_price doesn't exist yet (in case price_election was never there), add it
 ALTER TABLE insurance_settings ADD COLUMN IF NOT EXISTS reference_price DECIMAL(10,2) DEFAULT NULL;
 
 -- Add comments
