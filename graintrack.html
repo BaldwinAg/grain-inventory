@@ -1,5 +1,5 @@
 <!--
-  GrainTrack Suite v1.8.0
+  GrainTrack Suite v1.9.0
   Grain marketing and inventory management
   https://github.com/BaldwinAg/grain-inventory
 -->
@@ -20,6 +20,16 @@
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; }
     .modified-row { background-color: #fef9c3 !important; }
+
+    /* Hide number input spinner arrows */
+    input[type="number"]::-webkit-outer-spin-button,
+    input[type="number"]::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+    input[type="number"] {
+      -moz-appearance: textfield;
+    }
 
     /* Print-friendly styles */
     @media print {
@@ -867,7 +877,8 @@ async function createCropEntry(crop) {
       is_irrigated: crop.is_irrigated || false,
       is_double_crop: crop.is_double_crop || false,
       status: 'planned',
-      notes: null
+      notes: null,
+      aph_yield: crop.aph_yield || null
     }])
     .select()
     .single();
@@ -911,6 +922,45 @@ async function restoreProduction(id) {
   await logAudit('field_crop_years', id, 'RESTORE', null, record);
 
   return true;
+}
+
+// Copy APH yields from previous year's crops to current year
+async function copyAPHFromPreviousYear(currentYear) {
+  // Get previous year's crops with APH
+  const prevYearCrops = await getProductionByCropYear(currentYear - 1);
+  const aphCrops = prevYearCrops.filter(c => c.aph_yield != null);
+
+  if (aphCrops.length === 0) {
+    return { count: 0, message: `No crops with APH found in ${currentYear - 1}` };
+  }
+
+  // Get current year's crops
+  const currentCrops = await getProductionByCropYear(currentYear);
+
+  // Match by field + commodity + practice flags
+  const updates = [];
+  for (const curr of currentCrops) {
+    const match = aphCrops.find(prev =>
+      prev.field_id === curr.field_id &&
+      prev.commodity_id === curr.commodity_id &&
+      prev.is_irrigated === curr.is_irrigated &&
+      prev.is_double_crop === curr.is_double_crop
+    );
+
+    if (match && !curr.aph_yield) {
+      updates.push({
+        id: curr.id,
+        aph_yield: match.aph_yield
+      });
+    }
+  }
+
+  // Bulk update
+  for (const upd of updates) {
+    await updateProduction(upd.id, upd);
+  }
+
+  return { count: updates.length, message: `Copied APH to ${updates.length} crops from ${currentYear - 1}` };
 }
 
 // Grain Field Settings
@@ -1413,7 +1463,11 @@ async function getInsuranceSettings(cropYear) {
   let query = db.from('insurance_settings').select('*').is('deleted_at', null).order('crop_year', { ascending: false });
   if (cropYear) query = query.eq('crop_year', cropYear);
   const { data, error } = await query;
-  if (error) { console.error('Error fetching insurance settings:', error); return []; }
+  if (error) {
+    console.error('Error fetching insurance settings:', error);
+    // Return error object for user-facing error handling
+    return { error: error.message || 'Failed to load insurance settings. The insurance_settings table may not exist.' };
+  }
   return data || [];
 }
 
@@ -2568,10 +2622,11 @@ async function getBreakevenByCommodity(cropYear) {
 async function getDashboardData(cropYear, detailMode = 'combined') {
   const byPractice = detailMode === 'detailed';
 
-  const [commodities, productionSummary, contractsSummary, insuranceSettings, marketPrices, referenceBasis, breakevenData] =
+  const [commodities, productionSummary, allProduction, contractsSummary, insuranceSettings, marketPrices, referenceBasis, breakevenData] =
     await Promise.all([
       getCommodities(),
       getProductionSummary(cropYear, byPractice),
+      getProductionByCropYear(cropYear),  // Get full production data with insurance fields
       getContractsSummary(cropYear),
       getInsuranceSettings(cropYear),
       getLatestMarketPrices(cropYear),
@@ -2617,14 +2672,46 @@ async function getDashboardData(cropYear, detailMode = 'combined') {
         // Marketable = actual on harvested fields + expected on unharvested
         const marketableProduction = prod.marketable_production || expectedProduction;
 
+        // Calculate insurance production from APH (field level) × Coverage (insurance_settings)
+        const insuranceCrops = allProduction.filter(c =>
+          c.commodity_id === commodity.id &&
+          c.is_irrigated === prod.is_irrigated &&
+          c.is_double_crop === prod.is_double_crop &&
+          c.aph_yield != null
+        );
+
+        // Look up coverage level from insurance_settings for this practice
+        let coverageLevel = 0;
+        if (prod.is_double_crop) {
+          // Try DC specific, then FS, then commodity level
+          const dcIns = insuranceSettings.find(i => i.commodity_id === commodity.id && i.practice_type === 'DC');
+          const fsIns = insuranceSettings.find(i => i.commodity_id === commodity.id && i.practice_type === 'FS');
+          const commIns = insuranceSettings.find(i => i.commodity_id === commodity.id && !i.practice_type);
+          coverageLevel = (dcIns || fsIns || commIns)?.coverage_level || 0;
+        } else if (prod.is_irrigated) {
+          // Try IR specific, then DL, then commodity level
+          const irIns = insuranceSettings.find(i => i.commodity_id === commodity.id && i.practice_type === 'IR');
+          const dlIns = insuranceSettings.find(i => i.commodity_id === commodity.id && i.practice_type === 'DL');
+          const commIns = insuranceSettings.find(i => i.commodity_id === commodity.id && !i.practice_type);
+          coverageLevel = (irIns || dlIns || commIns)?.coverage_level || 0;
+        } else {
+          // Dryland: try DL, then IR, then commodity level
+          const dlIns = insuranceSettings.find(i => i.commodity_id === commodity.id && i.practice_type === 'DL');
+          const irIns = insuranceSettings.find(i => i.commodity_id === commodity.id && i.practice_type === 'IR');
+          const commIns = insuranceSettings.find(i => i.commodity_id === commodity.id && !i.practice_type);
+          coverageLevel = (dlIns || irIns || commIns)?.coverage_level || 0;
+        }
+
+        const insuranceProduction = insuranceCrops.reduce((sum, c) => {
+          return sum + (c.aph_yield * coverageLevel * c.planted_acres * c.effective_share);
+        }, 0);
+        const insuredAcres = insuranceCrops.length;
+
         // Contracts are still at commodity level - allocate based on marketable share
         const totalMarketable = productions.reduce((sum, p) => sum + (p.marketable_production || p.expected_production || 0), 0);
         const bushelsSold = totalMarketable > 0
           ? Math.round((marketableProduction / totalMarketable) * (contracts?.bushels_contracted || 0))
           : 0;
-
-        const coverageLevel = practiceInsurance?.coverage_level || 0.75;
-        const insuranceProduction = expectedProduction * coverageLevel;
 
         // Calculate percentages based on marketable production (no cap - allow >100% for over-contracting)
         const percentMarketed = marketableProduction > 0 ? (bushelsSold / marketableProduction) * 100 : 0;
@@ -2662,6 +2749,9 @@ async function getDashboardData(cropYear, detailMode = 'combined') {
 
         const percentHedged = marketableProduction > 0 ? (bushelsHedged / marketableProduction) * 100 : 0;
 
+        // Calculate insurance gap
+        const insuranceGap = expectedProduction - insuranceProduction;
+
         commodityProgress.push({
           commodity_id: commodity.id,
           commodity_name: commodity.name,
@@ -2673,6 +2763,8 @@ async function getDashboardData(cropYear, detailMode = 'combined') {
           actual_production: actualProduction,
           marketable_production: marketableProduction,  // actual on harvested + expected on unharvested
           insurance_production: insuranceProduction,
+          insurance_gap: insuranceGap,
+          insured_acres: insuredAcres,
           // Contracted (firm delivery)
           bushels_contracted: bushelsSold,
           percent_marketed: percentMarketed,  // primary % based on marketable
@@ -2735,8 +2827,40 @@ async function getDashboardData(cropYear, detailMode = 'combined') {
       const marketableProduction = production.marketable || expectedProduction;
       const bushelsSold = contracts?.bushels_contracted || 0;
 
-      const coverageLevel = insurance?.coverage_level || 0.75;
-      const insuranceProduction = expectedProduction * coverageLevel;
+      // Calculate insurance production from APH (field level) × Coverage (insurance_settings)
+      const insuranceCrops = allProduction.filter(c => c.commodity_id === commodity.id && c.aph_yield != null);
+
+      // For combined view, aggregate all practice types
+      const insuranceProduction = insuranceCrops.reduce((sum, c) => {
+        // Determine practice type for this crop
+        let practiceType = null;
+        if (c.is_double_crop) practiceType = 'DC';
+        else if (c.is_irrigated) practiceType = 'IR';
+        else practiceType = 'DL';
+
+        // Look up coverage level for this practice
+        let coverageLevel = 0;
+        if (c.is_double_crop) {
+          const dcIns = insuranceSettings.find(i => i.commodity_id === commodity.id && i.practice_type === 'DC');
+          const fsIns = insuranceSettings.find(i => i.commodity_id === commodity.id && i.practice_type === 'FS');
+          const commIns = insuranceSettings.find(i => i.commodity_id === commodity.id && !i.practice_type);
+          coverageLevel = (dcIns || fsIns || commIns)?.coverage_level || 0;
+        } else if (c.is_irrigated) {
+          const irIns = insuranceSettings.find(i => i.commodity_id === commodity.id && i.practice_type === 'IR');
+          const dlIns = insuranceSettings.find(i => i.commodity_id === commodity.id && i.practice_type === 'DL');
+          const commIns = insuranceSettings.find(i => i.commodity_id === commodity.id && !i.practice_type);
+          coverageLevel = (irIns || dlIns || commIns)?.coverage_level || 0;
+        } else {
+          const dlIns = insuranceSettings.find(i => i.commodity_id === commodity.id && i.practice_type === 'DL');
+          const irIns = insuranceSettings.find(i => i.commodity_id === commodity.id && i.practice_type === 'IR');
+          const commIns = insuranceSettings.find(i => i.commodity_id === commodity.id && !i.practice_type);
+          coverageLevel = (dlIns || irIns || commIns)?.coverage_level || 0;
+        }
+
+        return sum + (c.aph_yield * coverageLevel * c.planted_acres * c.effective_share);
+      }, 0);
+
+      const insuredAcres = insuranceCrops.length;
 
       // Calculate percentages based on marketable production (no cap - allow >100% for over-contracting)
       const percentMarketed = marketableProduction > 0 ? (bushelsSold / marketableProduction) * 100 : 0;
@@ -2770,6 +2894,9 @@ async function getDashboardData(cropYear, detailMode = 'combined') {
 
       const percentHedged = marketableProduction > 0 ? (bushelsHedged / marketableProduction) * 100 : 0;
 
+      // Calculate insurance gap
+      const insuranceGap = expectedProduction - insuranceProduction;
+
       if (marketableProduction > 0 || bushelsSold > 0 || bushelsHedged > 0) {
         commodityProgress.push({
           commodity_id: commodity.id,
@@ -2782,6 +2909,8 @@ async function getDashboardData(cropYear, detailMode = 'combined') {
           actual_production: actualProduction,
           marketable_production: marketableProduction,  // actual on harvested + expected on unharvested
           insurance_production: insuranceProduction,
+          insurance_gap: insuranceGap,
+          insured_acres: insuredAcres,
           // Contracted (firm delivery)
           bushels_contracted: bushelsSold,
           percent_marketed: percentMarketed,  // primary % based on marketable
@@ -3165,7 +3294,18 @@ function DashboardPage({ cropYear, onYearChange }) {
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-3">
                   <span className={`text-lg font-bold ${c.over_contracted ? 'text-red-600' : colors.text}`}>{c.display_name}</span>
-                  <span className="text-sm text-gray-500">{formatNumber(displayBushels)} / {formatNumber(c.marketable_production || c.expected_production)} bu</span>
+                  {viewMode === 'insurance' ? (
+                    <>
+                      <span className="text-sm text-gray-500">{formatNumber(displayBushels)} / {formatNumber(c.insurance_production)} bu insured</span>
+                      {c.insurance_gap > 0 && (
+                        <span className="text-xs px-2 py-0.5 bg-yellow-100 text-yellow-700 rounded-full">
+                          Gap: +{formatNumber(c.insurance_gap)} bu
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    <span className="text-sm text-gray-500">{formatNumber(displayBushels)} / {formatNumber(c.marketable_production || c.expected_production)} bu</span>
+                  )}
                   {c.over_contracted && (
                     <span className="text-xs px-2 py-0.5 bg-red-100 text-red-700 rounded-full font-semibold">
                       Over by {formatNumber(c.over_contracted_bushels)} bu
@@ -3270,6 +3410,11 @@ function DashboardPage({ cropYear, onYearChange }) {
                 <span className={`absolute right-2 top-1/2 -translate-y-1/2 text-sm font-bold ${c.over_contracted ? 'text-red-700' : 'text-gray-700'}`}>
                   {formatPercent(displayPercent)}
                 </span>
+                {viewMode === 'insurance' && (
+                  <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-gray-600">
+                    % of Insured
+                  </span>
+                )}
               </div>
 
               {/* Contract summary */}
@@ -4734,6 +4879,9 @@ function ProductionPage({ cropYear, onYearChange }) {
   const [newCrop, setNewCrop] = useState({ commodity_id: '', planted_acres: '', estimated_yield: '', share_override: '', is_irrigated: false, is_double_crop: false });
   const [collapsedFarms, setCollapsedFarms] = useState(new Set());
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [savingRows, setSavingRows] = useState({});
+  const [savedRows, setSavedRows] = useState({});
+  const [copyingInsurance, setCopyingInsurance] = useState(false);
   const { addToast } = useToast();
 
   const currentYear = new Date().getFullYear();
@@ -4810,13 +4958,13 @@ function ProductionPage({ cropYear, onYearChange }) {
       const effectiveShare = updated.share_override ?? updated.effective_share;
       updated.expected_marketable = (updated.planted_acres || 0) * (updated.estimated_yield || 0) * effectiveShare;
       updated.actual_marketable = updated.actual_production !== null ? updated.actual_production * effectiveShare : null;
-      
+
       // Update display name
       let displayName = updated.commodity_name;
       if (updated.is_irrigated) displayName += ' IR';
       if (updated.is_double_crop) displayName += ' (DC)';
       updated.display_name = displayName;
-      
+
       return updated;
     }));
   };
@@ -4838,7 +4986,8 @@ function ProductionPage({ cropYear, onYearChange }) {
         is_irrigated: row.is_irrigated,
         is_double_crop: row.is_double_crop,
         status: row.status,
-        notes: row.notes
+        notes: row.notes,
+        aph_yield: row.aph_yield
       });
       if (result) successCount++; else errorCount++;
     }
@@ -4849,6 +4998,46 @@ function ProductionPage({ cropYear, onYearChange }) {
     await loadProduction();
     setSaving(false);
     setTimeout(() => setMessage(null), 3000);
+  };
+
+  const handleSaveSingleRow = async (rowId) => {
+    const row = rows.find(r => r.id === rowId);
+    if (!row || !row.isModified) return;
+
+    setSavingRows(prev => ({ ...prev, [rowId]: true }));
+
+    const result = await updateProduction(row.id, {
+      planted_acres: row.planted_acres,
+      estimated_yield: row.estimated_yield,
+      actual_production: row.actual_production,
+      share_override: row.share_override,
+      is_irrigated: row.is_irrigated,
+      is_double_crop: row.is_double_crop,
+      status: row.status,
+      notes: row.notes,
+      aph_yield: row.aph_yield
+    });
+
+    if (result) {
+      // Mark as saved and clear modified flag
+      setRows(prev => prev.map(r => r.id === rowId ? { ...r, isModified: false } : r));
+      setSavedRows(prev => ({ ...prev, [rowId]: true }));
+
+      // Clear saved indicator after 2 seconds
+      setTimeout(() => {
+        setSavedRows(prev => {
+          const newSaved = { ...prev };
+          delete newSaved[rowId];
+          return newSaved;
+        });
+      }, 2000);
+    }
+
+    setSavingRows(prev => {
+      const newSaving = { ...prev };
+      delete newSaving[rowId];
+      return newSaving;
+    });
   };
 
   const handleDelete = (row) => {
@@ -4883,6 +5072,22 @@ function ProductionPage({ cropYear, onYearChange }) {
     });
   };
 
+  const handleCopyAPH = async () => {
+    if (!confirm(`Copy APH yields from ${cropYear - 1} to ${cropYear}?`)) return;
+
+    setCopyingInsurance(true);
+    const result = await copyAPHFromPreviousYear(cropYear);
+
+    if (result.count > 0) {
+      addToast(result.message, { type: 'success' });
+      await loadProduction();
+    } else {
+      addToast(result.message, { type: 'info' });
+    }
+
+    setCopyingInsurance(false);
+  };
+
   const hasModifiedRows = rows.some(r => r.isModified);
   const fieldsByFarm = fields.reduce((acc, field) => {
     if (!acc[field.farm_name]) acc[field.farm_name] = [];
@@ -4911,6 +5116,15 @@ function ProductionPage({ cropYear, onYearChange }) {
             className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium focus:ring-2 focus:ring-amber-500">
             {cropYears.map(year => <option key={year} value={year}>{year} Crop Year</option>)}
           </select>
+          <button
+            onClick={handleCopyAPH}
+            disabled={copyingInsurance}
+            className="flex items-center gap-2 px-3 py-2 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-lg text-sm font-medium disabled:opacity-50"
+            title={`Copy APH yields from ${cropYear - 1}`}
+          >
+            {copyingInsurance ? <Icon name="refresh-cw" className="animate-spin" size={16} /> : <Icon name="copy" size={16} />}
+            <span className="hidden sm:inline">Copy APH</span>
+          </button>
           <button
             onClick={() => exportProductionCSV(rows, cropYear)}
             className="flex items-center gap-2 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm"
@@ -5042,9 +5256,10 @@ function ProductionPage({ cropYear, onYearChange }) {
                               <tr>
                                 <th className="text-left px-2 py-2 font-medium text-gray-600">Crop</th>
                                 <th className="text-right px-2 py-2 font-medium text-gray-600 w-20">Acres</th>
-                                <th className="text-right px-2 py-2 font-medium text-gray-600 w-20">Yield</th>
+                                <th className="text-right px-2 py-2 font-medium text-gray-600 w-20">Est Yield</th>
                                 <th className="text-right px-2 py-2 font-medium text-gray-600 w-28">Expected Bu</th>
                                 <th className="text-right px-2 py-2 font-medium text-gray-600 w-24">Actual</th>
+                                <th className="text-right px-2 py-2 font-medium text-gray-600 w-20 bg-blue-50">APH</th>
                                 <th className="text-center px-2 py-2 font-medium text-gray-600 w-16">IR</th>
                                 <th className="text-center px-2 py-2 font-medium text-gray-600 w-16">DC</th>
                                 <th className="text-center px-2 py-2 font-medium text-gray-600 w-16"></th>
@@ -5068,9 +5283,32 @@ function ProductionPage({ cropYear, onYearChange }) {
                                     </td>
                                     <td className="px-2 py-2 text-right text-gray-600">{Math.round(crop.expected_marketable).toLocaleString()}</td>
                                     <td className="px-2 py-2">
-                                      <input type="number" value={crop.actual_production ?? ''}
-                                        onChange={(e) => handleCellChange(crop.id, 'actual_production', e.target.value ? parseInt(e.target.value) : null)}
-                                        className="w-full px-2 py-1 text-right border border-gray-200 rounded focus:ring-1 focus:ring-amber-500" placeholder="-" />
+                                      <div className="flex items-center gap-1">
+                                        <input type="number" value={crop.actual_production ?? ''}
+                                          onChange={(e) => handleCellChange(crop.id, 'actual_production', e.target.value ? parseInt(e.target.value) : null)}
+                                          className="flex-1 px-2 py-1 text-right border border-gray-200 rounded focus:ring-1 focus:ring-amber-500" placeholder="-" />
+                                        {crop.isModified && (
+                                          <button
+                                            onClick={() => handleSaveSingleRow(crop.id)}
+                                            disabled={savingRows[crop.id]}
+                                            className="p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                                            title="Save this row"
+                                          >
+                                            {savingRows[crop.id] ? (
+                                              <Icon name="loader" size={16} className="animate-spin" />
+                                            ) : savedRows[crop.id] ? (
+                                              <Icon name="check" size={16} className="text-green-600" />
+                                            ) : (
+                                              <Icon name="save" size={16} />
+                                            )}
+                                          </button>
+                                        )}
+                                      </div>
+                                    </td>
+                                    <td className="px-2 py-2 bg-blue-50">
+                                      <input type="number" step="0.1" value={crop.aph_yield ?? ''}
+                                        onChange={(e) => handleCellChange(crop.id, 'aph_yield', e.target.value ? parseFloat(e.target.value) : null)}
+                                        className="w-full px-2 py-1 text-right border border-gray-200 rounded focus:ring-1 focus:ring-blue-500" placeholder="APH bu/ac" />
                                     </td>
                                     <td className="px-2 py-2 text-center">
                                       <input type="checkbox" checked={crop.is_irrigated || false}
@@ -5110,272 +5348,6 @@ function ProductionPage({ cropYear, onYearChange }) {
           ))}
         </div>
       )}
-    </div>
-  );
-}
-
-// Insurance Page
-function InsurancePage({ cropYear, onYearChange }) {
-  const [commodities, setCommodities] = useState([]);
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState(null);
-  const [practiceMode, setPracticeMode] = useState('commodity'); // 'commodity', 'irrigation', 'season'
-
-  const currentYear = new Date().getFullYear();
-  const cropYears = [currentYear - 1, currentYear, currentYear + 1, currentYear + 2];
-
-  const loadData = async () => {
-    setLoading(true);
-    const [comms, settings] = await Promise.all([
-      getCommodities(),
-      getInsuranceSettings(cropYear)
-    ]);
-    setCommodities(comms);
-
-    const allRows = [];
-
-    if (practiceMode === 'commodity') {
-      // One row per commodity
-      for (const c of comms) {
-        const existing = settings.find(s => s.commodity_id === c.id && !s.practice_type);
-        allRows.push({
-          commodity_id: c.id,
-          commodity_name: c.name,
-          practice_type: null,
-          display_name: c.name,
-          coverage_level: existing?.coverage_level || 0.75,
-          price_election: existing?.price_election || 0,
-          policy_type: existing?.policy_type || 'RP',
-          notes: existing?.notes || '',
-          isModified: false
-        });
-      }
-    } else if (practiceMode === 'irrigation') {
-      // Two rows per commodity: IR and DL
-      for (const c of comms) {
-        for (const practice of [{ type: 'IR', name: 'Irrigated' }, { type: 'DL', name: 'Dryland' }]) {
-          const existing = settings.find(s => s.commodity_id === c.id && s.practice_type === practice.type);
-          const fallback = settings.find(s => s.commodity_id === c.id && !s.practice_type);
-          const setting = existing || fallback;
-          allRows.push({
-            commodity_id: c.id,
-            commodity_name: c.name,
-            practice_type: practice.type,
-            display_name: `${c.name} ${practice.type}`,
-            coverage_level: setting?.coverage_level || 0.75,
-            price_election: setting?.price_election || 0,
-            policy_type: setting?.policy_type || 'RP',
-            notes: setting?.notes || '',
-            isModified: false
-          });
-        }
-      }
-    } else if (practiceMode === 'season') {
-      // Two rows per commodity (except Corn): FS and DC
-      for (const c of comms) {
-        if (c.name === 'Corn') {
-          // Corn is always full season, just show one row
-          const existing = settings.find(s => s.commodity_id === c.id && !s.practice_type);
-          allRows.push({
-            commodity_id: c.id,
-            commodity_name: c.name,
-            practice_type: null,
-            display_name: c.name,
-            coverage_level: existing?.coverage_level || 0.75,
-            price_election: existing?.price_election || 0,
-            policy_type: existing?.policy_type || 'RP',
-            notes: existing?.notes || '',
-            isModified: false
-          });
-        } else {
-          for (const practice of [{ type: 'FS', name: 'Full Season' }, { type: 'DC', name: 'Double Crop' }]) {
-            const existing = settings.find(s => s.commodity_id === c.id && s.practice_type === practice.type);
-            const fallback = settings.find(s => s.commodity_id === c.id && !s.practice_type);
-            const setting = existing || fallback;
-            allRows.push({
-              commodity_id: c.id,
-              commodity_name: c.name,
-              practice_type: practice.type,
-              display_name: `${c.name} ${practice.type === 'DC' ? '(DC)' : ''}`.trim(),
-              coverage_level: setting?.coverage_level || 0.75,
-              price_election: setting?.price_election || 0,
-              policy_type: setting?.policy_type || 'RP',
-              notes: setting?.notes || '',
-              isModified: false
-            });
-          }
-        }
-      }
-    }
-
-    setRows(allRows);
-    setLoading(false);
-  };
-
-  useEffect(() => { loadData(); }, [cropYear, practiceMode]);
-
-  const handleCellChange = (index, field, value) => {
-    setRows(prev => {
-      const newRows = [...prev];
-      newRows[index] = { ...newRows[index], [field]: value, isModified: true };
-      return newRows;
-    });
-  };
-
-  const handleSave = async () => {
-    setSaving(true);
-    setMessage(null);
-
-    const modifiedRows = rows.filter(r => r.isModified);
-    let successCount = 0;
-    let errorCount = 0;
-
-    for (const row of modifiedRows) {
-      const result = await upsertInsuranceSetting({
-        crop_year: cropYear,
-        commodity_id: row.commodity_id,
-        practice_type: row.practice_type,
-        coverage_level: row.coverage_level,
-        price_election: row.price_election,
-        policy_type: row.policy_type,
-        notes: row.notes || null
-      });
-      if (result) successCount++; else errorCount++;
-    }
-
-    if (errorCount > 0) setMessage({ type: 'error', text: `Saved ${successCount} settings, ${errorCount} failed` });
-    else if (successCount > 0) setMessage({ type: 'success', text: `Saved ${successCount} insurance settings` });
-
-    await loadData();
-    setSaving(false);
-    setTimeout(() => setMessage(null), 3000);
-  };
-
-  const hasModifiedRows = rows.some(r => r.isModified);
-
-  if (loading) return <div className="flex items-center justify-center h-64"><Icon name="refresh-cw" className="animate-spin text-amber-600" size={32} /></div>;
-
-  return (
-    <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Insurance Settings</h1>
-          <p className="text-sm text-gray-500 mt-1">Configure crop insurance coverage levels</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <select value={cropYear} onChange={(e) => onYearChange(parseInt(e.target.value))}
-            className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium focus:ring-2 focus:ring-amber-500">
-            {cropYears.map(year => <option key={year} value={year}>{year} Crop Year</option>)}
-          </select>
-          <button onClick={handleSave} disabled={!hasModifiedRows || saving}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium ${
-              hasModifiedRows ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}>
-            {saving ? <Icon name="refresh-cw" className="animate-spin" size={16} /> : <Icon name="save" size={16} />}
-            Save
-          </button>
-        </div>
-      </div>
-
-      {message && (
-        <div className={`px-4 py-3 rounded-lg flex items-center gap-2 text-sm ${
-          message.type === 'success' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-          <Icon name={message.type === 'success' ? 'check' : 'x'} size={16} />
-          {message.text}
-        </div>
-      )}
-
-      {/* Practice Mode Toggle */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
-        <div className="flex items-center gap-4 flex-wrap">
-          <Icon name="layers" size={16} className="text-gray-500" />
-          <span className="text-sm font-medium text-gray-700">Coverage By:</span>
-          <div className="flex rounded-lg border border-gray-200 overflow-hidden">
-            <button onClick={() => setPracticeMode('commodity')}
-              className={`px-3 py-1.5 text-sm font-medium transition-colors ${
-                practiceMode === 'commodity' ? 'bg-blue-500 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
-              Commodity Only
-            </button>
-            <button onClick={() => setPracticeMode('irrigation')}
-              className={`px-3 py-1.5 text-sm font-medium transition-colors border-l border-gray-200 ${
-                practiceMode === 'irrigation' ? 'bg-blue-500 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
-              By Irrigation (IR/DL)
-            </button>
-            <button onClick={() => setPracticeMode('season')}
-              className={`px-3 py-1.5 text-sm font-medium transition-colors border-l border-gray-200 ${
-                practiceMode === 'season' ? 'bg-blue-500 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
-              By Season (FS/DC)
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-blue-800">
-        <p><strong>Insurance Production</strong> is calculated as: Expected Production x Coverage Level</p>
-        <p className="mt-1">Choose how you want to configure coverage: by commodity only, by irrigation practice, or by season type.</p>
-        {practiceMode !== 'commodity' && (
-          <p className="mt-2 text-blue-600"><strong>Note:</strong> You can only insure by ONE dimension (irrigation OR season), not both combined.</p>
-        )}
-      </div>
-
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50 border-b border-gray-200">
-              <tr>
-                <th className="text-left px-4 py-3 font-semibold text-gray-700">
-                  {practiceMode === 'commodity' ? 'Commodity' : 'Commodity / Practice'}
-                </th>
-                <th className="text-center px-4 py-3 font-semibold text-gray-700 w-32">Coverage Level</th>
-                <th className="text-right px-4 py-3 font-semibold text-gray-700 w-32">Price Election</th>
-                <th className="text-center px-4 py-3 font-semibold text-gray-700 w-28">Policy Type</th>
-                <th className="text-left px-4 py-3 font-semibold text-gray-700">Notes</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {rows.map((row, index) => (
-                <tr key={`${row.commodity_id}-${row.practice_type || 'all'}`} className={row.isModified ? 'bg-yellow-50' : ''}>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <Icon name="shield" size={16} className="text-amber-500" />
-                      <span className="font-medium text-gray-900">{row.display_name}</span>
-                    </div>
-                  </td>
-                  <td className="px-2 py-3">
-                    <select value={row.coverage_level} onChange={(e) => handleCellChange(index, 'coverage_level', parseFloat(e.target.value))}
-                      className="w-full px-2 py-1.5 border border-gray-300 rounded text-center focus:ring-2 focus:ring-amber-500">
-                      {[0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85].map(v => (
-                        <option key={v} value={v}>{(v * 100).toFixed(0)}%</option>
-                      ))}
-                    </select>
-                  </td>
-                  <td className="px-2 py-3">
-                    <div className="flex items-center">
-                      <span className="text-gray-500 mr-1">$</span>
-                      <input type="number" step="0.01" value={row.price_election || ''}
-                        onChange={(e) => handleCellChange(index, 'price_election', parseFloat(e.target.value) || 0)}
-                        className="w-full px-2 py-1.5 text-right border border-gray-300 rounded focus:ring-2 focus:ring-amber-500" placeholder="0.00" />
-                    </div>
-                  </td>
-                  <td className="px-2 py-3">
-                    <select value={row.policy_type} onChange={(e) => handleCellChange(index, 'policy_type', e.target.value)}
-                      className="w-full px-2 py-1.5 border border-gray-300 rounded text-center focus:ring-2 focus:ring-amber-500">
-                      <option value="RP">RP</option>
-                      <option value="RP-HPE">RP-HPE</option>
-                      <option value="YP">YP</option>
-                    </select>
-                  </td>
-                  <td className="px-2 py-3">
-                    <input type="text" value={row.notes} onChange={(e) => handleCellChange(index, 'notes', e.target.value)}
-                      className="w-full px-2 py-1.5 border border-gray-300 rounded focus:ring-2 focus:ring-amber-500" placeholder="Notes..." />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
 
       {/* Delete Confirmation Modal */}
       <ConfirmModal
@@ -5388,6 +5360,350 @@ function InsurancePage({ cropYear, onYearChange }) {
         onConfirm={confirmDeleteProduction}
         onCancel={() => setConfirmDelete(null)}
       />
+    </div>
+  );
+}
+
+// Insurance Page
+function InsurancePage({ cropYear, onYearChange }) {
+  const [commodities, setCommodities] = useState([]);
+  const [commoditySettings, setCommoditySettings] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState(null);
+
+  const currentYear = new Date().getFullYear();
+  const cropYears = [currentYear - 1, currentYear, currentYear + 1, currentYear + 2];
+
+  const commodityColors = {
+    'Corn': { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-700' },
+    'Soybeans': { bg: 'bg-emerald-50', border: 'border-emerald-200', text: 'text-emerald-700' },
+    'Wheat': { bg: 'bg-violet-50', border: 'border-violet-200', text: 'text-violet-700' },
+    'Milo': { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700' }
+  };
+
+  const loadData = async () => {
+    try {
+      setLoading(true);
+      setMessage(null);
+      const [comms, settingsResult] = await Promise.all([
+        getCommodities(),
+        getInsuranceSettings(cropYear)
+      ]);
+      setCommodities(comms);
+
+      if (settingsResult?.error) {
+        setMessage({
+          type: 'error',
+          text: `Database Error: ${settingsResult.error}. Please run the migration file.`
+        });
+        setLoading(false);
+        return;
+      }
+
+      const settings = settingsResult || [];
+
+      // Build commodity settings object
+      const commSettings = {};
+      for (const c of comms) {
+        // Get all settings for this commodity
+        const commoditySetting = settings.find(s => s.commodity_id === c.id && !s.practice_type);
+        const irSetting = settings.find(s => s.commodity_id === c.id && s.practice_type === 'IR');
+        const dlSetting = settings.find(s => s.commodity_id === c.id && s.practice_type === 'DL');
+        const fsSetting = settings.find(s => s.commodity_id === c.id && s.practice_type === 'FS');
+        const dcSetting = settings.find(s => s.commodity_id === c.id && s.practice_type === 'DC');
+
+        // Determine insurance level
+        let insuranceLevel = 'commodity';
+        if (irSetting || dlSetting) insuranceLevel = 'irrigation';
+        else if (fsSetting || dcSetting) insuranceLevel = 'season';
+
+        commSettings[c.id] = {
+          commodity_id: c.id,
+          commodity_name: c.name,
+          reference_price: commoditySetting?.reference_price || irSetting?.reference_price || dlSetting?.reference_price || fsSetting?.reference_price || dcSetting?.reference_price || 0,
+          policy_type: commoditySetting?.policy_type || irSetting?.policy_type || dlSetting?.policy_type || fsSetting?.policy_type || dcSetting?.policy_type || 'RP',
+          insurance_level: insuranceLevel,
+          // Coverage levels
+          coverage_commodity: commoditySetting?.coverage_level || 0.75,
+          coverage_ir: irSetting?.coverage_level || 0.75,
+          coverage_dl: dlSetting?.coverage_level || 0.75,
+          coverage_fs: fsSetting?.coverage_level || 0.75,
+          coverage_dc: dcSetting?.coverage_level || 0.75,
+          isModified: false
+        };
+      }
+
+      setCommoditySettings(commSettings);
+      setLoading(false);
+    } catch (error) {
+      console.error('Error loading insurance data:', error);
+      setMessage({ type: 'error', text: `Failed to load insurance settings: ${error.message}` });
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { loadData(); }, [cropYear]);
+
+  const handleChange = (commodityId, field, value) => {
+    setCommoditySettings(prev => ({
+      ...prev,
+      [commodityId]: {
+        ...prev[commodityId],
+        [field]: value,
+        isModified: true
+      }
+    }));
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setMessage(null);
+
+    const modified = Object.values(commoditySettings).filter(s => s.isModified);
+    let successCount = 0;
+    let errorCount = 0;
+
+    for (const setting of modified) {
+      const { insurance_level, commodity_id, reference_price, policy_type } = setting;
+
+      if (insurance_level === 'commodity') {
+        // Save one setting with no practice_type
+        const result = await upsertInsuranceSetting({
+          crop_year: cropYear,
+          commodity_id,
+          practice_type: null,
+          coverage_level: setting.coverage_commodity,
+          reference_price,
+          policy_type
+        });
+        if (result) successCount++; else errorCount++;
+      } else if (insurance_level === 'irrigation') {
+        // Save IR and DL settings
+        const irResult = await upsertInsuranceSetting({
+          crop_year: cropYear,
+          commodity_id,
+          practice_type: 'IR',
+          coverage_level: setting.coverage_ir,
+          reference_price,
+          policy_type
+        });
+        const dlResult = await upsertInsuranceSetting({
+          crop_year: cropYear,
+          commodity_id,
+          practice_type: 'DL',
+          coverage_level: setting.coverage_dl,
+          reference_price,
+          policy_type
+        });
+        if (irResult && dlResult) successCount += 2; else errorCount += (!irResult ? 1 : 0) + (!dlResult ? 1 : 0);
+      } else if (insurance_level === 'season') {
+        // Save FS and DC settings
+        const fsResult = await upsertInsuranceSetting({
+          crop_year: cropYear,
+          commodity_id,
+          practice_type: 'FS',
+          coverage_level: setting.coverage_fs,
+          reference_price,
+          policy_type
+        });
+        const dcResult = await upsertInsuranceSetting({
+          crop_year: cropYear,
+          commodity_id,
+          practice_type: 'DC',
+          coverage_level: setting.coverage_dc,
+          reference_price,
+          policy_type
+        });
+        if (fsResult && dcResult) successCount += 2; else errorCount += (!fsResult ? 1 : 0) + (!dcResult ? 1 : 0);
+      }
+    }
+
+    if (errorCount > 0) setMessage({ type: 'error', text: `Saved ${successCount}, ${errorCount} failed` });
+    else if (successCount > 0) setMessage({ type: 'success', text: `Saved ${successCount} insurance settings` });
+
+    await loadData();
+    setSaving(false);
+    setTimeout(() => setMessage(null), 3000);
+  };
+
+  const hasModified = Object.values(commoditySettings).some(s => s.isModified);
+
+  if (loading) return <div className="flex items-center justify-center h-64"><Icon name="refresh-cw" className="animate-spin text-amber-600" size={32} /></div>;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Insurance Settings</h1>
+          <p className="text-sm text-gray-500 mt-1">Set reference prices and coverage levels per commodity</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <select value={cropYear} onChange={(e) => onYearChange(parseInt(e.target.value))}
+            className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium focus:ring-2 focus:ring-amber-500">
+            {cropYears.map(year => <option key={year} value={year}>{year} Crop Year</option>)}
+          </select>
+          <button onClick={handleSave} disabled={!hasModified || saving}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium ${
+              hasModified ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}>
+            {saving ? <Icon name="refresh-cw" className="animate-spin" size={16} /> : <Icon name="save" size={16} />}
+            Save All
+          </button>
+        </div>
+      </div>
+
+      {message && (
+        <div className={`px-4 py-3 rounded-lg flex items-center gap-2 ${
+          message.type === 'success' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+          <Icon name={message.type === 'success' ? 'check' : 'x'} size={16} />
+          {message.text}
+        </div>
+      )}
+
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-blue-800">
+        <p><strong>Insurance Production</strong> is calculated as: <strong>APH Yield × Coverage Level × Acres</strong></p>
+        <p className="mt-1">• Set <strong>Reference Price</strong> and <strong>Policy Type</strong> once per commodity (applies to all fields)</p>
+        <p className="mt-1">• Set <strong>Coverage Level</strong> at commodity level or by practice (IR/DL or FS/DC)</p>
+        <p className="mt-1">• Set <strong>APH Yields</strong> per field on the Production page</p>
+      </div>
+
+      {/* Commodity Cards */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {commodities.map(commodity => {
+          const setting = commoditySettings[commodity.id];
+          if (!setting) return null;
+
+          const colors = commodityColors[commodity.name] || { bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700' };
+          const isCorn = commodity.name === 'Corn';
+
+          return (
+            <div key={commodity.id} className={`${colors.bg} border ${colors.border} rounded-xl p-5 ${setting.isModified ? 'ring-2 ring-amber-400' : ''}`}>
+              {/* Header */}
+              <div className="flex items-center gap-3 mb-4">
+                <Icon name="shield" size={24} className={colors.text} />
+                <h3 className={`text-xl font-bold ${colors.text}`}>{commodity.name}</h3>
+              </div>
+
+              {/* Reference Price & Policy Type */}
+              <div className="grid grid-cols-2 gap-4 mb-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Reference Price ($/bu)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={setting.reference_price || ''}
+                    onChange={(e) => handleChange(commodity.id, 'reference_price', parseFloat(e.target.value) || 0)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500"
+                    placeholder="0.00"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Policy Type</label>
+                  <select
+                    value={setting.policy_type}
+                    onChange={(e) => handleChange(commodity.id, 'policy_type', e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500"
+                  >
+                    <option value="RP">RP (Revenue Protection)</option>
+                    <option value="RP-HPE">RP-HPE (Harvest Price Exclusion)</option>
+                    <option value="YP">YP (Yield Protection)</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Insurance Level Selector */}
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">Coverage Level By:</label>
+                <select
+                  value={setting.insurance_level}
+                  onChange={(e) => handleChange(commodity.id, 'insurance_level', e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 font-medium"
+                >
+                  <option value="commodity">Commodity Level (same for all fields)</option>
+                  <option value="irrigation">By Practice: IR / DL</option>
+                  {!isCorn && <option value="season">By Practice: FS / DC</option>}
+                </select>
+              </div>
+
+              {/* Coverage Inputs */}
+              <div className="bg-white rounded-lg p-4 border border-gray-200">
+                {setting.insurance_level === 'commodity' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Coverage Level</label>
+                    <select
+                      value={setting.coverage_commodity}
+                      onChange={(e) => handleChange(commodity.id, 'coverage_commodity', parseFloat(e.target.value))}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 text-lg font-semibold"
+                    >
+                      {[0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85].map(v => (
+                        <option key={v} value={v}>{(v * 100).toFixed(0)}%</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {setting.insurance_level === 'irrigation' && (
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Irrigated (IR)</label>
+                      <select
+                        value={setting.coverage_ir}
+                        onChange={(e) => handleChange(commodity.id, 'coverage_ir', parseFloat(e.target.value))}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 font-semibold"
+                      >
+                        {[0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85].map(v => (
+                          <option key={v} value={v}>{(v * 100).toFixed(0)}%</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Dryland (DL)</label>
+                      <select
+                        value={setting.coverage_dl}
+                        onChange={(e) => handleChange(commodity.id, 'coverage_dl', parseFloat(e.target.value))}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 font-semibold"
+                      >
+                        {[0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85].map(v => (
+                          <option key={v} value={v}>{(v * 100).toFixed(0)}%</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                )}
+
+                {setting.insurance_level === 'season' && (
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Full Season (FS)</label>
+                      <select
+                        value={setting.coverage_fs}
+                        onChange={(e) => handleChange(commodity.id, 'coverage_fs', parseFloat(e.target.value))}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 font-semibold"
+                      >
+                        {[0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85].map(v => (
+                          <option key={v} value={v}>{(v * 100).toFixed(0)}%</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Double Crop (DC)</label>
+                      <select
+                        value={setting.coverage_dc}
+                        onChange={(e) => handleChange(commodity.id, 'coverage_dc', parseFloat(e.target.value))}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 font-semibold"
+                      >
+                        {[0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85].map(v => (
+                          <option key={v} value={v}>{(v * 100).toFixed(0)}%</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -5783,6 +6099,9 @@ function BasisPage() {
   const [message, setMessage] = useState(null);
   const [localValues, setLocalValues] = useState({});
   const [buyerLocalValues, setBuyerLocalValues] = useState({});
+  const [modifiedCells, setModifiedCells] = useState({});
+  const [buyerModifiedCells, setBuyerModifiedCells] = useState({});
+  const [autoSaveTimeouts, setAutoSaveTimeouts] = useState({});
 
   // Commodity-specific rollover dates (month is 0-indexed)
   const CROP_ROLLOVER = {
@@ -5866,6 +6185,19 @@ function BasisPage() {
   const handleInputChange = (locationId, commodityId, cropYear, value) => {
     const key = `${locationId}-${commodityId}-${cropYear}`;
     setLocalValues(prev => ({ ...prev, [key]: value }));
+    setModifiedCells(prev => ({ ...prev, [key]: true }));
+
+    // Clear existing timeout for this cell
+    if (autoSaveTimeouts[key]) {
+      clearTimeout(autoSaveTimeouts[key]);
+    }
+
+    // Set up debounced auto-save (500ms after user stops typing)
+    const timeoutId = setTimeout(() => {
+      handleSave(locationId, commodityId, cropYear);
+    }, 500);
+
+    setAutoSaveTimeouts(prev => ({ ...prev, [key]: timeoutId }));
   };
 
   const handleSave = async (locationId, commodityId, cropYear) => {
@@ -5880,11 +6212,23 @@ function BasisPage() {
         try {
           await deleteLocationBasis(existing.id);
           setMessage({ type: 'success', text: 'Cleared' });
+          setModifiedCells(prev => {
+            const newModified = { ...prev };
+            delete newModified[key];
+            return newModified;
+          });
           loadData();
         } catch (e) {
           setMessage({ type: 'error', text: 'Failed' });
         }
         setSaving(prev => ({ ...prev, [key]: false }));
+      } else {
+        // Just clear the modified state if nothing to delete
+        setModifiedCells(prev => {
+          const newModified = { ...prev };
+          delete newModified[key];
+          return newModified;
+        });
       }
       return;
     }
@@ -5894,6 +6238,11 @@ function BasisPage() {
       await upsertLocationBasis(locationId, commodityId, cropYear, numValue);
       setMessage({ type: 'success', text: 'Saved' });
       setTimeout(() => setMessage(null), 1500);
+      setModifiedCells(prev => {
+        const newModified = { ...prev };
+        delete newModified[key];
+        return newModified;
+      });
       loadData();
     } catch (e) {
       setMessage({ type: 'error', text: 'Failed' });
@@ -5917,6 +6266,19 @@ function BasisPage() {
   const handleBuyerInputChange = (buyerId, commodityId, cropYear, value) => {
     const key = `${buyerId}-${commodityId}-${cropYear}`;
     setBuyerLocalValues(prev => ({ ...prev, [key]: value }));
+    setBuyerModifiedCells(prev => ({ ...prev, [key]: true }));
+
+    // Clear existing timeout for this cell
+    if (autoSaveTimeouts[key]) {
+      clearTimeout(autoSaveTimeouts[key]);
+    }
+
+    // Set up debounced auto-save (500ms after user stops typing)
+    const timeoutId = setTimeout(() => {
+      handleBuyerSave(buyerId, commodityId, cropYear);
+    }, 500);
+
+    setAutoSaveTimeouts(prev => ({ ...prev, [key]: timeoutId }));
   };
 
   const handleBuyerSave = async (buyerId, commodityId, cropYear) => {
@@ -5931,11 +6293,23 @@ function BasisPage() {
         try {
           await deleteBuyerBasis(existing.id);
           setMessage({ type: 'success', text: 'Cleared' });
+          setBuyerModifiedCells(prev => {
+            const newModified = { ...prev };
+            delete newModified[key];
+            return newModified;
+          });
           loadData();
         } catch (e) {
           setMessage({ type: 'error', text: 'Failed' });
         }
         setSaving(prev => ({ ...prev, [key]: false }));
+      } else {
+        // Just clear the modified state if nothing to delete
+        setBuyerModifiedCells(prev => {
+          const newModified = { ...prev };
+          delete newModified[key];
+          return newModified;
+        });
       }
       return;
     }
@@ -5945,11 +6319,46 @@ function BasisPage() {
       await upsertBuyerBasis(buyerId, commodityId, cropYear, numValue);
       setMessage({ type: 'success', text: 'Saved' });
       setTimeout(() => setMessage(null), 1500);
+      setBuyerModifiedCells(prev => {
+        const newModified = { ...prev };
+        delete newModified[key];
+        return newModified;
+      });
       loadData();
     } catch (e) {
       setMessage({ type: 'error', text: 'Failed' });
     }
     setSaving(prev => ({ ...prev, [key]: false }));
+  };
+
+  const handleSaveAll = async () => {
+    const allModified = { ...modifiedCells, ...buyerModifiedCells };
+    const keys = Object.keys(allModified);
+
+    if (keys.length === 0) {
+      setMessage({ type: 'success', text: 'No changes to save' });
+      setTimeout(() => setMessage(null), 1500);
+      return;
+    }
+
+    setMessage({ type: 'success', text: `Saving ${keys.length} basis values...` });
+
+    for (const key of keys) {
+      const parts = key.split('-');
+      if (parts.length === 3) {
+        const [id, commodityId, cropYear] = parts;
+
+        // Check if it's a location or buyer basis
+        if (modifiedCells[key]) {
+          await handleSave(id, commodityId, parseInt(cropYear));
+        } else if (buyerModifiedCells[key]) {
+          await handleBuyerSave(id, commodityId, parseInt(cropYear));
+        }
+      }
+    }
+
+    setMessage({ type: 'success', text: 'All changes saved' });
+    setTimeout(() => setMessage(null), 2000);
   };
 
   const getBuyerInputValue = (buyerId, commodityId, cropYear) => {
@@ -5968,25 +6377,45 @@ function BasisPage() {
       <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Basis Management</h1>
-          <p className="text-sm text-gray-500 mt-1">Enter basis. Tab or click out to save.</p>
+          <p className="text-sm text-gray-500 mt-1">Auto-saves 500ms after typing. Tab/Enter to save immediately.</p>
         </div>
-        
-        <div className="flex rounded-lg overflow-hidden border border-gray-300">
+
+        <div className="flex gap-3 items-center">
+          <div className="flex rounded-lg overflow-hidden border border-gray-300">
+            <button
+              onClick={() => setViewMode('old')}
+              className={`px-4 py-2 text-sm font-medium ${
+                viewMode === 'old' ? 'bg-amber-500 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'
+              }`}
+            >
+              [Old] Old Crop
+            </button>
+            <button
+              onClick={() => setViewMode('new')}
+              className={`px-4 py-2 text-sm font-medium border-l border-gray-300 ${
+                viewMode === 'new' ? 'bg-green-500 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'
+              }`}
+            >
+              [New] New Crop
+            </button>
+          </div>
+
           <button
-            onClick={() => setViewMode('old')}
-            className={`px-4 py-2 text-sm font-medium ${
-              viewMode === 'old' ? 'bg-amber-500 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'
+            onClick={handleSaveAll}
+            disabled={Object.keys(modifiedCells).length === 0 && Object.keys(buyerModifiedCells).length === 0}
+            className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg border ${
+              (Object.keys(modifiedCells).length > 0 || Object.keys(buyerModifiedCells).length > 0)
+                ? 'bg-blue-600 text-white hover:bg-blue-700 border-blue-600'
+                : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
             }`}
           >
-            [Old] Old Crop
-          </button>
-          <button
-            onClick={() => setViewMode('new')}
-            className={`px-4 py-2 text-sm font-medium border-l border-gray-300 ${
-              viewMode === 'new' ? 'bg-green-500 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'
-            }`}
-          >
-            [New] New Crop
+            <Icon name="save" size={16} />
+            Save All Basis
+            {(Object.keys(modifiedCells).length > 0 || Object.keys(buyerModifiedCells).length > 0) && (
+              <span className="bg-white text-blue-600 px-2 py-0.5 rounded-full text-xs font-bold">
+                {Object.keys(modifiedCells).length + Object.keys(buyerModifiedCells).length}
+              </span>
+            )}
           </button>
         </div>
       </div>
@@ -6053,7 +6482,8 @@ function BasisPage() {
                     const cropYear = getCropYear(c.name, isNewCrop);
                     const key = `${loc.id}-${c.id}-${cropYear}`;
                     const isSaving = saving[key];
-                    
+                    const isModified = modifiedCells[key];
+
                     return (
                       <td key={c.id} className="px-3 py-2 text-center">
                         <input
@@ -6065,9 +6495,9 @@ function BasisPage() {
                           onBlur={() => handleSave(loc.id, c.id, cropYear)}
                           onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); }}
                           disabled={isSaving}
-                          className={`w-20 px-2 py-1.5 text-center text-sm border rounded 
+                          className={`w-20 px-2 py-1.5 text-center text-sm border rounded
                             focus:ring-2 focus:ring-amber-500 focus:border-amber-500
-                            ${isSaving ? 'bg-gray-100 text-gray-400' : 'bg-white'}
+                            ${isSaving ? 'bg-gray-100 text-gray-400' : isModified ? 'bg-yellow-100 border-yellow-400' : 'bg-white'}
                             ${getInputValue(loc.id, c.id, cropYear) ? 'border-gray-300 font-medium' : 'border-gray-200 text-gray-400'}
                           `}
                         />
@@ -6121,6 +6551,7 @@ function BasisPage() {
                     const cropYear = getCropYear(c.name, isNewCrop);
                     const key = `${buyer.id}-${c.id}-${cropYear}`;
                     const isSaving = saving[key];
+                    const isModified = buyerModifiedCells[key];
 
                     return (
                       <td key={c.id} className="px-3 py-2 text-center">
@@ -6135,7 +6566,7 @@ function BasisPage() {
                           disabled={isSaving}
                           className={`w-20 px-2 py-1.5 text-center text-sm border rounded
                             focus:ring-2 focus:ring-amber-500 focus:border-amber-500
-                            ${isSaving ? 'bg-gray-100 text-gray-400' : 'bg-white'}
+                            ${isSaving ? 'bg-gray-100 text-gray-400' : isModified ? 'bg-yellow-100 border-yellow-400' : 'bg-white'}
                             ${getBuyerInputValue(buyer.id, c.id, cropYear) ? 'border-gray-300 font-medium' : 'border-gray-200 text-gray-400'}
                           `}
                         />
@@ -6226,7 +6657,7 @@ function InventoryPage({ cropYear, onYearChange }) {
     setLoading(false);
   }, [cropYear]);
 
-  useEffect(() => { loadData(); }, [loadData]);
+  useEffect(() => { loadData(); }, [cropYear]);
 
   const loadTransactions = async (locationId, commodityId) => {
     const key = `${locationId}-${commodityId}`;
@@ -7320,7 +7751,10 @@ function App() {
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const currentYear = new Date().getFullYear();
-  const [selectedCropYear, setSelectedCropYear] = useState(currentYear);
+  const [selectedCropYear, setSelectedCropYear] = useState(() => {
+    const saved = localStorage.getItem('graintrack_cropyear');
+    return saved ? parseInt(saved) : currentYear;
+  });
 
   // Check authentication
   useEffect(() => {
@@ -7348,6 +7782,11 @@ function App() {
   }, []);
 
   useEffect(() => { testConnection().then(setIsConnected); }, []);
+
+  // Persist crop year selection to localStorage
+  useEffect(() => {
+    localStorage.setItem('graintrack_cropyear', selectedCropYear.toString());
+  }, [selectedCropYear]);
 
   // Logout handler
   const handleLogout = async () => {
