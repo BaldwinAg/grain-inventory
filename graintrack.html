@@ -4882,6 +4882,9 @@ function ProductionPage({ cropYear, onYearChange }) {
   const [savingRows, setSavingRows] = useState({});
   const [savedRows, setSavedRows] = useState({});
   const [copyingInsurance, setCopyingInsurance] = useState(false);
+  const [filterCommodity, setFilterCommodity] = useState('');
+  const [filterSearch, setFilterSearch] = useState('');
+  const [filterPractice, setFilterPractice] = useState('');
   const { addToast } = useToast();
 
   const currentYear = new Date().getFullYear();
@@ -5089,12 +5092,68 @@ function ProductionPage({ cropYear, onYearChange }) {
   };
 
   const hasModifiedRows = rows.some(r => r.isModified);
-  const fieldsByFarm = fields.reduce((acc, field) => {
+
+  // Filter fields based on criteria
+  const filteredFields = fields.filter(field => {
+    // Get crops for this field
+    const fieldCrops = rows.filter(r => r.field_id === field.id);
+
+    // If no crops, don't show the field
+    if (fieldCrops.length === 0) return false;
+
+    // Filter by commodity
+    if (filterCommodity) {
+      const hasCommodity = fieldCrops.some(c => c.commodity_id === filterCommodity);
+      if (!hasCommodity) return false;
+    }
+
+    // Filter by search text (field name or farm name)
+    if (filterSearch) {
+      const searchLower = filterSearch.toLowerCase();
+      const matchesField = field.name.toLowerCase().includes(searchLower);
+      const matchesFarm = field.farm_name.toLowerCase().includes(searchLower);
+      if (!matchesField && !matchesFarm) return false;
+    }
+
+    // Filter by practice
+    if (filterPractice) {
+      const hasPractice = fieldCrops.some(c => {
+        if (filterPractice === 'IR') return c.is_irrigated;
+        if (filterPractice === 'DL') return !c.is_irrigated && !c.is_double_crop;
+        if (filterPractice === 'DC') return c.is_double_crop;
+        return true;
+      });
+      if (!hasPractice) return false;
+    }
+
+    return true;
+  });
+
+  const fieldsByFarm = filteredFields.reduce((acc, field) => {
     if (!acc[field.farm_name]) acc[field.farm_name] = [];
     acc[field.farm_name].push(field);
     return acc;
   }, {});
-  const getCropsForField = (fieldId) => rows.filter(r => r.field_id === fieldId);
+
+  const getCropsForField = (fieldId) => {
+    let fieldCrops = rows.filter(r => r.field_id === fieldId);
+
+    // Apply filters to crops
+    if (filterCommodity) {
+      fieldCrops = fieldCrops.filter(c => c.commodity_id === filterCommodity);
+    }
+
+    if (filterPractice) {
+      fieldCrops = fieldCrops.filter(c => {
+        if (filterPractice === 'IR') return c.is_irrigated;
+        if (filterPractice === 'DL') return !c.is_irrigated && !c.is_double_crop;
+        if (filterPractice === 'DC') return c.is_double_crop;
+        return true;
+      });
+    }
+
+    return fieldCrops;
+  };
 
   // Check if selected commodity is Corn (hide double crop checkbox)
   const selectedCommodity = commodities.find(c => c.id === newCrop.commodity_id);
@@ -5150,6 +5209,62 @@ function ProductionPage({ cropYear, onYearChange }) {
         </div>
       )}
 
+      {/* Filter Bar */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+        <div className="flex items-center gap-4 flex-wrap">
+          <div className="flex items-center gap-2">
+            <Icon name="filter" size={16} className="text-gray-500" />
+            <span className="text-sm font-medium text-gray-700">Filter:</span>
+          </div>
+
+          <div className="flex-1 min-w-[200px]">
+            <input
+              type="text"
+              placeholder="Search farms or fields..."
+              value={filterSearch}
+              onChange={(e) => setFilterSearch(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-500"
+            />
+          </div>
+
+          <select
+            value={filterCommodity}
+            onChange={(e) => setFilterCommodity(e.target.value)}
+            className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-500"
+          >
+            <option value="">All Commodities</option>
+            {commodities.map(c => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+
+          <select
+            value={filterPractice}
+            onChange={(e) => setFilterPractice(e.target.value)}
+            className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-500"
+          >
+            <option value="">All Practices</option>
+            <option value="IR">Irrigated</option>
+            <option value="DL">Dryland</option>
+            <option value="DC">Double Crop</option>
+          </select>
+
+          {(filterCommodity || filterSearch || filterPractice) && (
+            <button
+              onClick={() => {
+                setFilterCommodity('');
+                setFilterSearch('');
+                setFilterPractice('');
+              }}
+              className="flex items-center gap-1 px-3 py-2 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg"
+            >
+              <Icon name="x" size={14} />
+              Clear
+            </button>
+          )}
+        </div>
+      </div>
+
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-blue-800">
         <p><strong>Instructions:</strong> All grain-active fields are shown below. Click "Add Crop" on any field to add a crop. You can add multiple crops per field.</p>
         <p className="mt-1">Check <strong>Irrigated</strong> for irrigated crops. Check <strong>Double Crop</strong> for double-cropped fields (not available for Corn).</p>
@@ -5158,7 +5273,11 @@ function ProductionPage({ cropYear, onYearChange }) {
 
       {Object.entries(fieldsByFarm).length === 0 ? (
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
-          <p className="text-gray-500">No grain-active fields found. Check field settings in the Settings page.</p>
+          <p className="text-gray-500">
+            {(filterCommodity || filterSearch || filterPractice)
+              ? 'No fields match the current filters. Try adjusting or clearing filters above.'
+              : 'No grain-active fields found. Check field settings in the Settings page.'}
+          </p>
         </div>
       ) : (
         <div className="space-y-4">
