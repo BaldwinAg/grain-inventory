@@ -4,6 +4,65 @@ All notable changes to the Farm Management Suite applications.
 
 ---
 
+## GrainTrack [1.10.0] - 2026-01-27
+
+### UI/UX Improvements
+
+**Year Selector Repositioning**
+- Moved year selector to top right corner on all pages for consistency
+- Year selector now prominently displayed separately from other controls
+- Applies to: Dashboard, Contracts, Add Sale, Production, Insurance, and Inventory pages
+- No longer buried among filters and action buttons
+
+**Improved Terminology**
+- Changed "Weighted Avg" to "Contracted Avg" for clarity
+- Better describes what the metric actually represents (average of contracted bushels only)
+
+### Options Trading Enhancements
+
+**Options Contract Counting Fix**
+- Fixed options summary to count actual contracts (bushels ÷ 5,000) instead of database rows
+- Now correctly shows "3 Long PUTs" when you have 15,000 bushels in one trade entry
+- Automatic plural handling ("PUTs" vs "PUT")
+
+**Real-Time Options P&L Tracking**
+- Integration with Barchart option quotes for mark-to-market valuation
+- Unrealized P&L calculation: (current premium - paid premium) × bushels for long positions
+- Unrealized P&L calculation: (received premium - current premium) × bushels for short positions
+- Dashboard now shows "Options P&L" instead of just premium paid/received
+- Live updates based on current Barchart option prices pulled from `barchart_technicals` table
+
+**Improved Month Matching**
+- Fixed year parsing for Barchart symbols (ZCH6 = March 2026, not 2006)
+- Case-insensitive month matching ("march 26" matches "Mar 2026", "Mar 26", etc.)
+- Handles multiple futures month formats for robust matching
+
+**Blended Price Enhancement**
+- Blended average now includes unrealized option P&L
+- More accurate theoretical price if selling unsold bushels at current market
+- Reflects actual hedging position value
+
+### Data Management
+
+**2025 Inventory Recovery**
+- Added SQL migration script: `migrations/recover_2025_grain_inventory.sql`
+- Restores soft-deleted grain inventory records for 2025 crop year
+- Adds `deleted_at` column to `grain_inventory` table if missing
+
+**Database Schema Updates**
+- Removed references to non-existent quality columns (moisture, test_weight, grade) from grain_inventory
+- Simplified inventory tracking to core columns only
+- Fixed JavaScript functions to match actual database schema
+
+### Technical Details
+
+**Options P&L Flow**
+1. `getOptionQuotes()` pulls Barchart option prices from database
+2. `getContracts()` matches options to quotes and calculates P&L per contract
+3. `getContractsSummary()` aggregates unrealized P&L by commodity
+4. `getDashboardData()` includes unrealized P&L in commodity progress
+5. Dashboard displays current position value instead of original premium
+
 ## Breakeven Calculator [2.2.0] - 2026-01-24
 
 ### GrainTrack Integration - Marketing & Profit/Loss

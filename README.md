@@ -90,12 +90,15 @@ grain-inventory/
 ## Features
 
 ### GrainTrack
-- Contract management (cash sales, basis, HTA, futures)
-- Grain inventory by storage location
-- Production tracking by field
-- Delivery logging with POY PDF import
-- Dashboard with Barchart futures integration (RSI, Stochastics)
-- Transfers and adjustments
+- **Contract management**: Cash sales, basis, HTA, futures, and **options trading**
+- **Options P&L tracking**: Real-time mark-to-market valuation from Barchart
+- **Grain inventory** by storage location with soft-delete recovery
+- **Production tracking** by field with APH yield management
+- **Delivery logging** with POY PDF import via Claude API
+- **Dashboard** with Barchart integration (futures prices, RSI, Stochastics, option quotes)
+- **Year selector** prominently displayed in top right on all pages
+- **Blended pricing** includes contracted, market, and unrealized option P&L
+- Transfers and adjustments with audit trail
 
 ### Spray-Suite
 - Chemical application logging with weather data
@@ -175,10 +178,10 @@ git push
 See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
 
 ### Current Versions
-- **GrainTrack**: v1.9.2
+- **GrainTrack**: v1.10.0
 - **Spray-Suite**: v3.7.3
 - **Fertilizer App**: v1.0.1
-- **Breakeven Calculator**: v2.0.0
+- **Breakeven Calculator**: v2.2.0
 
 ## License
 
