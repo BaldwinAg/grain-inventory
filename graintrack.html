@@ -1565,7 +1565,7 @@ async function getLatestMarketPrices(cropYear = null) {
   // Try to get Barchart technicals (auto-updated from emails)
   const { data: barchartData, error: barchartError } = await db
     .from('barchart_technicals')
-    .select('symbol, name, latest_price, rsi_14d, stoch_14d_pct_d, stoch_9d_pct_k, trend_signal, support_1, resistance_1, expiration_date, data_timestamp')
+    .select('symbol, name, latest_price, rsi_14d, stoch_14d_pct_d, stoch_9d_pct_k, trend_signal, support_1, resistance_1, expiration_date, data_timestamp, updated_at')
     .order('expiration_date', { ascending: true });
 
   // Process Barchart data - find the appropriate contract for each commodity
@@ -1641,7 +1641,7 @@ async function getLatestMarketPrices(cropYear = null) {
           price: priceInDollars,
           source: 'barchart',
           symbol: front.symbol,
-          timestamp: front.data_timestamp,
+          timestamp: front.updated_at,
           rsi: front.rsi_14d,
           stoch_d: front.stoch_14d_pct_d,
           stoch_k: front.stoch_9d_pct_k,
@@ -1686,7 +1686,7 @@ async function getLatestMarketPrices(cropYear = null) {
 async function getOptionQuotes() {
   const { data: barchartData, error } = await db
     .from('barchart_technicals')
-    .select('symbol, name, latest_price, data_timestamp');
+    .select('symbol, name, latest_price, updated_at');
 
   if (error || !barchartData) return [];
 
@@ -1748,7 +1748,7 @@ async function getOptionQuotes() {
       option_type: optionType,
       strike_price: strikePrice,
       current_premium: currentPremium,
-      timestamp: row.data_timestamp
+      timestamp: row.updated_at
     });
   }
 
