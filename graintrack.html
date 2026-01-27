@@ -1551,10 +1551,19 @@ async function getLatestMarketPrices(cropYear = null) {
 
   // Process Barchart data - find the appropriate contract for each commodity
   if (barchartData && !barchartError) {
+    const now = new Date();
+
     // Group by commodity prefix to find contracts (exclude options which have | in symbol)
     const byPrefix = {};
     for (const row of barchartData) {
       if (row.symbol.includes('|')) continue; // Skip options
+
+      // Filter out expired contracts
+      if (row.expiration_date) {
+        const expDate = new Date(row.expiration_date);
+        if (expDate < now) continue; // Skip expired contracts
+      }
+
       const prefix = row.symbol.substring(0, 2);
       if (!byPrefix[prefix]) byPrefix[prefix] = [];
       byPrefix[prefix].push(row);
