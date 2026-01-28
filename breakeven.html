@@ -2954,6 +2954,8 @@ function SeedProductsPage({ cropYear, onYearChange }) {
   const [filterCommodity, setFilterCommodity] = useState('');
   const [filterBrand, setFilterBrand] = useState('');
   const { addToast } = useToast();
+  const currentYear = new Date().getFullYear();
+  const cropYears = [currentYear - 1, currentYear, currentYear + 1];
 
   const loadData = async () => {
     setLoading(true);
