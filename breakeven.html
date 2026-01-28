@@ -367,10 +367,21 @@ async function getHerbicideCosts(cropYear) {
   const startDate = `${cropYear - 1}-09-01`;
   const endDate = `${cropYear}-08-31`;
 
-  // Get applications with their products - split is on application_products as 'Y'/'N'
+  // Get applications with their products
+  // Try to get split flag from both application_products.split AND products.split
   const { data: apps, error } = await db
     .from('applications')
-    .select('id, field_id, total_cost, application_products(product_id, total_cost, split)')
+    .select(`
+      id,
+      field_id,
+      total_cost,
+      application_products(
+        product_id,
+        total_cost,
+        split,
+        products(split)
+      )
+    `)
     .gte('date', startDate)
     .lte('date', endDate);
 
@@ -388,9 +399,17 @@ async function getHerbicideCosts(cropYear) {
     const products = app.application_products || [];
     if (products.length > 0) {
       // Sum by 'split' flag ('Y' = shared with landlord, 'N' = 100% tenant)
+      // Check application_products.split first, then fall back to products.split
       products.forEach(p => {
         const cost = p.total_cost || 0;
-        const isSplit = p.split === 'Y';
+        // Check for split flag: prioritize application_products.split, then products.split
+        let isSplit = false;
+        if (p.split !== undefined && p.split !== null) {
+          isSplit = p.split === 'Y' || p.split === true;
+        } else if (p.products && p.products.split !== undefined && p.products.split !== null) {
+          isSplit = p.products.split === 'Y' || p.products.split === true;
+        }
+
         byField[app.field_id].total += cost;
         if (isSplit) {
           byField[app.field_id].splitCost += cost;
@@ -1262,7 +1281,17 @@ async function pullSpraySuiteActuals(fieldId, cropYear) {
   const endDate = `${cropYear}-08-31`;
 
   const { data, error } = await db.from('applications')
-    .select('id, date, total_cost, application_products(product_id, total_cost, split)')
+    .select(`
+      id,
+      date,
+      total_cost,
+      application_products(
+        product_id,
+        total_cost,
+        split,
+        products(split)
+      )
+    `)
     .eq('field_id', fieldId)
     .gte('date', startDate)
     .lte('date', endDate);
@@ -1365,7 +1394,7 @@ async function getActualChemicalCosts(cropYear) {
       id, field_id, date, total_acres, total_cost,
       application_products(
         product_id, rate, unit, unit_cost, total_cost, split,
-        products(commercial_name)
+        products(commercial_name, split)
       )
     `)
     .gte('date', startDate)
@@ -1396,7 +1425,14 @@ async function getActualChemicalCosts(cropYear) {
 
     products.forEach(p => {
       const cost = p.total_cost || 0;
-      const isSplit = p.split === 'Y';
+      // Check for split flag: prioritize application_products.split, then products.split
+      let isSplit = false;
+      if (p.split !== undefined && p.split !== null) {
+        isSplit = p.split === 'Y' || p.split === true;
+      } else if (p.products && p.products.split !== undefined && p.products.split !== null) {
+        isSplit = p.products.split === 'Y' || p.products.split === true;
+      }
+
       appTotal += cost;
       if (isSplit) {
         appSplit += cost;
