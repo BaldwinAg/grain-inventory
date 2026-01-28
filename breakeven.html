@@ -1130,7 +1130,6 @@ async function getMiscIncome(cropYear) {
     .select(`
       *,
       be_misc_income_categories(name),
-      commodities(name),
       be_misc_income_allocations(commodity_id, field_id, practice_type, commodities(name), fields(name))
     `)
     .eq('crop_year', cropYear)
@@ -1143,7 +1142,6 @@ async function getMiscIncome(cropYear) {
   return (data || []).map(i => ({
     ...i,
     category_name: i.be_misc_income_categories?.name,
-    commodity_name: i.commodities?.name,
     allocations: i.be_misc_income_allocations || []
   }));
 }
