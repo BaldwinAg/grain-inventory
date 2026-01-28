@@ -1128,31 +1128,51 @@ function allocateMiscIncome(incomeEntries, fieldCropYears) {
     const amount = income.amount || 0;
 
     if (income.allocation_type === 'ALL_ACRES') {
-      // Spread evenly across all acres
-      const totalAcres = fieldCropYears.reduce((sum, f) => sum + (f.planted_acres || 0), 0);
-      if (totalAcres > 0) {
+      // Spread evenly across effective acres (Adams acres + BFP acres × adams_grain_share)
+      const totalEffectiveAcres = fieldCropYears.reduce((sum, f) => {
+        const acres = f.planted_acres || 0;
+        const adamsGrainShare = f.effective_share && f.tenant_share ? f.effective_share / f.tenant_share : 1;
+        return sum + (acres * adamsGrainShare);
+      }, 0);
+
+      if (totalEffectiveAcres > 0) {
         if (income.income_type === 'TOTAL') {
           fieldCropYears.forEach(fcy => {
-            allocations[fcy.id] += (amount * (fcy.planted_acres || 0)) / totalAcres;
+            const acres = fcy.planted_acres || 0;
+            const adamsGrainShare = fcy.effective_share && fcy.tenant_share ? fcy.effective_share / fcy.tenant_share : 1;
+            const effectiveAcres = acres * adamsGrainShare;
+            allocations[fcy.id] += (amount * effectiveAcres) / totalEffectiveAcres;
           });
         } else if (income.income_type === 'PER_ACRE') {
           fieldCropYears.forEach(fcy => {
-            allocations[fcy.id] += amount * (fcy.planted_acres || 0);
+            const acres = fcy.planted_acres || 0;
+            const adamsGrainShare = fcy.effective_share && fcy.tenant_share ? fcy.effective_share / fcy.tenant_share : 1;
+            allocations[fcy.id] += amount * acres * adamsGrainShare;
           });
         }
       }
     } else if (income.allocation_type === 'SPECIFIC_CROPS' && income.commodity_id) {
-      // Only to specific commodity
+      // Only to specific commodity - use effective acres
       const eligibleFields = fieldCropYears.filter(fcy => fcy.commodity_id === income.commodity_id);
-      const totalAcres = eligibleFields.reduce((sum, f) => sum + (f.planted_acres || 0), 0);
-      if (totalAcres > 0) {
+      const totalEffectiveAcres = eligibleFields.reduce((sum, f) => {
+        const acres = f.planted_acres || 0;
+        const adamsGrainShare = f.effective_share && f.tenant_share ? f.effective_share / f.tenant_share : 1;
+        return sum + (acres * adamsGrainShare);
+      }, 0);
+
+      if (totalEffectiveAcres > 0) {
         if (income.income_type === 'TOTAL') {
           eligibleFields.forEach(fcy => {
-            allocations[fcy.id] += (amount * (fcy.planted_acres || 0)) / totalAcres;
+            const acres = fcy.planted_acres || 0;
+            const adamsGrainShare = fcy.effective_share && fcy.tenant_share ? fcy.effective_share / fcy.tenant_share : 1;
+            const effectiveAcres = acres * adamsGrainShare;
+            allocations[fcy.id] += (amount * effectiveAcres) / totalEffectiveAcres;
           });
         } else if (income.income_type === 'PER_ACRE') {
           eligibleFields.forEach(fcy => {
-            allocations[fcy.id] += amount * (fcy.planted_acres || 0);
+            const acres = fcy.planted_acres || 0;
+            const adamsGrainShare = fcy.effective_share && fcy.tenant_share ? fcy.effective_share / fcy.tenant_share : 1;
+            allocations[fcy.id] += amount * acres * adamsGrainShare;
           });
         }
       }
@@ -1165,10 +1185,12 @@ function allocateMiscIncome(incomeEntries, fieldCropYears) {
           (a.commodity_id && f.commodity_id === a.commodity_id)
         );
         if (fcy) {
+          const acres = fcy.planted_acres || 0;
+          const adamsGrainShare = fcy.effective_share && fcy.tenant_share ? fcy.effective_share / fcy.tenant_share : 1;
           if (income.income_type === 'TOTAL') {
-            allocations[fcy.id] += amount / allocs.length;
+            allocations[fcy.id] += (amount / allocs.length) * adamsGrainShare;
           } else if (income.income_type === 'PER_ACRE') {
-            allocations[fcy.id] += amount * (fcy.planted_acres || 0);
+            allocations[fcy.id] += amount * acres * adamsGrainShare;
           }
         }
       });
@@ -1556,10 +1578,19 @@ function allocateOverhead(expenses, fieldCropYears) {
 
   expenses.forEach(expense => {
     if (expense.allocation_type === 'ALL_ACRES') {
-      const totalAcres = fieldCropYears.reduce((sum, f) => sum + (f.planted_acres || 0), 0);
-      if (totalAcres > 0) {
+      // Calculate effective acres: Adams acres + (BFP acres × adams_grain_share)
+      const totalEffectiveAcres = fieldCropYears.reduce((sum, f) => {
+        const acres = f.planted_acres || 0;
+        const adamsGrainShare = f.effective_share && f.tenant_share ? f.effective_share / f.tenant_share : 1;
+        return sum + (acres * adamsGrainShare);
+      }, 0);
+
+      if (totalEffectiveAcres > 0) {
         fieldCropYears.forEach(fcy => {
-          allocations[fcy.id] += (expense.amount * (fcy.planted_acres || 0)) / totalAcres;
+          const acres = fcy.planted_acres || 0;
+          const adamsGrainShare = fcy.effective_share && fcy.tenant_share ? fcy.effective_share / fcy.tenant_share : 1;
+          const effectiveAcres = acres * adamsGrainShare;
+          allocations[fcy.id] += (expense.amount * effectiveAcres) / totalEffectiveAcres;
         });
       }
     } else {
@@ -1570,10 +1601,20 @@ function allocateOverhead(expenses, fieldCropYears) {
            (a.practice_type === 'IR' && fcy.is_irrigated) ||
            (a.practice_type === 'DL' && !fcy.is_irrigated)))
       );
-      const totalAcres = eligibleFields.reduce((sum, f) => sum + (f.planted_acres || 0), 0);
-      if (totalAcres > 0) {
+
+      // Calculate effective acres for eligible fields only
+      const totalEffectiveAcres = eligibleFields.reduce((sum, f) => {
+        const acres = f.planted_acres || 0;
+        const adamsGrainShare = f.effective_share && f.tenant_share ? f.effective_share / f.tenant_share : 1;
+        return sum + (acres * adamsGrainShare);
+      }, 0);
+
+      if (totalEffectiveAcres > 0) {
         eligibleFields.forEach(fcy => {
-          allocations[fcy.id] += (expense.amount * (fcy.planted_acres || 0)) / totalAcres;
+          const acres = fcy.planted_acres || 0;
+          const adamsGrainShare = fcy.effective_share && fcy.tenant_share ? fcy.effective_share / fcy.tenant_share : 1;
+          const effectiveAcres = acres * adamsGrainShare;
+          allocations[fcy.id] += (expense.amount * effectiveAcres) / totalEffectiveAcres;
         });
       }
     }
@@ -1710,8 +1751,9 @@ function DashboardPage({ cropYear, onYearChange }) {
       const effectiveShare = fcy.effective_share || tenantShareBase;
       const adamsGrainShare = tenantShareBase > 0 ? effectiveShare / tenantShareBase : 1;
 
-      // Actual costs (apply BFP partnership split)
-      const overhead = (overheadAlloc[fcy.id] || 0) * adamsGrainShare;
+      // Actual costs
+      // Overhead already allocated by effective acres, no additional multiplication needed
+      const overhead = overheadAlloc[fcy.id] || 0;
       const seed = (seedMap[fcy.id] || 0) * adamsGrainShare;
       const rentPerAcre = rentMap[fcy.field_id] || 0;
       const rent = (rentPerAcre * (fcy.planted_acres || 0)) * adamsGrainShare;
@@ -1719,7 +1761,8 @@ function DashboardPage({ cropYear, onYearChange }) {
       const herbData = herbCosts[fcy.field_id] || { total: 0 };
       const herb = (typeof herbData === 'object' ? herbData.total : herbData) * adamsGrainShare;
       const fieldTotal = overhead + seed + rent + fert + herb;
-      const income = (incomeAlloc[fcy.id] || 0) * adamsGrainShare;
+      // Income already allocated by effective acres, no additional multiplication needed
+      const income = incomeAlloc[fcy.id] || 0;
 
       // Check for yield override
       const yieldPerAcre = yieldOverrides[fcy.commodity_id] !== undefined
@@ -4854,7 +4897,8 @@ function ReportsPage({ cropYear, onYearChange }) {
         const effectiveShare = fcy.effective_share || tenantShareBase;
         const adamsGrainShare = tenantShareBase > 0 ? effectiveShare / tenantShareBase : 1;
 
-        const overhead = (overheadAlloc[fcy.id] || 0) * adamsGrainShare;
+        // Overhead already allocated by effective acres, no additional multiplication needed
+        const overhead = overheadAlloc[fcy.id] || 0;
         const seed = (seedMap[fcy.id] || 0) * adamsGrainShare;
         const rentPerAcre = rentMap[fcy.field_id] || 0;
         const rent = (rentPerAcre * (fcy.planted_acres || 0)) * adamsGrainShare;
@@ -4877,7 +4921,8 @@ function ReportsPage({ cropYear, onYearChange }) {
 
         const totalCost = overhead + seed + rent + fert + herb;
         const plannedTotal = overhead + seed + rent + fert + herbPlanned;
-        const incomeOffset = (incomeAlloc[fcy.id] || 0) * adamsGrainShare;
+        // Income already allocated by effective acres, no additional multiplication needed
+        const incomeOffset = incomeAlloc[fcy.id] || 0;
         const bushelsAll = fcy.actual_production || ((fcy.planted_acres || 0) * (fcy.expected_yield || 0));
         const bushels = bushelsAll * effectiveShare;
 
@@ -7183,18 +7228,22 @@ function BreakevenPage({ cropYear, onYearChange }) {
       });
 
       const results = fcys.map(fcy => {
-        const overhead = overheadAlloc[fcy.id] || 0;
-        const seed = seedMap[fcy.id] || 0;
-        const rentInfo = rentMap[fcy.field_id] || { rentPerAcre: 0, rentType: 'OWNED' };
-        const rent = rentInfo.rentPerAcre * (fcy.planted_acres || 0);
-        const rentType = rentInfo.rentType;
-
         // Tenant share comes from fields table (e.g., 0.5 = 50% tenant, 50% landlord)
         // For BFP fields, effective_share includes adams_grain_share (partnership split)
         const tenantShareBase = fcy.tenant_share || 1;
         const effectiveShare = fcy.effective_share || tenantShareBase;
         const tenantShare = tenantShareBase;
         const landlordShare = 1 - tenantShare;
+
+        // Calculate adams_grain_share (BFP partnership split)
+        const adamsGrainShare = tenantShareBase > 0 ? effectiveShare / tenantShareBase : 1;
+
+        // Overhead already allocated by effective acres, no additional multiplication needed
+        const overhead = overheadAlloc[fcy.id] || 0;
+        const seed = (seedMap[fcy.id] || 0) * adamsGrainShare;
+        const rentInfo = rentMap[fcy.field_id] || { rentPerAcre: 0, rentType: 'OWNED' };
+        const rent = (rentInfo.rentPerAcre * (fcy.planted_acres || 0)) * adamsGrainShare;
+        const rentType = rentInfo.rentType;
 
         // Has landlord = tenant_share < 1 (regardless of rent_type record)
         const hasLandlordSplit = landlordShare > 0;
@@ -7237,12 +7286,15 @@ function BreakevenPage({ cropYear, onYearChange }) {
           herbLandlord = 0;
         }
 
-        // Overhead, seed, rent: 100% tenant responsibility (never split)
         // Apply BFP partnership split (adams_grain_share) to tenant costs
-        const adamsGrainShare = tenantShareBase > 0 ? effectiveShare / tenantShareBase : 1;
-        const totalAll = overhead + seed + rent + fertTotal + herbTotal;
-        const totalTenantBeforeBFP = overhead + seed + rent + fertTenant + herbTenant;
-        const totalTenant = totalTenantBeforeBFP * adamsGrainShare;
+        // Overhead already allocated correctly by effective acres, don't multiply again
+        // Seed and rent already multiplied above
+        // Apply to fertilizer and herbicide
+        fertTenant = fertTenant * adamsGrainShare;
+        herbTenant = herbTenant * adamsGrainShare;
+
+        const totalAll = overhead + (seed / adamsGrainShare) + (rent / adamsGrainShare) + fertTotal + herbTotal;
+        const totalTenant = overhead + seed + rent + fertTenant + herbTenant;
         const totalLandlord = fertLandlord + herbLandlord;
 
         // Bushels: Apply effective share (includes BFP partnership split)
