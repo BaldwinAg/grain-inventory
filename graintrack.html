@@ -2131,7 +2131,7 @@ async function removeFromInventory(locationId, commodityId, cropYear, bushels) {
 
 async function getInventoryTransactions(locationId, commodityId, cropYear) {
   let query = db
-    .from('inventory_transactions')
+    .from('grain_inventory_transactions')
     .select(`
       *,
       grain_locations:location_id (name),
@@ -2156,7 +2156,7 @@ async function getInventoryTransactions(locationId, commodityId, cropYear) {
 
 async function createInventoryTransaction(transaction) {
   const { data, error } = await db
-    .from('inventory_transactions')
+    .from('grain_inventory_transactions')
     .insert([{
       location_id: transaction.location_id,
       commodity_id: transaction.commodity_id,
