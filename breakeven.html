@@ -516,9 +516,9 @@ async function getFields() {
 // Get contracted bushels and blended average prices from GrainTrack
 async function getContractedPositions(cropYear) {
   // Query contracts from GrainTrack (CASH, FORWARD, SPOT, HTA types)
-  // Contracts table has: effective_price (calculated field), futures_price, basis
+  // effective_price is calculated from: cash_price, futures_price, expected_basis, basis
   const { data: contracts, error } = await db.from('contracts')
-    .select('commodity_id, contract_type, bushels, effective_price')
+    .select('commodity_id, contract_type, bushels, cash_price, futures_price, expected_basis, basis')
     .eq('crop_year', cropYear)
     .in('contract_type', ['CASH', 'FORWARD', 'SPOT', 'HTA'])
     .is('deleted_at', null);
@@ -540,8 +540,13 @@ async function getContractedPositions(cropYear) {
     }
 
     const bushels = c.bushels || 0;
-    const price = c.effective_price || 0;
-    const revenue = bushels * price;
+    // Calculate effective price based on contract type (same logic as GrainTrack)
+    let effectivePrice = 0;
+    if (c.contract_type === 'CASH') effectivePrice = c.cash_price || 0;
+    else if (c.contract_type === 'FUTURES' || c.contract_type === 'HTA' || c.contract_type === 'FORWARD')
+      effectivePrice = (c.futures_price || 0) + (c.expected_basis || 0);
+
+    const revenue = bushels * effectivePrice;
 
     positions[c.commodity_id].contracted_bushels += bushels;
     positions[c.commodity_id].total_revenue += revenue;
@@ -1759,6 +1764,7 @@ function DashboardPage({ cropYear, onYearChange, onNavigate }) {
   const [loading, setLoading] = useState(true);
   const [includeFamilyLiving, setIncludeFamilyLiving] = useState(true);
   const [costView, setCostView] = useState('actual'); // 'planned', 'actual', 'variance'
+  const [budgetAlertDismissed, setBudgetAlertDismissed] = useState(false);
   const [rawData, setRawData] = useState(null); // Store raw data for recalculation
   const [showTargetPriceModal, setShowTargetPriceModal] = useState(false);
   const [editingTargetPrice, setEditingTargetPrice] = useState(null);
@@ -2064,7 +2070,7 @@ function DashboardPage({ cropYear, onYearChange, onNavigate }) {
       </div>
 
       {/* Variance Alert Banner */}
-      {data.hasOverages && (
+      {data.hasOverages && !budgetAlertDismissed && (
         <div className="bg-red-50 border-l-4 border-red-500 rounded-lg p-4 flex items-start gap-3">
           <Icon name="alert-triangle" size={20} className="text-red-500 mt-0.5" />
           <div className="flex-1">
@@ -2073,8 +2079,11 @@ function DashboardPage({ cropYear, onYearChange, onNavigate }) {
               One or more commodities are over budget by more than 10%. Review the Analysis page for detailed variance breakdown.
             </p>
           </div>
-          <button onClick={() => onNavigate?.('analysis')} className="text-red-600 hover:text-red-800 font-medium text-sm whitespace-nowrap">
+          <button onClick={() => onNavigate?.('analysis')} className="text-red-600 hover:text-red-800 font-medium text-sm whitespace-nowrap mr-3">
             View Details →
+          </button>
+          <button onClick={() => setBudgetAlertDismissed(true)} className="text-red-400 hover:text-red-600" title="Dismiss alert">
+            <Icon name="x" size={20} />
           </button>
         </div>
       )}
