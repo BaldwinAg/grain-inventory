@@ -7925,7 +7925,7 @@ function BreakevenPage({ cropYear, onYearChange }) {
     }
 
     return result;
-  }, [data, filters]);
+  }, [data, filters.farm, filters.commodity, filters.practiceType, filters.landlord, JSON.stringify(filters.fields)]);
 
   const hasAnyLandlord = data.some(d => d.hasLandlord);
 
