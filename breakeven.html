@@ -424,14 +424,15 @@ async function getHerbicideCosts(cropYear) {
 // Returns { fieldId: { total, splitCost, nonSplitCost } }
 async function getPlannedHerbicideCosts(cropYear) {
   // Get field crop plans with herbicide passes
+  // Note: be_field_crop_plans doesn't have crop_year, so we filter by field_crop_years.crop_year
   const { data: fieldPlans, error } = await db
     .from('be_field_crop_plans')
     .select(`
       *,
-      field_crop_years(id, field_id, planted_acres, fields(tenant_share, farms(adams_grain_share))),
+      field_crop_years!inner(id, field_id, crop_year, planted_acres, fields(tenant_share, farms(adams_grain_share))),
       be_field_herbicide_passes(*, be_herbicide_plans(name, estimated_cost_per_acre))
     `)
-    .eq('crop_year', cropYear)
+    .eq('field_crop_years.crop_year', cropYear)
     .is('deleted_at', null);
 
   if (error) {
@@ -7871,13 +7872,23 @@ function BreakevenPage({ cropYear, onYearChange }) {
 
   if (loading) return <div className="flex items-center justify-center h-64"><Icon name="loader" className="animate-spin text-blue-600" size={32} /></div>;
 
-  // Build filter options
-  const uniqueFarms = [...new Map(data.map(d => [d.farm_id, { id: d.farm_id, name: d.farm_name }])).values()];
-  const uniqueCommodities = [...new Map(data.map(d => [d.commodity_id, { id: d.commodity_id, name: d.commodity_name }])).values()];
+  // Build filter options - memoize to prevent re-renders
+  const uniqueFarms = useMemo(() =>
+    [...new Map(data.map(d => [d.farm_id, { id: d.farm_id, name: d.farm_name }])).values()],
+    [data]
+  );
 
-  const filteredLandlords = filters.farm
-    ? [...new Map(data.filter(d => d.farm_id === filters.farm && d.landlord).map(d => [d.landlord, { id: d.landlord, name: d.landlord_name || d.landlord }])).values()]
-    : [];
+  const uniqueCommodities = useMemo(() =>
+    [...new Map(data.map(d => [d.commodity_id, { id: d.commodity_id, name: d.commodity_name }])).values()],
+    [data]
+  );
+
+  const filteredLandlords = useMemo(() =>
+    filters.farm
+      ? [...new Map(data.filter(d => d.farm_id === filters.farm && d.landlord).map(d => [d.landlord, { id: d.landlord, name: d.landlord_name || d.landlord }])).values()]
+      : [],
+    [data, filters.farm]
+  );
 
   // Apply filters to data
   const filteredData = useMemo(() => {
