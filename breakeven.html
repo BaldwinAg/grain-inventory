@@ -368,7 +368,7 @@ async function getHerbicideCosts(cropYear) {
   const endDate = `${cropYear}-08-31`;
 
   // Get applications with their products
-  // Try to get split flag from both application_products.split AND products.split
+  // Split flag is on application_products table
   const { data: apps, error } = await db
     .from('applications')
     .select(`
@@ -378,8 +378,7 @@ async function getHerbicideCosts(cropYear) {
       application_products(
         product_id,
         total_cost,
-        split,
-        products(split)
+        split
       )
     `)
     .gte('date', startDate)
@@ -399,16 +398,10 @@ async function getHerbicideCosts(cropYear) {
     const products = app.application_products || [];
     if (products.length > 0) {
       // Sum by 'split' flag ('Y' = shared with landlord, 'N' = 100% tenant)
-      // Check application_products.split first, then fall back to products.split
+      // Split flag is on application_products table
       products.forEach(p => {
         const cost = p.total_cost || 0;
-        // Check for split flag: prioritize application_products.split, then products.split
-        let isSplit = false;
-        if (p.split !== undefined && p.split !== null) {
-          isSplit = p.split === 'Y' || p.split === true;
-        } else if (p.products && p.products.split !== undefined && p.products.split !== null) {
-          isSplit = p.products.split === 'Y' || p.products.split === true;
-        }
+        const isSplit = p.split === 'Y' || p.split === true;
 
         byField[app.field_id].total += cost;
         if (isSplit) {
@@ -435,7 +428,7 @@ async function getPlannedHerbicideCosts(cropYear) {
     .from('be_field_crop_plans')
     .select(`
       *,
-      field_crop_years(id, field_id, tenant_share, planted_acres, fields(farms(adams_grain_share))),
+      field_crop_years(id, field_id, planted_acres, fields(tenant_share, farms(adams_grain_share))),
       be_field_herbicide_passes(*, be_herbicide_plans(name, estimated_cost_per_acre))
     `)
     .eq('crop_year', cropYear)
@@ -461,19 +454,20 @@ async function getPlannedHerbicideCosts(cropYear) {
     // Check for override first ($/acre)
     if (plan.herbicide_cost_override && plan.herbicide_cost_override > 0) {
       const totalCost = plan.herbicide_cost_override * acres;
-      // Assume override is split cost (in-crop herbicides are typically split)
+      // NOTE: Planned costs don't track split vs non-split yet
+      // Defaulting to non-split (100% tenant) - actual costs from Spray-Suite have split marked
       byField[fieldId].total += totalCost;
-      byField[fieldId].splitCost += totalCost;
+      byField[fieldId].nonSplitCost += totalCost;
     } else if (plan.be_field_herbicide_passes && plan.be_field_herbicide_passes.length > 0) {
       // Calculate from herbicide passes
       plan.be_field_herbicide_passes.forEach(pass => {
         const herbPlan = pass.be_herbicide_plans;
         if (herbPlan && herbPlan.estimated_cost_per_acre) {
           const cost = herbPlan.estimated_cost_per_acre * acres;
-          // Assume planned herbicide passes are split (in-crop applications)
-          // Burndowns would typically not be in the crop plan
+          // NOTE: Planned costs don't track split vs non-split yet
+          // Defaulting to non-split (100% tenant) - actual costs from Spray-Suite have split marked
           byField[fieldId].total += cost;
-          byField[fieldId].splitCost += cost;
+          byField[fieldId].nonSplitCost += cost;
         }
       });
     }
