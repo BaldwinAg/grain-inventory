@@ -516,9 +516,9 @@ async function getFields() {
 // Get contracted bushels and blended average prices from GrainTrack
 async function getContractedPositions(cropYear) {
   // Query contracts from GrainTrack (CASH, FORWARD, SPOT, HTA types)
-  // Contracts table has: futures_price, basis, and price_per_bushel (calculated)
+  // Contracts table has: effective_price (calculated field), futures_price, basis
   const { data: contracts, error } = await db.from('contracts')
-    .select('commodity_id, contract_type, bushels, futures_price, basis, price_per_bushel')
+    .select('commodity_id, contract_type, bushels, effective_price')
     .eq('crop_year', cropYear)
     .in('contract_type', ['CASH', 'FORWARD', 'SPOT', 'HTA'])
     .is('deleted_at', null);
@@ -540,8 +540,7 @@ async function getContractedPositions(cropYear) {
     }
 
     const bushels = c.bushels || 0;
-    // Price can be: price_per_bushel, or futures_price + basis
-    const price = c.price_per_bushel || ((c.futures_price || 0) + (c.basis || 0));
+    const price = c.effective_price || 0;
     const revenue = bushels * price;
 
     positions[c.commodity_id].contracted_bushels += bushels;
