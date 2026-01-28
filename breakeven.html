@@ -427,6 +427,72 @@ async function getHerbicideCosts(cropYear) {
   return byField;
 }
 
+// Get Planned Herbicide Costs from Crop Plans
+// Returns { fieldId: { total, splitCost, nonSplitCost } }
+async function getPlannedHerbicideCosts(cropYear) {
+  // Get field crop plan assignments with crop plans
+  const { data: assignments, error } = await db
+    .from('be_field_crop_plans')
+    .select(`
+      *,
+      field_crop_years(id, field_id, tenant_share, planted_acres, fields(farms(adams_grain_share))),
+      be_crop_plans(
+        id,
+        herbicide_cost_override,
+        be_crop_plan_chemicals(*, be_crop_plan_chemical_products(product_name, rate_per_acre, price_per_unit, split))
+      )
+    `)
+    .eq('crop_year', cropYear);
+
+  if (error) {
+    console.error('Error fetching planned herbicide costs:', error);
+    return {};
+  }
+
+  const byField = {};
+  (assignments || []).forEach(assignment => {
+    const fcy = assignment.field_crop_years;
+    if (!fcy) return;
+
+    const plan = assignment.be_crop_plans;
+    if (!plan) return;
+
+    const fieldId = fcy.field_id;
+    if (!byField[fieldId]) {
+      byField[fieldId] = { total: 0, splitCost: 0, nonSplitCost: 0 };
+    }
+
+    const acres = fcy.planted_acres || 0;
+
+    // Calculate cost from crop plan
+    if (plan.herbicide_cost_override) {
+      // Use override if set ($/acre)
+      const totalCost = plan.herbicide_cost_override * acres;
+      // Assume override is split cost (can refine this later)
+      byField[fieldId].total += totalCost;
+      byField[fieldId].splitCost += totalCost;
+    } else if (plan.be_crop_plan_chemicals) {
+      // Calculate from chemical passes and products
+      plan.be_crop_plan_chemicals.forEach(chemPass => {
+        (chemPass.be_crop_plan_chemical_products || []).forEach(product => {
+          const costPerAcre = (product.rate_per_acre || 0) * (product.price_per_unit || 0);
+          const cost = costPerAcre * acres;
+          const isSplit = product.split === 'Y' || product.split === true;
+
+          byField[fieldId].total += cost;
+          if (isSplit) {
+            byField[fieldId].splitCost += cost;
+          } else {
+            byField[fieldId].nonSplitCost += cost;
+          }
+        });
+      });
+    }
+  });
+
+  return byField;
+}
+
 // Get Fertilizer Costs from Fertilizer App with split info
 // Fertilizer is ALWAYS split with landlord
 async function getFertilizerCostsDetailed(cropYear) {
@@ -1713,6 +1779,11 @@ function DashboardPage({ cropYear, onYearChange }) {
   const [showTargetPriceModal, setShowTargetPriceModal] = useState(false);
   const [editingTargetPrice, setEditingTargetPrice] = useState(null);
   const [yieldOverrides, setYieldOverrides] = useState({}); // { commodity_id: new_yield_per_acre }
+  const [drillDownModal, setDrillDownModal] = useState({
+    isOpen: false,
+    commodityId: null,
+    commodityName: null
+  });
   const currentYear = new Date().getFullYear();
   const cropYears = [currentYear - 1, currentYear, currentYear + 1];
   const { addToast } = useToast();
@@ -1934,6 +2005,10 @@ function DashboardPage({ cropYear, onYearChange }) {
     rent: { bg: 'bg-green-500', label: 'Rent' },
     fertilizer: { bg: 'bg-blue-500', label: 'Fertilizer' },
     herbicide: { bg: 'bg-purple-500', label: 'Herbicide' }
+  };
+
+  const handleCommodityClick = (commodityId, commodityName) => {
+    setDrillDownModal({ isOpen: true, commodityId, commodityName });
   };
 
   if (loading) return <div className="flex items-center justify-center h-64"><Icon name="loader" className="animate-spin text-blue-600" size={32} /></div>;
@@ -2178,7 +2253,11 @@ function DashboardPage({ cropYear, onYearChange }) {
                 : 'bg-gray-100 text-gray-600 border-gray-300';
 
           return (
-            <div key={c.name} className="bg-white rounded-xl shadow-sm border overflow-hidden">
+            <div
+              key={c.name}
+              className="bg-white rounded-xl shadow-sm border overflow-hidden cursor-pointer hover:shadow-lg transition-shadow"
+              onClick={() => handleCommodityClick(c.commodity_id, c.name)}
+            >
               <div className={`${colors.bg} px-6 py-4 relative`}>
                 <h3 className="text-xl font-bold text-white">{c.name}</h3>
                 <div className="text-white/80 text-sm flex items-center gap-2">
@@ -2415,7 +2494,407 @@ function DashboardPage({ cropYear, onYearChange }) {
           }}
         />
       )}
+
+      {/* Commodity Drill-Down Modal */}
+      {drillDownModal.isOpen && (
+        <CommodityDrillDownModal
+          isOpen={drillDownModal.isOpen}
+          onClose={() => setDrillDownModal({ isOpen: false, commodityId: null, commodityName: null })}
+          commodityId={drillDownModal.commodityId}
+          commodityName={drillDownModal.commodityName}
+          rawData={rawData}
+          costView={costView}
+        />
+      )}
     </div>
+  );
+}
+
+// ============================================================================
+// COMMODITY DRILL-DOWN MODAL
+// ============================================================================
+
+// Aggregate data for drill-down modal
+function aggregateDrillDownData(rawData, commodityId, subFilters, costView) {
+  const { fcys, expenses, categories, seeds, rents, fertCosts, herbCosts, commodities } = rawData;
+
+  // Filter field_crop_years by commodity
+  let filteredFcys = fcys.filter(fcy => fcy.commodity_id === commodityId);
+
+  // Apply sub-filters
+  if (subFilters.irrigation === 'IR') {
+    filteredFcys = filteredFcys.filter(fcy => fcy.is_irrigated);
+  } else if (subFilters.irrigation === 'DL') {
+    filteredFcys = filteredFcys.filter(fcy => !fcy.is_irrigated);
+  }
+
+  if (subFilters.practice !== 'all') {
+    filteredFcys = filteredFcys.filter(fcy => fcy.practice_type === subFilters.practice);
+  }
+
+  // Allocate overhead
+  const overheadAlloc = allocateOverhead(expenses, filteredFcys);
+
+  // Group overhead by category
+  const overheadByCategory = {};
+  expenses.forEach(expense => {
+    const categoryId = expense.category_id;
+    const category = categories.find(c => c.id === categoryId);
+
+    if (!overheadByCategory[categoryId]) {
+      overheadByCategory[categoryId] = {
+        id: categoryId,
+        name: category?.name || 'Unknown',
+        sort_order: category?.sort_order || 999,
+        total: 0,
+        lineItems: []
+      };
+    }
+
+    // Sum allocations for this expense across filtered fields
+    const expenseTotal = filteredFcys.reduce((sum, fcy) => {
+      return sum + (overheadAlloc[fcy.id] || 0);
+    }, 0);
+
+    overheadByCategory[categoryId].total += expenseTotal;
+    overheadByCategory[categoryId].lineItems.push({
+      id: expense.id,
+      name: expense.name,
+      amount: expenseTotal,
+      allocation_type: expense.allocation_type
+    });
+  });
+
+  // Aggregate seed costs
+  const seedTotals = { total: 0, breakdown: [] };
+  filteredFcys.forEach(fcy => {
+    const seed = seeds.find(s => s.field_crop_year_id === fcy.id);
+    if (seed) {
+      const adamsGrainShare = fcy.effective_share && fcy.tenant_share ? fcy.effective_share / fcy.tenant_share : 1;
+      const cost = (seed.total_cost || 0) * adamsGrainShare;
+
+      seedTotals.total += cost;
+      seedTotals.breakdown.push({
+        field_name: fcy.field_name,
+        brand: seed.brand,
+        hybrid: seed.hybrid,
+        cost
+      });
+    }
+  });
+
+  // Aggregate fertilizer costs
+  const fertTotals = { total: 0 };
+  filteredFcys.forEach(fcy => {
+    const fertData = fertCosts[fcy.field_id] || { total: 0 };
+    const adamsGrainShare = fcy.effective_share && fcy.tenant_share ? fcy.effective_share / fcy.tenant_share : 1;
+    fertTotals.total += fertData.total * adamsGrainShare;
+  });
+
+  // Aggregate herbicide/custom hire costs
+  const customHireTotals = { total: 0, applications: [] };
+  filteredFcys.forEach(fcy => {
+    const herbData = herbCosts[fcy.field_id] || { total: 0 };
+    const adamsGrainShare = fcy.effective_share && fcy.tenant_share ? fcy.effective_share / fcy.tenant_share : 1;
+
+    customHireTotals.total += herbData.total * adamsGrainShare;
+
+    // Get detailed applications if available
+    if (herbData.applications) {
+      herbData.applications.forEach(app => {
+        customHireTotals.applications.push({
+          field_name: fcy.field_name,
+          date: app.date,
+          acres: app.acres,
+          cost: app.total_cost * adamsGrainShare,
+          products: app.application_products || []
+        });
+      });
+    }
+  });
+
+  // Aggregate rent costs
+  const rentMap = {};
+  rents.forEach(r => {
+    rentMap[r.field_id] = r.rent_per_acre || 0;
+  });
+
+  let rentTotal = 0;
+  filteredFcys.forEach(fcy => {
+    const adamsGrainShare = fcy.effective_share && fcy.tenant_share ? fcy.effective_share / fcy.tenant_share : 1;
+    const rentPerAcre = rentMap[fcy.field_id] || 0;
+    rentTotal += rentPerAcre * (fcy.planted_acres || 0) * adamsGrainShare;
+  });
+
+  // Calculate totals and averages
+  const totalAcres = filteredFcys.reduce((s, f) => s + (f.planted_acres || 0), 0);
+  const totalBushels = filteredFcys.reduce((s, f) => {
+    const bushelsAll = f.actual_production || (f.planted_acres * f.estimated_yield);
+    return s + (bushelsAll * (f.effective_share || f.tenant_share || 1));
+  }, 0);
+
+  const overheadTotal = Object.values(overheadByCategory).reduce((s, c) => s + c.total, 0);
+  const totalCost = overheadTotal + seedTotals.total + fertTotals.total + customHireTotals.total + rentTotal;
+
+  return {
+    totals: {
+      acres: totalAcres,
+      bushels: totalBushels,
+      overhead: overheadTotal,
+      seed: seedTotals.total,
+      fertilizer: fertTotals.total,
+      customHire: customHireTotals.total,
+      rent: rentTotal,
+      totalCost
+    },
+    averages: {
+      costPerAcre: totalAcres > 0 ? totalCost / totalAcres : 0,
+      bushelsPerAcre: totalAcres > 0 ? totalBushels / totalAcres : 0,
+      breakeven: totalBushels > 0 ? totalCost / totalBushels : 0
+    },
+    overhead: Object.values(overheadByCategory).sort((a, b) => a.sort_order - b.sort_order),
+    seed: seedTotals,
+    fertilizer: fertTotals,
+    customHire: customHireTotals
+  };
+}
+
+function CommodityDrillDownModal({ isOpen, onClose, commodityId, commodityName, rawData, costView }) {
+  const [subFilters, setSubFilters] = useState({ irrigation: 'all', practice: 'all' });
+  const [expandedCategories, setExpandedCategories] = useState(new Set());
+  const [expandedCustomHire, setExpandedCustomHire] = useState(false);
+
+  // Aggregate data based on commodity and sub-filters
+  const data = useMemo(() => {
+    if (!rawData) return null;
+    return aggregateDrillDownData(rawData, commodityId, subFilters, costView);
+  }, [rawData, commodityId, subFilters, costView]);
+
+  if (!data) return null;
+
+  const toggleCategory = (categoryId) => {
+    setExpandedCategories(prev => {
+      const next = new Set(prev);
+      if (next.has(categoryId)) {
+        next.delete(categoryId);
+      } else {
+        next.add(categoryId);
+      }
+      return next;
+    });
+  };
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} size="xl">
+      <div className="space-y-6">
+        {/* Header */}
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">{commodityName} - Detailed Breakdown</h2>
+          <p className="text-sm text-gray-500">Click sections to expand and view details</p>
+        </div>
+
+        {/* Summary Cards */}
+        <div className="grid grid-cols-3 gap-4">
+          <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
+            <div className="text-sm text-blue-600 font-medium mb-1">Cost per Acre</div>
+            <div className="text-2xl font-bold text-blue-900">{formatCurrency(data.averages.costPerAcre)}</div>
+            <div className="text-xs text-blue-600 mt-1">{formatNumber(data.totals.acres)} acres</div>
+          </div>
+          <div className="bg-green-50 rounded-lg p-4 border border-green-200">
+            <div className="text-sm text-green-600 font-medium mb-1">Bushels per Acre</div>
+            <div className="text-2xl font-bold text-green-900">{formatNumber(data.averages.bushelsPerAcre, 1)}</div>
+            <div className="text-xs text-green-600 mt-1">{formatNumber(data.totals.bushels)} total bu</div>
+          </div>
+          <div className="bg-purple-50 rounded-lg p-4 border border-purple-200">
+            <div className="text-sm text-purple-600 font-medium mb-1">Breakeven</div>
+            <div className="text-2xl font-bold text-purple-900">{formatPrice(data.averages.breakeven)}</div>
+            <div className="text-xs text-purple-600 mt-1">per bushel</div>
+          </div>
+        </div>
+
+        {/* Sub-Filters */}
+        <div className="flex gap-4">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-gray-700">Irrigation:</span>
+            <div className="flex rounded-lg border overflow-hidden">
+              {['all', 'IR', 'DL'].map(type => (
+                <button
+                  key={type}
+                  onClick={() => setSubFilters(f => ({ ...f, irrigation: type }))}
+                  className={`px-3 py-1 text-sm ${
+                    subFilters.irrigation === type
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-white text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  {type === 'all' ? 'All' : type}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-gray-700">Practice:</span>
+            <div className="flex rounded-lg border overflow-hidden">
+              {['all', 'FS', 'DC'].map(type => (
+                <button
+                  key={type}
+                  onClick={() => setSubFilters(f => ({ ...f, practice: type }))}
+                  className={`px-3 py-1 text-sm ${
+                    subFilters.practice === type
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-white text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  {type === 'all' ? 'All' : type}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Overhead Section */}
+        <div>
+          <h3 className="text-lg font-semibold mb-3">Overhead Expenses</h3>
+          <div className="space-y-2">
+            {data.overhead.map(category => (
+              <div key={category.id} className="border rounded-lg overflow-hidden">
+                <button
+                  onClick={() => toggleCategory(category.id)}
+                  className="w-full flex items-center justify-between p-4 hover:bg-gray-50 transition-colors"
+                >
+                  <div className="flex items-center gap-3">
+                    <Icon
+                      name={expandedCategories.has(category.id) ? 'chevron-down' : 'chevron-right'}
+                      size={18}
+                      className="text-gray-400"
+                    />
+                    <span className="font-medium">{category.name}</span>
+                    <span className="text-sm text-gray-500">({category.lineItems.length} items)</span>
+                  </div>
+                  <span className="font-semibold text-gray-900">{formatCurrency(category.total)}</span>
+                </button>
+                {expandedCategories.has(category.id) && (
+                  <div className="px-4 pb-4 pt-2 bg-gray-50 border-t">
+                    <div className="space-y-2">
+                      {category.lineItems.map(item => (
+                        <div key={item.id} className="flex justify-between text-sm">
+                          <span className="text-gray-600">{item.name}</span>
+                          <span className="text-gray-900">{formatCurrency(item.amount)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          <div className="mt-2 pt-2 border-t flex justify-between font-semibold">
+            <span>Total Overhead</span>
+            <span>{formatCurrency(data.totals.overhead)}</span>
+          </div>
+        </div>
+
+        {/* Crop Plan Expenses */}
+        <div>
+          <h3 className="text-lg font-semibold mb-3">Crop Plan Expenses</h3>
+          <div className="space-y-3">
+            {/* Seed */}
+            <div className="bg-amber-50 rounded-lg p-4 border border-amber-200">
+              <div className="flex justify-between items-center">
+                <div>
+                  <div className="font-medium text-amber-900">Seed</div>
+                  <div className="text-xs text-amber-600">{data.seed.breakdown.length} fields</div>
+                </div>
+                <div className="text-xl font-bold text-amber-900">{formatCurrency(data.totals.seed)}</div>
+              </div>
+            </div>
+
+            {/* Fertilizer */}
+            <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
+              <div className="flex justify-between items-center">
+                <div>
+                  <div className="font-medium text-blue-900">Fertilizer</div>
+                  <div className="text-xs text-blue-600">All applications</div>
+                </div>
+                <div className="text-xl font-bold text-blue-900">{formatCurrency(data.totals.fertilizer)}</div>
+              </div>
+            </div>
+
+            {/* Custom Hire / Herbicide */}
+            <div className="border rounded-lg overflow-hidden">
+              <button
+                onClick={() => setExpandedCustomHire(!expandedCustomHire)}
+                className="w-full flex items-center justify-between p-4 bg-purple-50 hover:bg-purple-100 transition-colors"
+              >
+                <div className="flex items-center gap-3">
+                  <Icon
+                    name={expandedCustomHire ? 'chevron-down' : 'chevron-right'}
+                    size={18}
+                    className="text-purple-600"
+                  />
+                  <div>
+                    <div className="font-medium text-purple-900">Custom Hire / Herbicide</div>
+                    <div className="text-xs text-purple-600">{data.customHire.applications.length} applications</div>
+                  </div>
+                </div>
+                <div className="text-xl font-bold text-purple-900">{formatCurrency(data.totals.customHire)}</div>
+              </button>
+              {expandedCustomHire && (
+                <div className="px-4 pb-4 pt-2 bg-gray-50 border-t">
+                  <div className="space-y-3">
+                    {data.customHire.applications.map((app, idx) => (
+                      <div key={idx} className="text-sm border-b pb-2 last:border-b-0">
+                        <div className="flex justify-between font-medium mb-1">
+                          <span>{app.field_name}</span>
+                          <span>{formatCurrency(app.cost)}</span>
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          {app.date} • {formatNumber(app.acres)} acres
+                        </div>
+                        {app.products && app.products.length > 0 && (
+                          <div className="text-xs text-gray-600 mt-1">
+                            Products: {app.products.map(p => p.product_name || p.name).join(', ')}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Rent */}
+            <div className="bg-green-50 rounded-lg p-4 border border-green-200">
+              <div className="flex justify-between items-center">
+                <div>
+                  <div className="font-medium text-green-900">Land Rent</div>
+                  <div className="text-xs text-green-600">Cash & share rent</div>
+                </div>
+                <div className="text-xl font-bold text-green-900">{formatCurrency(data.totals.rent)}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Total Summary */}
+        <div className="bg-gray-900 text-white rounded-lg p-6">
+          <div className="flex justify-between items-center mb-4">
+            <div className="text-lg font-semibold">Total Cost</div>
+            <div className="text-3xl font-bold">{formatCurrency(data.totals.totalCost)}</div>
+          </div>
+          <div className="grid grid-cols-2 gap-4 text-sm">
+            <div className="flex justify-between">
+              <span className="text-gray-400">Total Acres:</span>
+              <span className="font-medium">{formatNumber(data.totals.acres)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Cost/Acre:</span>
+              <span className="font-medium">{formatCurrency(data.averages.costPerAcre)}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -7235,19 +7714,28 @@ function BreakevenPage({ cropYear, onYearChange }) {
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [viewMode, setViewMode] = useState('tenant'); // 'tenant' or 'total'
+  const [filters, setFilters] = useState({
+    farm: '',
+    commodity: '',
+    practiceType: '',
+    landlord: '',
+    fields: [],
+    costView: 'actual' // 'actual' or 'planned' for herbicide costs
+  });
   const currentYear = new Date().getFullYear();
   const cropYears = [currentYear - 1, currentYear, currentYear + 1];
 
   useEffect(() => {
     async function load() {
       setLoading(true);
-      const [fcys, expenses, seeds, rents, fertCosts, herbCosts] = await Promise.all([
+      const [fcys, expenses, seeds, rents, fertCosts, herbActual, herbPlanned] = await Promise.all([
         getFieldCropYears(cropYear),
         getOverheadExpenses(cropYear),
         getSeedCosts(cropYear),
         getLandRent(cropYear),
         getFertilizerCostsDetailed(cropYear),
-        getHerbicideCosts(cropYear)
+        getHerbicideCosts(cropYear),
+        getPlannedHerbicideCosts(cropYear)
       ]);
 
       const overheadAlloc = allocateOverhead(expenses, fcys);
@@ -7293,8 +7781,9 @@ function BreakevenPage({ cropYear, onYearChange }) {
         const fertData = fertCosts[fcy.field_id] || { total: 0, splitCost: 0 };
         const fertTotal = fertData.total;
 
-        // Get herbicide costs with split breakdown
-        const herbData = herbCosts[fcy.field_id] || { total: 0, splitCost: 0, nonSplitCost: 0 };
+        // Get herbicide costs based on cost view filter
+        const herbCosts_source = filters.costView === 'planned' ? herbPlanned : herbActual;
+        const herbData = herbCosts_source[fcy.field_id] || { total: 0, splitCost: 0, nonSplitCost: 0 };
         const herbTotal = herbData.total;
         const herbSplitCost = herbData.splitCost;      // Products marked 'shared' on products table
         const herbNonSplitCost = herbData.nonSplitCost; // Burndowns, etc. (100% tenant)
@@ -7399,6 +7888,45 @@ function BreakevenPage({ cropYear, onYearChange }) {
 
   if (loading) return <div className="flex items-center justify-center h-64"><Icon name="loader" className="animate-spin text-blue-600" size={32} /></div>;
 
+  // Build filter options
+  const uniqueFarms = [...new Map(data.map(d => [d.farm_id, { id: d.farm_id, name: d.farm_name }])).values()];
+  const uniqueCommodities = [...new Map(data.map(d => [d.commodity_id, { id: d.commodity_id, name: d.commodity_name }])).values()];
+
+  const filteredLandlords = filters.farm
+    ? [...new Map(data.filter(d => d.farm_id === filters.farm && d.landlord).map(d => [d.landlord, { id: d.landlord, name: d.landlord_name || d.landlord }])).values()]
+    : [];
+
+  // Apply filters to data
+  const filteredData = useMemo(() => {
+    let result = data;
+
+    if (filters.farm) {
+      result = result.filter(d => d.farm_id === filters.farm);
+    }
+
+    if (filters.commodity) {
+      result = result.filter(d => d.commodity_id === filters.commodity);
+    }
+
+    if (filters.practiceType) {
+      if (filters.practiceType === 'IR') {
+        result = result.filter(d => d.is_irrigated);
+      } else if (filters.practiceType === 'DL') {
+        result = result.filter(d => !d.is_irrigated);
+      }
+    }
+
+    if (filters.landlord) {
+      result = result.filter(d => d.landlord === filters.landlord);
+    }
+
+    if (filters.fields && filters.fields.length > 0) {
+      result = result.filter(d => filters.fields.includes(d.field_id));
+    }
+
+    return result;
+  }, [data, filters]);
+
   const hasAnyLandlord = data.some(d => d.hasLandlord);
 
   return (
@@ -7425,6 +7953,115 @@ function BreakevenPage({ cropYear, onYearChange }) {
           <button onClick={exportCSV} className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200">
             <Icon name="download" size={18} /> Export CSV
           </button>
+        </div>
+      </div>
+
+      {/* Filters Section */}
+      <div className="bg-white rounded-xl shadow-sm border p-4">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
+          {/* Farm Filter */}
+          <div>
+            <label className="block text-sm font-medium mb-1">Farm</label>
+            <select
+              value={filters.farm}
+              onChange={(e) => {
+                const newFarmId = e.target.value;
+                setFilters(f => ({ ...f, farm: newFarmId, landlord: '', fields: [] }));
+              }}
+              className="w-full px-3 py-2 border rounded-lg text-sm"
+            >
+              <option value="">All Farms</option>
+              {uniqueFarms.map(farm => (
+                <option key={farm.id} value={farm.id}>{farm.name}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Commodity Filter */}
+          <div>
+            <label className="block text-sm font-medium mb-1">Commodity</label>
+            <select
+              value={filters.commodity}
+              onChange={(e) => setFilters(f => ({ ...f, commodity: e.target.value }))}
+              className="w-full px-3 py-2 border rounded-lg text-sm"
+            >
+              <option value="">All Crops</option>
+              {uniqueCommodities.map(c => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Practice Type Filter */}
+          <div>
+            <label className="block text-sm font-medium mb-1">Practice</label>
+            <select
+              value={filters.practiceType}
+              onChange={(e) => setFilters(f => ({ ...f, practiceType: e.target.value }))}
+              className="w-full px-3 py-2 border rounded-lg text-sm"
+            >
+              <option value="">All</option>
+              <option value="IR">Irrigated</option>
+              <option value="DL">Dryland</option>
+            </select>
+          </div>
+
+          {/* Landlord Filter */}
+          <div>
+            <label className="block text-sm font-medium mb-1">Landlord</label>
+            <select
+              value={filters.landlord}
+              onChange={(e) => setFilters(f => ({ ...f, landlord: e.target.value, fields: [] }))}
+              className="w-full px-3 py-2 border rounded-lg text-sm"
+              disabled={!filters.farm}
+            >
+              <option value="">All Landlords</option>
+              {filteredLandlords.map(l => (
+                <option key={l.id} value={l.id}>{l.name}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Cost View Toggle - Herbicide Actual vs Planned */}
+          <div>
+            <label className="block text-sm font-medium mb-1">Herbicide Costs</label>
+            <div className="flex rounded-lg border overflow-hidden">
+              <button
+                onClick={() => setFilters(f => ({ ...f, costView: 'actual' }))}
+                className={`flex-1 px-3 py-2 text-sm ${
+                  filters.costView === 'actual'
+                    ? 'bg-green-600 text-white'
+                    : 'bg-white text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                Actual
+              </button>
+              <button
+                onClick={() => setFilters(f => ({ ...f, costView: 'planned' }))}
+                className={`flex-1 px-3 py-2 text-sm ${
+                  filters.costView === 'planned'
+                    ? 'bg-amber-600 text-white'
+                    : 'bg-white text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                Planned
+              </button>
+            </div>
+          </div>
+
+          {/* Clear Filters Button */}
+          {(filters.farm || filters.commodity || filters.practiceType || filters.landlord) && (
+            <div className="flex items-end">
+              <button
+                onClick={() => setFilters({
+                  farm: '', commodity: '', practiceType: '', landlord: '', fields: [], costView: filters.costView
+                })}
+                className="w-full px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 border rounded-lg"
+              >
+                Clear Filters
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -7458,9 +8095,9 @@ function BreakevenPage({ cropYear, onYearChange }) {
               </tr>
             </thead>
             <tbody className="divide-y">
-              {data.length === 0 ? (
+              {filteredData.length === 0 ? (
                 <tr><td colSpan={11} className="px-4 py-8 text-center text-gray-500">No field data for {cropYear}</td></tr>
-              ) : data.map(d => {
+              ) : filteredData.map(d => {
                 const fert = viewMode === 'tenant' ? d.fertTenant : d.fertTotal;
                 const herb = viewMode === 'tenant' ? d.herbTenant : d.herbTotal;
                 const total = viewMode === 'tenant' ? d.totalTenant : d.totalAll;
@@ -7499,13 +8136,13 @@ function BreakevenPage({ cropYear, onYearChange }) {
               <tr className="font-semibold">
                 <td className="px-4 py-3">TOTAL</td>
                 <td></td>
-                <td className="px-4 py-3 text-right">{formatNumber(data.reduce((s, d) => s + (d.planted_acres || 0), 0))}</td>
-                <td className="px-4 py-3 text-right">{formatCurrency(data.reduce((s, d) => s + d.overhead, 0))}</td>
-                <td className="px-4 py-3 text-right">{formatCurrency(data.reduce((s, d) => s + d.seed, 0))}</td>
-                <td className="px-4 py-3 text-right">{formatCurrency(data.reduce((s, d) => s + d.rent, 0))}</td>
-                <td className="px-4 py-3 text-right">{formatCurrency(data.reduce((s, d) => s + (viewMode === 'tenant' ? d.fertTenant : d.fertTotal), 0))}</td>
-                <td className="px-4 py-3 text-right">{formatCurrency(data.reduce((s, d) => s + (viewMode === 'tenant' ? d.herbTenant : d.herbTotal), 0))}</td>
-                <td className="px-4 py-3 text-right font-bold">{formatCurrency(data.reduce((s, d) => s + (viewMode === 'tenant' ? d.totalTenant : d.totalAll), 0))}</td>
+                <td className="px-4 py-3 text-right">{formatNumber(filteredData.reduce((s, d) => s + (d.planted_acres || 0), 0))}</td>
+                <td className="px-4 py-3 text-right">{formatCurrency(filteredData.reduce((s, d) => s + d.overhead, 0))}</td>
+                <td className="px-4 py-3 text-right">{formatCurrency(filteredData.reduce((s, d) => s + d.seed, 0))}</td>
+                <td className="px-4 py-3 text-right">{formatCurrency(filteredData.reduce((s, d) => s + d.rent, 0))}</td>
+                <td className="px-4 py-3 text-right">{formatCurrency(filteredData.reduce((s, d) => s + (viewMode === 'tenant' ? d.fertTenant : d.fertTotal), 0))}</td>
+                <td className="px-4 py-3 text-right">{formatCurrency(filteredData.reduce((s, d) => s + (viewMode === 'tenant' ? d.herbTenant : d.herbTotal), 0))}</td>
+                <td className="px-4 py-3 text-right font-bold">{formatCurrency(filteredData.reduce((s, d) => s + (viewMode === 'tenant' ? d.totalTenant : d.totalAll), 0))}</td>
                 <td></td>
                 <td></td>
               </tr>
