@@ -7870,9 +7870,8 @@ function BreakevenPage({ cropYear, onYearChange }) {
     URL.revokeObjectURL(url);
   };
 
-  if (loading) return <div className="flex items-center justify-center h-64"><Icon name="loader" className="animate-spin text-blue-600" size={32} /></div>;
-
   // Build filter options - memoize to prevent re-renders
+  // MUST be before early return to follow React Hooks rules
   const uniqueFarms = useMemo(() =>
     [...new Map(data.map(d => [d.farm_id, { id: d.farm_id, name: d.farm_name }])).values()],
     [data]
@@ -7922,6 +7921,8 @@ function BreakevenPage({ cropYear, onYearChange }) {
   }, [data, filters.farm, filters.commodity, filters.practiceType, filters.landlord, JSON.stringify(filters.fields)]);
 
   const hasAnyLandlord = data.some(d => d.hasLandlord);
+
+  if (loading) return <div className="flex items-center justify-center h-64"><Icon name="loader" className="animate-spin text-blue-600" size={32} /></div>;
 
   return (
     <div className="space-y-6">
