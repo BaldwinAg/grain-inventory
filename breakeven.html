@@ -2496,15 +2496,15 @@ function OverheadPage({ cropYear, onYearChange }) {
           <p className="text-sm text-gray-500">Farm-level costs allocated to crops</p>
         </div>
         <div className="flex gap-3">
-          <select value={cropYear} onChange={(e) => onYearChange(parseInt(e.target.value))} className="px-4 py-2 border rounded-lg">
-            {cropYears.map(y => <option key={y} value={y}>{y} Crop Year</option>)}
-          </select>
           <button onClick={() => setShowCopyModal(true)} className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200" title="Copy from another year">
             <Icon name="copy" size={18} /> Copy Year
           </button>
           <button onClick={() => { setEditingItem(null); setShowModal(true); }} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
             <Icon name="plus" size={18} /> Add Expense
           </button>
+          <select value={cropYear} onChange={(e) => onYearChange(parseInt(e.target.value))} className="px-4 py-2 border rounded-lg">
+            {cropYears.map(y => <option key={y} value={y}>{y} Crop Year</option>)}
+          </select>
         </div>
       </div>
 
@@ -3766,12 +3766,12 @@ function MiscIncomePage({ cropYear, onYearChange }) {
           <p className="text-sm text-gray-500">Government payments, conservation, and other farm income for {cropYear}</p>
         </div>
         <div className="flex gap-3">
-          <select value={cropYear} onChange={(e) => onYearChange(parseInt(e.target.value))} className="px-4 py-2 border rounded-lg">
-            {cropYears.map(y => <option key={y} value={y}>{y} Crop Year</option>)}
-          </select>
           <button onClick={() => { setEditingItem(null); setShowModal(true); }} className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700">
             <Icon name="plus" size={18} /> Add Income
           </button>
+          <select value={cropYear} onChange={(e) => onYearChange(parseInt(e.target.value))} className="px-4 py-2 border rounded-lg">
+            {cropYears.map(y => <option key={y} value={y}>{y} Crop Year</option>)}
+          </select>
         </div>
       </div>
 
@@ -5635,12 +5635,12 @@ function CropPlansPage({ cropYear, onYearChange }) {
           <p className="text-sm text-gray-500">Comprehensive cost templates with seed, custom costs, fertilizer, and chemicals</p>
         </div>
         <div className="flex gap-3">
-          <select value={cropYear} onChange={(e) => onYearChange(parseInt(e.target.value))} className="px-4 py-2 border rounded-lg">
-            {cropYears.map(y => <option key={y} value={y}>{y} Crop Year</option>)}
-          </select>
           <button onClick={() => { setEditingPlan(null); setShowEditor(true); }} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
             <Icon name="plus" size={18} /> New Crop Plan
           </button>
+          <select value={cropYear} onChange={(e) => onYearChange(parseInt(e.target.value))} className="px-4 py-2 border rounded-lg">
+            {cropYears.map(y => <option key={y} value={y}>{y} Crop Year</option>)}
+          </select>
         </div>
       </div>
 
