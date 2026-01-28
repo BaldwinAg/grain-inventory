@@ -1,5 +1,5 @@
 <!--
-  Breakeven Calculator v2.4.0
+  Breakeven Calculator v2.5.0
   Cost aggregation and breakeven analysis
   Part of the Farm Management Suite
 -->
@@ -8,7 +8,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Breakeven Calculator v2.4.0</title>
+  <title>Breakeven Calculator v2.5.0</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -280,8 +280,8 @@ async function deleteSeedCost(id) {
 }
 
 // Seed Products (Catalog)
-async function getSeedProducts() {
-  const { data, error } = await db.from('be_seed_products').select('*, commodities(name)').eq('active', true).is('deleted_at', null).order('brand').order('hybrid');
+async function getSeedProducts(cropYear) {
+  const { data, error } = await db.from('be_seed_products').select('*, commodities(name)').eq('crop_year', cropYear).eq('active', true).is('deleted_at', null).order('brand').order('hybrid');
   if (error) {
     console.error('Error loading seed products:', error);
     return [];
@@ -292,8 +292,9 @@ async function getSeedProducts() {
   }));
 }
 
-async function saveSeedProduct(product) {
+async function saveSeedProduct(product, cropYear) {
   const productData = {
+    crop_year: cropYear,
     commodity_id: product.commodity_id,
     brand: product.brand,
     hybrid: product.hybrid,
@@ -2943,7 +2944,7 @@ function OverheadModal({ expense, cropYear, categories, commodities, fields = []
 // ============================================================================
 // SEED PRODUCTS PAGE (Catalog of seed varieties with pricing)
 // ============================================================================
-function SeedProductsPage() {
+function SeedProductsPage({ cropYear, onYearChange }) {
   const [products, setProducts] = useState([]);
   const [commodities, setCommodities] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -2956,13 +2957,13 @@ function SeedProductsPage() {
 
   const loadData = async () => {
     setLoading(true);
-    const [p, c] = await Promise.all([getSeedProducts(), getCommodities()]);
+    const [p, c] = await Promise.all([getSeedProducts(cropYear), getCommodities()]);
     setProducts(p);
     setCommodities(c);
     setLoading(false);
   };
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => { loadData(); }, [cropYear]);
 
   const handleDelete = async () => {
     try {
@@ -3012,6 +3013,9 @@ function SeedProductsPage() {
           <button onClick={() => { setEditingProduct(null); setShowModal(true); }} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
             <Icon name="plus" size={18} /> Add Product
           </button>
+          <select value={cropYear} onChange={(e) => onYearChange(parseInt(e.target.value))} className="px-4 py-2 border rounded-lg">
+            {cropYears.map(y => <option key={y} value={y}>{y} Crop Year</option>)}
+          </select>
         </div>
       </div>
 
@@ -3104,13 +3108,13 @@ function SeedProductsPage() {
         ))
       )}
 
-      {showModal && <SeedProductModal product={editingProduct} commodities={commodities} onClose={() => setShowModal(false)} onSave={(keepOpen) => { if (!keepOpen) setShowModal(false); loadData(); }} />}
+      {showModal && <SeedProductModal product={editingProduct} commodities={commodities} cropYear={cropYear} onClose={() => setShowModal(false)} onSave={(keepOpen) => { if (!keepOpen) setShowModal(false); loadData(); }} />}
       <ConfirmModal isOpen={!!deleteConfirm} title="Delete Seed Product" message={`Delete ${deleteConfirm?.brand} ${deleteConfirm?.hybrid}?`} onConfirm={handleDelete} onCancel={() => setDeleteConfirm(null)} />
     </div>
   );
 }
 
-function SeedProductModal({ product, commodities, onClose, onSave }) {
+function SeedProductModal({ product, commodities, cropYear, onClose, onSave }) {
   // Default seeds/bag by commodity
   const seedDefaults = {
     'Corn': { seeds_per_bag: 80000, default_seeding_rate: 34000 },
@@ -3151,7 +3155,7 @@ function SeedProductModal({ product, commodities, onClose, onSave }) {
     }
     setSaving(true);
     try {
-      await saveSeedProduct({ ...form, id: product?.id });
+      await saveSeedProduct({ ...form, id: product?.id }, cropYear);
       addToast('Seed product saved', { type: 'success' });
 
       if (addAnother && !product) {
@@ -5789,8 +5793,8 @@ function CropPlanEditor({ plan, cropYear, commodities, tankMixes, onClose, onSav
 
   // Load seed products
   useEffect(() => {
-    getSeedProducts().then(setSeedProducts);
-  }, []);
+    getSeedProducts(cropYear).then(setSeedProducts);
+  }, [cropYear]);
 
   // Form state
   const [info, setInfo] = useState({
@@ -7974,7 +7978,7 @@ function SettingsPage({ isConnected }) {
             <div className={`w-3 h-3 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
             <span className="font-medium">{isConnected ? 'Connected to Database' : 'Disconnected'}</span>
           </div>
-          <p className="text-sm text-gray-500 mt-2">Breakeven Calculator v2.4.0</p>
+          <p className="text-sm text-gray-500 mt-2">Breakeven Calculator v2.5.0</p>
           <div className="mt-4 p-4 bg-blue-50 rounded-lg">
             <h3 className="font-medium text-blue-800 mb-2">Data Sources</h3>
             <ul className="text-sm text-blue-700 space-y-1">
@@ -8104,7 +8108,7 @@ function App() {
                 <Icon name="target" size={28} className="text-blue-600" />
                 <div>
                   <div className="font-bold text-gray-900">Breakeven Calculator</div>
-                  <div className="text-xs text-gray-500">v2.4.0</div>
+                  <div className="text-xs text-gray-500">v2.5.0</div>
                 </div>
               </div>
               <div className="flex items-center gap-1">
