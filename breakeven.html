@@ -1744,7 +1744,7 @@ const appLinks = [
 // ============================================================================
 // DASHBOARD PAGE
 // ============================================================================
-function DashboardPage({ cropYear, onYearChange }) {
+function DashboardPage({ cropYear, onYearChange, onNavigate }) {
   const [data, setData] = useState({
     commodities: [],
     totalCost: 0,
@@ -2074,9 +2074,9 @@ function DashboardPage({ cropYear, onYearChange }) {
               One or more commodities are over budget by more than 10%. Review the Analysis page for detailed variance breakdown.
             </p>
           </div>
-          <a href="#" onClick={(e) => { e.preventDefault(); /* Navigate to analysis page */ }} className="text-red-600 hover:text-red-800 font-medium text-sm whitespace-nowrap">
+          <button onClick={() => onNavigate?.('analysis')} className="text-red-600 hover:text-red-800 font-medium text-sm whitespace-nowrap">
             View Details →
-          </a>
+          </button>
         </div>
       )}
 
@@ -8789,7 +8789,7 @@ function App() {
       case 'reports': return <ReportsPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
       case 'landlord-report': return <LandlordReportPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
       case 'settings': return <SettingsPage isConnected={isConnected} />;
-      default: return <DashboardPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} />;
+      default: return <DashboardPage cropYear={selectedCropYear} onYearChange={setSelectedCropYear} onNavigate={setCurrentPage} />;
     }
   };
 
