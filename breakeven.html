@@ -427,22 +427,19 @@ async function getHerbicideCosts(cropYear) {
   return byField;
 }
 
-// Get Planned Herbicide Costs from Crop Plans
+// Get Planned Herbicide Costs from Field Crop Plans
 // Returns { fieldId: { total, splitCost, nonSplitCost } }
 async function getPlannedHerbicideCosts(cropYear) {
-  // Get field crop plan assignments with crop plans
-  const { data: assignments, error } = await db
+  // Get field crop plans with herbicide passes
+  const { data: fieldPlans, error } = await db
     .from('be_field_crop_plans')
     .select(`
       *,
       field_crop_years(id, field_id, tenant_share, planted_acres, fields(farms(adams_grain_share))),
-      be_crop_plans(
-        id,
-        herbicide_cost_override,
-        be_crop_plan_chemicals(*, be_crop_plan_chemical_products(product_name, rate_per_acre, price_per_unit, split))
-      )
+      be_field_herbicide_passes(*, be_herbicide_plans(name, estimated_cost_per_acre))
     `)
-    .eq('crop_year', cropYear);
+    .eq('crop_year', cropYear)
+    .is('deleted_at', null);
 
   if (error) {
     console.error('Error fetching planned herbicide costs:', error);
@@ -450,12 +447,9 @@ async function getPlannedHerbicideCosts(cropYear) {
   }
 
   const byField = {};
-  (assignments || []).forEach(assignment => {
-    const fcy = assignment.field_crop_years;
+  (fieldPlans || []).forEach(plan => {
+    const fcy = plan.field_crop_years;
     if (!fcy) return;
-
-    const plan = assignment.be_crop_plans;
-    if (!plan) return;
 
     const fieldId = fcy.field_id;
     if (!byField[fieldId]) {
@@ -464,28 +458,23 @@ async function getPlannedHerbicideCosts(cropYear) {
 
     const acres = fcy.planted_acres || 0;
 
-    // Calculate cost from crop plan
-    if (plan.herbicide_cost_override) {
-      // Use override if set ($/acre)
+    // Check for override first ($/acre)
+    if (plan.herbicide_cost_override && plan.herbicide_cost_override > 0) {
       const totalCost = plan.herbicide_cost_override * acres;
-      // Assume override is split cost (can refine this later)
+      // Assume override is split cost (in-crop herbicides are typically split)
       byField[fieldId].total += totalCost;
       byField[fieldId].splitCost += totalCost;
-    } else if (plan.be_crop_plan_chemicals) {
-      // Calculate from chemical passes and products
-      plan.be_crop_plan_chemicals.forEach(chemPass => {
-        (chemPass.be_crop_plan_chemical_products || []).forEach(product => {
-          const costPerAcre = (product.rate_per_acre || 0) * (product.price_per_unit || 0);
-          const cost = costPerAcre * acres;
-          const isSplit = product.split === 'Y' || product.split === true;
-
+    } else if (plan.be_field_herbicide_passes && plan.be_field_herbicide_passes.length > 0) {
+      // Calculate from herbicide passes
+      plan.be_field_herbicide_passes.forEach(pass => {
+        const herbPlan = pass.be_herbicide_plans;
+        if (herbPlan && herbPlan.estimated_cost_per_acre) {
+          const cost = herbPlan.estimated_cost_per_acre * acres;
+          // Assume planned herbicide passes are split (in-crop applications)
+          // Burndowns would typically not be in the crop plan
           byField[fieldId].total += cost;
-          if (isSplit) {
-            byField[fieldId].splitCost += cost;
-          } else {
-            byField[fieldId].nonSplitCost += cost;
-          }
-        });
+          byField[fieldId].splitCost += cost;
+        }
       });
     }
   });
