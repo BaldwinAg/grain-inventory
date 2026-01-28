@@ -11,7 +11,7 @@ export const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdX
 export const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // App Constants
-export const APP_VERSION = '1.7.1';
+export const APP_VERSION = '1.10.0';
 export const APP_NAME = 'GrainTrack Suite';
 
 // Options contract size
